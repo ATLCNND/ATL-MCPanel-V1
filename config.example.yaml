@@ -1,0 +1,57 @@
+﻿# ATL-MCPanel 配置示例
+# 复制为 config.yaml 并修改实际值
+
+server:
+  listen: ":8080"           # Panel HTTP 监听（内网/本地访问）
+  grpc_listen: ":9090"      # Panel gRPC 监听（Daemon 接入）
+  external_url: "http://127.0.0.1:8080"
+  web_dir: "web/dist"       # 前端静态资源目录（npm run build 产物）；留空则不托管前端
+
+  # ---- HTTPS（可选，建议暴露公网前启用）----
+  # 双端口模式：tls_listen 提供 HTTPS，listen 仍提供 HTTP
+  # 单端口模式：只配置 tls_cert/tls_key，listen 端口直接跑 HTTPS
+  # 证书：可用自签证书，也可用阿里云等 CA 签发的 Nginx 格式证书（.pem + .key）
+  tls_listen: ""            # 如 ":8443"；留空且配置了证书时，仅 listen 端口以 HTTPS 提供
+  tls_cert: ""              # 如 "/opt/mcpanel/certs/panel.crt"（阿里云下载的 .pem）
+  tls_key: ""               # 如 "/opt/mcpanel/certs/panel.key"（阿里云下载的 .key）
+
+  # 面板位于 frp / 反向代理之后时置为 true：
+  # 客户端 IP 将取 X-Forwarded-For 首项（否则请求都记作代理地址，影响审计与限流）
+  trust_proxy: false
+
+  # ---- Panel ↔ Daemon 双向认证（mTLS）----
+  # 生产环境应保持 true；节点需持有由本面板 CA 签发的证书（详见 docs/MTLS.md）
+  grpc_mtls: true
+  pki_dir: "data/pki"       # CA 与证书目录（首次启动自动生成）
+
+  panel_frp_dir: "data/panel-frp"  # 面板自身穿透的工作目录
+
+daemon:
+  node_id: "node-001"
+  panel_address: "127.0.0.1:9090"
+  grpc_listen: ":9091"      # Daemon 自身 gRPC 监听（Panel 反向调用）
+  instance_dir: "instances" # 实例根目录
+  tls: false                # M6 阶段启用 mTLS
+  cert_file: ""
+  key_file: ""
+  ca_file: ""
+
+  # ---- 实例资源限制（cgroup v2）----
+  # 为实例施加 CPU 硬配额（cpu.max）。需要 cgroup v2（Debian 12+ / Ubuntu 22+ 默认支持）。
+  # 环境不支持时自动降级为「不限制」并记录警告，不会导致实例启动失败。
+  cgroup_enabled: true
+  cgroup_root: ""           # 留空使用 /sys/fs/cgroup/atlmcpanel
+
+  # ---- 备份存放位置（冷存储）----
+  # 留空 → 各实例目录下的 backups/
+  # 设置后 → <backup_root>/<实例ID>/
+  # 建议指向大容量机械盘：备份是顺序读写，用机械盘承载可大幅降低每 GB 成本，
+  # 同时避免备份膨胀挤占实例所在 SSD 的空间。
+  backup_root: ""           # 例如 /mnt/hdd/atlmcpanel-backups
+
+db:
+  driver: sqlite3
+  dsn: data/mcpanel.db
+
+auth:
+  jwt_secret: "CHANGE_ME_TO_A_RANDOM_SECRET"
