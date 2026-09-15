@@ -1,0 +1,33 @@
+# 仓库内一律 LF。
+#
+# 为什么必须写死：Windows 上 git 默认 core.autocrlf=true，checkout 时会把文本文件
+# 转成 CRLF。bin/ 与 deploy/ 里的 .sh 一旦带 CRLF 传到 Linux，执行时会报
+#   bash: ./install.sh: /bin/bash^M: bad interpreter: No such file or directory
+# 也就是"脚本坏了但看不出哪里坏"。Makefile 同样会因为 \r 报 "missing separator"。
+# 这个文件让行尾不再取决于每个人的 git 配置。
+* text=auto eol=lf
+
+# 脚本与配置：显式再声明一次，防止有人改上面的默认值
+*.sh   text eol=lf
+*.toml text eol=lf
+*.service text eol=lf
+Makefile text eol=lf
+
+# Windows 批处理反过来必须是 CRLF，否则 cmd.exe 解析会出错
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制：不要做任何行尾转换（否则 .png / .jar 会被改坏）
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
+*.jar   binary
+*.zip   binary
+*.gz    binary
+
+# 归档与产物的 diff 视图（公开仓库里没有，留作习惯）
+*.pb.go linguist-generated=true

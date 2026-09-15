@@ -95,7 +95,7 @@ cp config/panel.example.yaml config.yaml          # 面板：监听地址/数据
 | [docs/MTLS.md](docs/MTLS.md) | 面板 ↔ 节点 mTLS 说明 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构与数据流 |
 | [docs/API.md](docs/API.md) | HTTP API 概览 |
-| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 开发环境与流程 |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 开发约定、产物平台（多架构/静态编译）、技术接缝与代码规范 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 里程碑与已完成项 |
 
 ---
