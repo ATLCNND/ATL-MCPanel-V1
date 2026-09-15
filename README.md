@@ -1,12 +1,19 @@
-# ATL-MCPanel（V1 免费版）
+# ATL-MCPanel（V1）
 
 Minecraft **多实例管理面板** + 节点控制程序。面板负责用户/权限/实例/备份/告警/穿透，
 节点程序（Daemon）跑在每台实例机上负责进程、文件、控制台。
 
 **核心无关**：不绑定任何服务端核心 —— Folia / Paper / Spigot / Vanilla / 任意自定义启动脚本都能管。
 
+> ℹ️ **V1 是完整功能版本，没有"功能阉割"或实例数限制** —— 与后续版本的差别只在
+> 节点接入方式与架构，不在 V1 自身的能力。
+
 > ⚠️ **当前状态：V1 开发收尾中，尚未发布正式版本，不建议直接用于生产。**
 > 部署流程与已知限制见下方「已知限制」。
+
+> 📄 **许可：非商业使用免费**（PolyForm Noncommercial 1.0.0）——
+> 个人自用、学习、教育、公益免费；**对外收费提供服务的商业用途需另行授权**。
+> 详见 [许可](#许可) 一节。
 
 ---
 
@@ -53,19 +60,27 @@ Minecraft **多实例管理面板** + 节点控制程序。面板负责用户/�
 
 ## 快速开始
 
-前置：Debian/Ubuntu（x86_64）、Go 1.24+、Node 20+；如需穿透再装 frp。
+前置：Debian/Ubuntu（x86_64）、Go 1.24+、gcc（SQLite 驱动需要 CGO）、Node 18+；如需穿透再装 frp。
 
 ```bash
-# 1) 构建
-go build -o bin/dsh-panel ./cmd/panel
-go build -o bin/dsh-daemon ./cmd/daemon
-cd web && npm ci && npm run build && cd ..
+# 1) 构建后端（脚本会带上版本号等 ldflags，比手敲 go build 更省事）
+bash scripts/build.sh
 
-# 2) 配置（两个示例配置都带注释，按需修改）
-cp config/panel.example.yaml config.yaml          # 面板：监听地址/数据库/证书
-# 3) 起面板（首次访问会引导创建第一个管理员账号）
+# 2) 构建前端（产物在 web/dist，面板按 server.web_dir 静态托管）
+bash scripts/build-web.sh
+
+# 3) 配置：示例文件带注释，复制后按需修改
+cp config.example.yaml config.yaml
+
+# 4) 起面板（首次访问会引导创建第一个管理员账号）
 ./bin/dsh-panel -config config.yaml
 ```
+
+面板默认监听 `:8080`，浏览器打开 `http://<你的IP>:8080` 即可。
+
+> 想要**打包分发**（含 systemd 单元、自签证书、安装脚本）：
+> `bash scripts/build-release.sh` 生成 `dist/atlmcpanel-<版本>-<平台>.tar.gz`，
+> 解压后执行 `sudo ./deploy/install.sh panel` 即可（配置由脚本自动生成，会保留已有 `config.yaml`）。
 
 节点安装、mTLS 证书、systemd 单元、frps 配置：见 **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**。
 
@@ -102,11 +117,24 @@ cp config/panel.example.yaml config.yaml          # 面板：监听地址/数据
 
 ## 许可
 
-**待定**（作者正在确认许可口径：计划采用带网络服务条款的 copyleft 许可，
-以保护使用者与贡献者的权益；确定后会在此处补上 `LICENSE` 文件）。
+**[PolyForm Noncommercial License 1.0.0](LICENSE)**（非商业许可，源码公开）。
 
-在此之前，本仓库代码默认保留全部权利。
+| 用途 | 是否许可 |
+|---|---|
+| 个人学习、研究、自用、开服给朋友玩 | ✅ |
+| 学校、社团、公益组织等非营利使用 | ✅ |
+| 修改源码自用（含二次开发） | ✅ |
+| **对外提供收费服务**（含代开服、托管售卖） | ❌ 需另行授权 |
+| **随主机/硬件打包售卖、作为商业产品的一部分** | ❌ 需另行授权 |
+
+- 上面只是方便理解的摘要，**以 [LICENSE](LICENSE) 的英文原文为准**，摘要不构成额外授权。
+- 注意：这是**非商业许可**，不是 OSI 认可的开源许可 —— 说"源码公开"是准确的，说"开源"不准确。
+- 拿不准自己的用途算不算商业，开个 Issue 说明场景即可，我们会明确答复。
+- 需要商业授权，同样通过 Issue 联系。
 
 ## 贡献
 
-暂未开放外部 PR（许可与版权归属口径确定后再开放）。欢迎通过 **Issue** 提 bug 与建议。
+**欢迎提 Issue，暂不接受外部 Pull Request**（为保持版权归属单一）。
+Bug、部署问题、文档纠错、使用反馈都很有用 —— 详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+安全漏洞请走 GitHub 的**私有漏洞报告**，不要在公开 Issue 里贴细节。
