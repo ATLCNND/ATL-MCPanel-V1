@@ -1,0 +1,25 @@
+[Unit]
+Description=ATL-MCPanel Panel (管理面板)
+Documentation=https://github.com/ATLCNND/ATL-MCPanel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__INSTALL_DIR__
+ExecStart=__INSTALL_DIR__/bin/dsh-panel -config __INSTALL_DIR__/config.yaml
+Restart=on-failure
+RestartSec=5
+
+# 面板自身不需要保持子进程存活，但其管理着面板穿透用的 frpc 子进程：
+# KillMode=control-group（默认）会在服务重启时一并杀掉 frpc，
+# 这是期望行为（重启后面板会自动恢复隧道）。若希望 frpc 独立存活，可改为 process。
+KillMode=control-group
+
+# 资源与安全限制
+LimitNOFILE=65535
+NoNewPrivileges=false
+ProtectSystem=false
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,222 @@
+.players-tab {
+  padding: 16px 20px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.players-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.kind-tabs {
+  display: flex;
+  gap: 6px;
+}
+
+.kind-tabs button.active {
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
+  color: var(--text-on-accent);
+}
+
+/* 标签上的数量角标：让「全部玩家信息」一眼看出规模，
+   不必点进去才知道这个服有没有人玩过 */
+.kind-tabs .tab-count {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: var(--r-full);
+  background: var(--accent-bg-2);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.kind-tabs button.active .tab-count {
+  background: rgba(255, 255, 255, 0.25);
+  color: var(--text-on-accent);
+}
+
+/* ---------------- 全部玩家信息：概览卡 ---------------- */
+
+.players-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.psum {
+  min-width: 96px;
+  padding: 10px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 在线人数 > 0 时用品牌色描边，让"有人在玩"这件事一眼可见 */
+.psum.on {
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+}
+
+.psum.wide {
+  min-width: 150px;
+}
+
+.psum-num {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-1);
+  line-height: 1.2;
+}
+
+.psum-num.on {
+  color: var(--accent);
+}
+
+.psum.wide .psum-num {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.psum-label {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.players-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.players-filter input {
+  flex: 1;
+  max-width: 420px;
+}
+
+.players-filter .muted {
+  font-size: 12px;
+}
+
+/* 在线玩家整行轻微高亮，便于在长列表里定位 */
+.players-table tr.row-online td {
+  background: var(--accent-bg);
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.tag {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: var(--r-full);
+  font-size: 11px;
+  line-height: 16px;
+  border: 1px solid transparent;
+}
+
+.tag.op {
+  background: var(--warning-bg);
+  color: var(--warning);
+  border-color: var(--warning-border);
+}
+
+.tag.wl {
+  background: var(--accent-bg-2);
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+
+.tag.ban {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: var(--danger-border);
+}
+
+.tag.muted-tag {
+  margin-left: 6px;
+  background: var(--bg-subtle);
+  color: var(--text-3);
+  border-color: var(--border);
+}
+
+.players-hint {
+  color: var(--text-3);
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+
+.whitelist-switch {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  margin-bottom: 12px;
+}
+
+.players-add {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.players-add input {
+  flex: 1;
+  max-width: 420px;
+}
+
+.players-table {
+  width: 100%;
+  font-size: 13px;
+  margin-top: 6px;
+}
+
+.players-table th,
+.players-table td {
+  padding: 9px 10px;
+}
+
+.players-table .uuid {
+  font-size: 11px;
+  color: var(--text-3);
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.players-note {
+  margin-top: 14px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.7;
+  max-width: 900px;
+}
+
+.success-banner {
+  background: var(--success-bg);
+  color: var(--success);
+  border: 1px solid var(--success-dark);
+  border-radius: var(--r);
+  padding: 8px 12px;
+  font-size: 13px;
+  margin-bottom: 10px;
+}

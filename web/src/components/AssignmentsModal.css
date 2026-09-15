@@ -1,0 +1,66 @@
+.assign-modal {
+  width: 520px;
+  max-height: 80vh;
+  overflow-y: auto;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+
+.assign-form {
+  padding: 16px;
+}
+
+.assign-form h4, .assign-list h4 {
+  margin-bottom: 8px;
+  color: var(--text-3);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.assign-form .row {
+  display: flex;
+  gap: 8px;
+}
+
+.assign-form .row select {
+  flex: 1;
+}
+
+.assign-form .row select:nth-child(2) {
+  flex: 0 0 190px;
+}
+
+.assign-hint-inline {
+  margin-top: 8px;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.assign-list {
+  padding: 0 16px 16px;
+}
+
+.assign-list table {
+  width: 100%;
+  font-size: 13px;
+}
+
+.assign-list th, .assign-list td {
+  padding: 8px 10px;
+}
+
+.level-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: var(--r-lg);
+  font-size: 12px;
+  background: var(--accent-bg-2);
+  color: var(--accent);
+}
+
+.assign-hint {
+  padding: 10px 16px 16px;
+  color: var(--text-3);
+  font-size: 12px;
+}

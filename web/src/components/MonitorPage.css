@@ -1,0 +1,214 @@
+.monitor-page {
+  /* 填满外壳内容区（滚动由 .shell-body 承担） */
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.monitor-page .topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 20px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.monitor-page .topbar .spacer {
+  flex: 1;
+}
+
+.monitor-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.monitor-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.monitor-stats .stat {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 14px 16px;
+}
+
+.monitor-stats .k {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.monitor-stats .v {
+  font-size: 20px;
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+.monitor-stats .u {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-3);
+  margin-left: 6px;
+}
+
+.ok-text {
+  color: var(--success);
+  font-size: 15px;
+}
+
+.err-text-inline {
+  color: var(--danger);
+  font-size: 15px;
+}
+
+.node-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 14px;
+}
+
+.node-card.offline {
+  opacity: 0.6;
+  border-color: var(--danger-border);
+}
+
+.nc-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.nc-head .spacer {
+  flex: 1;
+}
+
+.nc-name {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.badge {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: var(--r-full);
+  border: 1px solid transparent;
+}
+
+.badge-run {
+  background: var(--success-bg);
+  color: var(--success);
+  border-color: var(--success-dark);
+}
+
+.badge-off {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: var(--danger-border);
+}
+
+.nc-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.metric .mrow {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12.5px;
+  margin-bottom: 5px;
+}
+
+.metric .mk {
+  color: var(--text-3);
+}
+
+.metric .mv {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.metric .msub {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 4px;
+}
+
+.bar {
+  height: 5px;
+  border-radius: var(--r-full);
+  background: var(--bg-subtle);
+  overflow: hidden;
+}
+
+.bar > i {
+  display: block;
+  height: 100%;
+  border-radius: var(--r-full);
+  background: var(--accent-solid);
+  transition: width 0.3s;
+}
+
+.bar.warn > i {
+  background: var(--warning);
+}
+
+.bar.danger > i {
+  background: var(--danger);
+}
+
+.nc-instances {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.nci-title {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-bottom: 7px;
+}
+
+.nci-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.nci-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+}
+
+.dot-sm {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  flex: 0 0 6px;
+}
+
+.dot-sm.on {
+  background: var(--success);
+}
+
+.dot-sm.off {
+  background: var(--text-4);
+}
+
+.monitor-note {
+  margin-top: 18px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.7;
+  max-width: 900px;
+}

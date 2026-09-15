@@ -1,0 +1,264 @@
+.policy-panel {
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+  margin-top: 16px;
+}
+
+.policy-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.policy-head h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.policy-head .spacer {
+  flex: 1;
+}
+
+.policy-hint {
+  color: var(--text-3);
+  font-size: 12.5px;
+  line-height: 1.75;
+  margin: 8px 0 12px;
+}
+
+.policy-hint b {
+  color: var(--text-2);
+}
+
+/* 预设 */
+.policy-presets {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  font-size: 12.5px;
+}
+
+.preset-btn {
+  padding: 3px 10px;
+  font-size: 12px;
+  border-radius: var(--r-full);
+}
+
+/* 策略列表 */
+.policy-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.policy-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 12px 14px;
+}
+
+.policy-item.is-default {
+  border-color: var(--accent-solid);
+}
+
+.pi-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.pi-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 13.5px;
+  flex-wrap: wrap;
+}
+
+.tag-default {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: var(--r-full);
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid var(--accent-solid);
+}
+
+.tag-used {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: var(--r-full);
+  background: var(--bg-subtle);
+  color: var(--text-3);
+}
+
+.pi-desc {
+  font-size: 12.5px;
+  color: var(--accent-light);
+  margin-top: 5px;
+  line-height: 1.6;
+}
+
+.pi-meta {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-top: 4px;
+}
+
+.pi-meta b {
+  color: var(--text-2);
+}
+
+.pi-ops {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.pi-ops button {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* 编辑器 */
+.policy-editor {
+  margin-top: 14px;
+  background: var(--bg-base);
+  border: 1px solid var(--accent-solid);
+  border-radius: var(--r-lg);
+  padding: 14px 16px;
+}
+
+.policy-editor h5 {
+  margin: 0 0 12px;
+  font-size: 13.5px;
+  color: var(--accent);
+}
+
+.pe-row {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.policy-editor label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.policy-editor input[type='text'],
+.policy-editor input[type='number'],
+.policy-editor input:not([type]) {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  color: var(--text-2);
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.pe-remark {
+  margin-bottom: 12px;
+}
+
+/* 梯度表 */
+.pe-tiers {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.pe-tiers-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  margin-bottom: 8px;
+}
+
+.pe-tiers-head .spacer {
+  flex: 1;
+}
+
+.tier-table {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tier-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 80px;
+  gap: 10px;
+  align-items: center;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+.tier-header {
+  font-size: 11.5px;
+  color: var(--text-4);
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--bg-subtle);
+}
+
+.tier-row > span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.tier-empty {
+  font-size: 12px;
+  color: var(--warning);
+  padding: 4px 0;
+}
+
+.tier-preview {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--bg-subtle);
+  font-size: 12px;
+  color: var(--term-info);
+  line-height: 1.6;
+}
+
+.pe-flags {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.policy-editor .switch {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.pe-ops {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.btn-sm {
+  padding: 3px 9px;
+  font-size: 12px;
+}

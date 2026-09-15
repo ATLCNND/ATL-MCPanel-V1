@@ -1,0 +1,173 @@
+/* ============================================================================
+   公共组件样式 —— 跨页面复用的最小模式
+   ============================================================================
+
+   这里只放**确实被多处使用**的模式。此前它们在各组件 CSS 里各自复制了一份，
+   导致改一处要改多份、且容易漂移。
+
+   注意：本文件在 main.tsx 中于 tokens.css 之后、组件样式之前加载，
+   因此组件内的同名规则仍可覆盖（用于个例微调）。
+   ========================================================================== */
+
+/* ---- 布局辅助 ---- */
+.spacer {
+  flex: 1;
+}
+
+/* ---- 等宽文本（路径、ID、时间戳） ---- */
+/* 路径 / ID / 端口等标识文本，统一弱化显示 */
+.mono {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+/* ---- 状态标签 ---- */
+.status {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: var(--r-full);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.status-running {
+  background: var(--success-bg-2);
+  color: var(--success);
+}
+
+.status-stopped {
+  background: var(--bg-subtle);
+  color: var(--text-3);
+}
+
+/* 未知：拿不到实时状态（节点不可达）。刻意与 stopped 区分开 ——
+   "不知道"和"确实没在跑"对排障的含义完全不同，别让人以为隧道停了。 */
+.status-unknown {
+  background: var(--bg-subtle);
+  color: var(--text-3);
+  border-style: dashed;
+}
+
+/* ---- 复选框行（开关样式的一行文字 + 勾选框） ---- */
+.switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-3);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.switch input {
+  width: auto;
+}
+
+/* ---- 提示条 ---- */
+.error-banner {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid var(--danger-dark);
+  border-radius: var(--r);
+  padding: 8px 12px;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+.success-banner {
+  background: var(--success-bg);
+  color: var(--success);
+  border: 1px solid var(--success-dark);
+  border-radius: var(--r);
+  padding: 8px 12px;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+.warn-banner {
+  background: var(--warning-bg);
+  color: var(--warning);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--r);
+  padding: 8px 12px;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+/* ---- 弹窗遮罩 ----
+   只有一个名字：`.modal-mask`。需要压在别的弹窗之上时加 `.modal-mask-top`
+   （+100 的层叠），而不是另起一个类名。
+
+   历史：这里曾经有**两个**同类不同名的遮罩 —— `.modal-mask`(z 100) 与
+   `.modal-overlay`(z 200，只有 AssignmentsModal 用)。后者原先定义在
+   AccountModal.css 里，于是"删掉账户弹窗"会让授权弹窗的遮罩**静默失效**
+   （这个坑真踩过：删 AccountModal 时才发现，只能先把它搬进本文件）。
+   2026-09-15 合并成一个名字 + 一个修饰类，语义与层叠关系都不变。 */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  background: var(--mask);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+/* 需要盖在其它弹窗之上时用（例如实例列表里的"授权"弹窗可能与被删除确认
+   同时存在）。**不要**为了这个再复制一份遮罩样式。 */
+.modal-mask-top {
+  z-index: 200;
+}
+
+/* 弹窗内部的标题栏与提示条。
+   同样是从 AccountModal.css 搬过来的 —— AssignmentsModal 一直在用它们，
+   而它们只定义在那个文件里，删掉账户弹窗就会一起消失。 */
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+
+.modal-error {
+  color: var(--danger);
+  padding: 8px 16px;
+  font-size: 13px;
+}
+
+.modal-success {
+  color: var(--success);
+  padding: 8px 16px;
+  font-size: 13px;
+}
+
+/* ---- 只读标识（InstanceDetail 的只读权限提示） ---- */
+.readonly-hint {
+  color: var(--text-3);
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+/* ---- 节点卡片（节点管理与节点监控共用） ---- */
+.node-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 14px 16px;
+}
+
+/* ---- 页面工具栏（右对齐的操作按钮行，位于页面标题下方） ---- */
+.page-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.page-toolbar > .muted:first-child {
+  margin-right: auto;
+}

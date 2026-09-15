@@ -1,0 +1,23 @@
+[Unit]
+Description=ATL-MCPanel Daemon (节点守护进程)
+Documentation=https://github.com/ATLCNND/ATL-MCPanel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__INSTALL_DIR__
+ExecStart=__INSTALL_DIR__/bin/dsh-daemon -config __INSTALL_DIR__/config.yaml
+Restart=on-failure
+RestartSec=5
+
+# ⚠️ 必须是 process（而非默认的 control-group）。
+# KillMode=control-group 会在 Daemon 重启/停止时连同 Minecraft 子进程一起杀死，
+# 导致玩家掉线、存档可能损坏。设为 process 后仅 Daemon 自身被重启，
+# 实例进程得以保留并由新 Daemon 重新接管。
+KillMode=process
+
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

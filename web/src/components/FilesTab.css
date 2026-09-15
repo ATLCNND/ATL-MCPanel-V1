@@ -1,0 +1,521 @@
+/* ============================================================================
+   文件管理
+   ============================================================================ */
+
+.files-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* ---------------- 路径栏 ---------------- */
+
+.files-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.path-display {
+  font-family: var(--mono-ui);
+  font-size: 12.5px;
+  color: var(--text-2);
+  background: var(--bg-base);
+  padding: 4px 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;      /* 路径过长时优先保留末尾（更贴近当前目录） */
+  text-align: left;
+}
+
+.files-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.files-search input {
+  width: 220px;
+}
+
+.view-toggle {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+
+.view-toggle button {
+  border: none;
+  border-radius: 0;
+  background: var(--bg-base);
+  padding: 5px 10px;
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.view-toggle button.active {
+  background: var(--accent-bg-2);
+  color: var(--accent);
+}
+
+/* ---------------- 操作栏 ---------------- */
+
+.files-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: var(--bg-base);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+
+.files-actions button {
+  padding: 5px 11px;
+  font-size: 12.5px;
+}
+
+.files-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.act-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  margin: 0 3px;
+}
+
+/* ---------------- 提示条 ---------------- */
+
+.clipboard-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 16px;
+  background: var(--accent-bg);
+  border-bottom: 1px solid var(--accent-border);
+  font-size: 12.5px;
+  color: var(--text-2);
+  flex: 0 0 auto;
+}
+
+.clip-tag {
+  padding: 1px 8px;
+  border-radius: var(--r-full);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.clip-tag.cut {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.clip-tag.copy {
+  background: var(--accent-solid);
+  color: var(--text-on-accent);
+}
+
+.files-error {
+  background: var(--danger-bg);
+  color: var(--danger);
+  padding: 8px 16px;
+  font-size: 13px;
+  flex: 0 0 auto;
+}
+
+.files-msg {
+  background: var(--success-bg);
+  color: var(--success);
+  padding: 8px 16px;
+  font-size: 13px;
+  flex: 0 0 auto;
+}
+
+/* ---------------- 排队任务面板 ---------------- */
+
+.jobs-panel {
+  flex: 0 0 auto;
+  max-height: 240px;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface);
+}
+
+.jobs-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  position: sticky;
+  top: 0;
+  background: var(--bg-surface);
+  z-index: 1;
+}
+
+.jobs-head .muted {
+  font-size: 12px;
+}
+
+.jobs-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.jobs-list {
+  padding: 4px 0;
+}
+
+.job-row {
+  display: grid;
+  grid-template-columns: 46px minmax(80px, 1fr) 16px minmax(80px, 1fr) 190px minmax(90px, 150px) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--border);
+}
+
+.job-row:last-child {
+  border-bottom: none;
+}
+
+.job-row.state-failed {
+  background: var(--danger-bg);
+}
+
+.job-row.state-success {
+  opacity: 0.75;
+}
+
+.job-kind {
+  padding: 1px 7px;
+  border-radius: var(--r-full);
+  background: var(--accent-bg-2);
+  color: var(--accent);
+  font-size: 11px;
+  text-align: center;
+}
+
+.job-src,
+.job-dst {
+  font-family: var(--mono-ui);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-arrow {
+  color: var(--text-4);
+  text-align: center;
+}
+
+.job-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.job-progress .bar {
+  flex: 1;
+  height: 6px;
+  background: var(--bg-subtle);
+  border-radius: var(--r-full);
+  overflow: hidden;
+}
+
+.job-progress .fill {
+  height: 100%;
+  background: var(--accent-solid);
+  transition: width 0.3s ease;
+}
+
+.job-row.state-success .job-progress .fill {
+  background: var(--success);
+}
+
+.job-row.state-failed .job-progress .fill {
+  background: var(--danger);
+}
+
+.job-state {
+  font-size: 11.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+  min-width: 54px;
+}
+
+.job-msg {
+  color: var(--text-3);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------- 文件列表（列表视图） ---------------- */
+
+.files-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.files-list.list {
+  padding: 0 0 12px;
+}
+
+.files-list table {
+  width: 100%;
+  font-size: 13px;
+  border-collapse: collapse;
+}
+
+.files-list thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  padding: 8px 16px;
+  font-weight: 500;
+  color: var(--text-3);
+  font-size: 12px;
+  z-index: 1;
+}
+
+.files-list tbody td {
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.files-list tbody tr {
+  cursor: default;
+}
+
+.files-list tbody tr:hover td {
+  background: var(--bg-hover);
+}
+
+/* 选中态用品牌色：文件管理里"当前选中哪一项"必须一眼可见，
+   否则用户会对着错误的文件点删除 */
+.files-list tbody tr.selected td {
+  background: var(--accent-bg);
+  box-shadow: inset 2px 0 0 var(--accent-solid);
+}
+
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-1);
+}
+
+.file-icon {
+  width: 18px;
+  text-align: center;
+}
+
+.file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 560px;
+}
+
+/* ---------------- 文件列表（网格视图） ---------------- */
+
+.grid-wrap {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(122px, 1fr));
+  gap: 10px;
+  padding: 16px;
+}
+
+.grid-card {
+  padding: 12px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+  text-align: center;
+  cursor: default;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.grid-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-2, 0 2px 8px rgba(0, 0, 0, 0.08));
+}
+
+.grid-card.selected {
+  border-color: var(--accent-solid);
+  background: var(--accent-bg);
+}
+
+.grid-icon {
+  font-size: 30px;
+  line-height: 1.2;
+  margin-bottom: 6px;
+}
+
+.grid-name {
+  font-size: 12.5px;
+  word-break: break-all;
+  line-height: 1.4;
+  max-height: 2.8em;
+  overflow: hidden;
+}
+
+.grid-meta {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.files-tip {
+  flex: 0 0 auto;
+  padding: 8px 16px;
+  font-size: 12px;
+  color: var(--text-3);
+  background: var(--bg-subtle);
+  border-top: 1px solid var(--border);
+  line-height: 1.6;
+}
+
+/* ---------------- 输入对话框 ---------------- */
+
+.files-dialog {
+  width: 440px;
+  max-width: 92vw;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 18px 20px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+}
+
+.dlg-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 14px;
+  word-break: break-all;
+}
+
+.dlg-field {
+  display: block;
+  margin-bottom: 12px;
+}
+
+.dlg-field span {
+  display: block;
+  font-size: 12px;
+  color: var(--text-3);
+  margin-bottom: 5px;
+}
+
+.dlg-field input,
+.dlg-field select {
+  width: 100%;
+  font-family: var(--mono-ui);
+  font-size: 13px;
+}
+
+.dlg-note {
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.6;
+  margin-bottom: 14px;
+}
+
+.dlg-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ---------------- 文本编辑器 ---------------- */
+
+.editor-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--mask-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.editor {
+  width: 80%;
+  height: 80%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono-ui);
+  font-size: 13px;
+}
+
+.editor-header div {
+  display: flex;
+  gap: 8px;
+}
+
+.editor textarea {
+  flex: 1;
+  background: var(--bg-base);
+  color: var(--text-1);
+  border: none;
+  padding: 12px;
+  font-family: var(--mono-ui);
+  font-size: 13px;
+  resize: none;
+  outline: none;
+  line-height: 1.5;
+}
+
+/* 窄屏：压缩 / 解压等操作按钮换行显示，避免横向溢出 */
+@media (max-width: 1280px) {
+  .job-row {
+    grid-template-columns: 46px 1fr 16px 1fr 160px auto;
+  }
+  .job-msg {
+    display: none;
+  }
+  .files-search input {
+    width: 150px;
+  }
+}

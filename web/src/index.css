@@ -1,0 +1,99 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* 布局约定：
+   滚动由**外壳内容区**（.shell-body）承担，不是 body —— 这样左侧导航、
+   页面标题栏可以固定不动，只有内容区滚动，是后台系统的常见形态。
+
+   因此这里让 html/body/#root 精确占满视口且不滚动，把高度传到外壳。
+   注意：#root 必须能有确定高度，否则子元素的 height:100% 无处可依 —— 
+   这是此前"页面无法滚动"的根因之一（页面写死 100vh，超出部分被 body
+   的 overflow:hidden 裁掉且不可达）。 */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+  background: var(--bg-deep);
+  color: var(--text-1);
+  overflow: hidden;
+}
+
+button {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--text-1);
+  padding: 6px 14px;
+  border-radius: var(--r);
+  font-size: 14px;
+  transition: all 0.15s;
+}
+
+button:hover {
+  background: var(--border);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 主按钮统一用品牌强调色。
+   此前这里是绿色（#238636），而链接/选中态用蓝色（#1f6feb）——
+   全站存在两个"主色"，在浅色主题下会显得杂乱。 */
+button.primary {
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
+  color: var(--text-on-accent);
+}
+
+button.primary:hover {
+  background: var(--accent-solid-hover);
+  border-color: var(--accent-solid-hover);
+}
+
+button.danger {
+  background: var(--danger-dark);
+  border-color: var(--danger-dark);
+  color: var(--text-on-danger);
+}
+
+button.danger:hover {
+  background: var(--danger);
+}
+
+input {
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  color: var(--text-1);
+  padding: 8px 12px;
+  border-radius: var(--r);
+  font-size: 14px;
+  outline: none;
+}
+
+input:focus {
+  border-color: var(--accent);
+}
+
+select {
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  color: var(--text-1);
+  padding: 8px 12px;
+  border-radius: var(--r);
+  font-size: 14px;
+  outline: none;
+}
+
+select:focus {
+  border-color: var(--accent);
+}

@@ -1,0 +1,127 @@
+/* ============================================================================
+   控制台（对齐 docs/design/instance-detail-preview.html）
+   结构：标题栏 + 终端正文(420px) + 命令输入行
+   配色全部走 --term-* token；xterm 的配色由 JS 从同一批 token 读取
+   ========================================================================== */
+
+.console {
+  background: var(--term-bg);
+  border: 1px solid var(--term-border);
+  border-radius: var(--r-xl);
+  overflow: hidden;
+}
+
+/* ---- 标题栏 ---- */
+.console-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 14px;
+  background: var(--term-head);
+  border-bottom: 1px solid var(--term-border);
+}
+
+.console-head .t {
+  color: var(--term-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.console-status {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: var(--r-full);
+  border: 1px solid transparent;
+}
+
+.console-status.on {
+  color: var(--success);
+  background: var(--success-bg);
+  border-color: var(--success);
+}
+
+.console-status.off {
+  color: var(--text-3);
+  background: var(--bg-subtle);
+  border-color: var(--border);
+}
+
+/* ---- 终端正文 ----
+   高度对齐预览的 420px。xterm 需要明确像素高度才能正确 fit，
+   因此用固定高度而非百分比。 */
+.console-body {
+  height: 560px;
+  padding: 10px 12px;
+  overflow: hidden;
+}
+
+/* xterm 铺满容器，并让内层背景透明以透出 --term-bg */
+.console-body .xterm {
+  height: 100%;
+}
+
+.console-body .xterm-viewport {
+  background: transparent !important;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.console-body .xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+}
+
+.console-body .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: var(--r-full);
+}
+
+/* ---- 命令输入行 ---- */
+.console-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  background: var(--term-head);
+  border-top: 1px solid var(--term-border);
+}
+
+.console-input .p {
+  color: var(--term-accent);
+  font-family: var(--mono);
+  font-size: 13px;
+  flex: 0 0 auto;
+}
+
+.console-input input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--term-border);
+  border-radius: var(--r);
+  color: var(--term-text);
+  padding: 6px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  outline: none;
+}
+
+.console-input input:focus {
+  border-color: var(--accent-solid);
+}
+
+.console-input input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.console-input input::placeholder {
+  color: var(--term-time);
+}
+
+/* 窄屏略降高度，避免占满整屏 */
+@media (max-width: 1100px) {
+  .console-body {
+    height: 400px;
+  }
+}

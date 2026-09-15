@@ -1,0 +1,279 @@
+/* bare 模式（实例详情页自带三列布局）：自身作为滚动容器。
+   用 height 而非 min-height，配合 overflow-y:auto 才能让
+   左右两栏的 position:sticky 相对它生效。 */
+.shell-bare {
+  height: 100vh;
+  overflow-y: auto;
+  background: var(--bg-base);
+  padding: 20px 24px;
+}
+
+/* ============================================================================
+   应用外壳：左侧固定导航 + 右侧内容区
+   ========================================================================== */
+
+.shell {
+  display: flex;
+  /* 固定视口高度：滚动交给 .shell-body，侧边栏与页头因此保持不动 */
+  height: 100vh;
+  background: var(--bg-base);
+}
+
+/* ---------------- 侧边栏 ---------------- */
+.shell-nav {
+  flex: 0 0 224px;
+  width: 224px;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+
+.shell-logo {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-1);
+  padding: 0 8px;
+}
+
+/* 品牌标记改用 <BrandLogo>（图片 + CSS 圆角），
+   原来的 .shell-logo-mark（字母 A 方块）已废弃。
+   注意窄屏规则里 .shell-logo span:last-child 仍然有效 ——
+   标记现在是 img，文字仍是最后一个 span。 */
+
+/* ---------------- 导航菜单 ---------------- */
+.shell-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.shell-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: var(--r);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 13.5px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.shell-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.shell-item.active {
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.shell-item.subtle {
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+.shell-item-icon {
+  width: 16px;
+  text-align: center;
+  font-size: 12.5px;
+  opacity: 0.9;
+  flex: 0 0 16px;
+}
+
+.shell-item-count {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--r-full);
+  background: var(--danger);
+  color: var(--text-on-danger);
+  font-size: 11px;
+  font-weight: 600;
+  display: grid;
+  place-items: center;
+}
+
+/* ---------------- 底部：用户（主题切换已移到页头） ---------------- */
+.shell-nav-bottom {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 用户卡片：头像放大到 44px（原来是个 30px 的字母方块），
+   底部的内边距也放宽一点，免得大头像把卡片撑得很挤 */
+.shell-user {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-base);
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.shell-user:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent-border, var(--border));
+}
+
+.shell-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--r-full);
+  background: var(--accent-bg);
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+  font-size: 11.5px;
+  font-weight: 700;
+  flex: 0 0 30px;
+}
+
+.shell-user-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.shell-user-meta b {
+  font-size: 13px;
+  color: var(--text-1);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-user-meta small {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+/* ---------------- 内容区 ---------------- */
+.shell-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0; /* flex 子项默认 min-height:auto，不置 0 则无法收缩、内容会被撑破 */
+  display: flex;
+  flex-direction: column;
+}
+
+.shell-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px 28px 16px;
+}
+
+.shell-head-text h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  color: var(--text-1);
+}
+
+.shell-head-text p {
+  margin: 3px 0 0;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.shell-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+/* 唯一的滚动容器 */
+.shell-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 28px 28px;
+}
+
+/* ---------------- 页面切换过渡 ----------------
+   加在 .shell-body 的**直接子元素**上，而不是多包一层 wrapper：
+   各页面根元素都是 height:100% + flex 布局（.instances / .monitor-page / …），
+   多一层 div 会让它们的 height:100% 失去参照而整体垮掉。
+
+   CSS 动画只在元素挂载时播一次；切换页面时 React 本来就会卸载/挂载
+   不同类型的组件（→ 新 DOM 节点），所以动画自然只播一次，
+   页面内部 re-render 不会重播。
+
+   ⚠️ 实例详情页走的是 AppShell 的 bare 分支（.shell-bare），不经过 .shell-body，
+   所以**故意**吃不到这个动画 —— 它里面有 xterm 终端，
+   容器重挂载会丢滚动缓冲、并让 WebSocket 重连。 */
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.shell-body > * {
+  animation: page-in 0.2s ease-out;
+}
+
+/* 尊重系统的「减少动态效果」设置 */
+@media (prefers-reduced-motion: reduce) {
+  .shell-body > * {
+    animation: none;
+  }
+}
+
+/* 窄屏：侧边栏收成图标条 */
+@media (max-width: 1100px) {
+  .shell-nav {
+    flex: 0 0 60px;
+    width: 60px;
+    padding: 16px 8px;
+  }
+  .shell-logo span:last-child,
+  .shell-item span:not(.shell-item-icon):not(.shell-item-count),
+  .shell-user-meta {
+    display: none;
+  }
+  .shell-item {
+    justify-content: center;
+  }
+  .shell-head {
+    padding: 20px 18px 12px;
+  }
+  .shell-body {
+    padding: 0 18px 20px;
+  }
+}

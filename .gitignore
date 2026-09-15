@@ -1,0 +1,40 @@
+# 敏感信息——绝不提交
+docs/ENVIRONMENT.md
+*.pem
+*.key
+*.crt
+*.p12
+.env
+.env.*
+secrets/
+credentials/
+
+# Go
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+# 生成的 protobuf 代码**提交**（clone 后无需 protoc 即可编译）
+
+# Node / 前端
+node_modules/
+web/dist/
+web/.vite/
+
+# 运行时
+data/
+logs/
+*.log
+runtime/
+
+# 编辑器/系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# MC 相关（实例数据不进仓库）
+instances/
+mc-data/
+worlds/

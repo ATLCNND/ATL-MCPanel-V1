@@ -1,0 +1,243 @@
+/* ============================================================================
+   用户管理（含节点管理员授权）
+   ========================================================================== */
+
+.users-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.up-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 14px 16px 16px;
+}
+
+.up-card-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-1);
+  margin-bottom: 12px;
+  padding-left: 8px;
+  border-left: 3px solid var(--accent-solid);
+  line-height: 1.5;
+}
+
+.up-card-sub {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+.up-create {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.up-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 150px;
+}
+
+.up-field > span {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.up-field input,
+.up-field select {
+  font-size: 13px;
+}
+
+.up-create > button {
+  align-self: flex-start;
+  margin-top: 21px; /* 与输入框对齐（跳过上面的标签行） */
+}
+
+.up-hint {
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--text-3);
+}
+
+.up-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-top: 14px;
+}
+
+.up-table thead th {
+  text-align: left;
+  padding: 8px 10px;
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--text-3);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.up-table tbody td {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.up-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.up-sub {
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-top: 3px;
+}
+
+.up-role {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: var(--r-full);
+  font-size: 11px;
+  line-height: 17px;
+  border: 1px solid transparent;
+}
+
+.up-role.role-admin {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: var(--danger-border);
+}
+
+.up-role.role-nodeadmin {
+  background: var(--accent-bg-2);
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+
+.up-role.role-user {
+  background: var(--bg-subtle);
+  color: var(--text-3);
+  border-color: var(--border);
+}
+
+.up-all {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.up-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 节点标签自带一个"收回"按钮：授权/回收成对出现，不用再开一个弹窗 */
+.up-node-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 4px 1px 9px;
+  border-radius: var(--r-full);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+  font-size: 11.5px;
+  line-height: 19px;
+}
+
+.up-tag-x {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  padding: 0 4px;
+  font-size: 11px;
+  line-height: 1;
+  border-radius: var(--r-full);
+}
+
+.up-tag-x:hover {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.up-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.up-actions button {
+  padding: 3px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* 改账号类型的小下拉：与旁边的按钮同高同字号，别显得像另一套控件 */
+.up-role-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.up-role-edit select {
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+.up-role-edit select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+@media (max-width: 1000px) {
+  .up-field { min-width: 100%; }
+  .up-create > button { margin-top: 0; }
+}
+
+/* 端口配额标签：超出配额时标红，一眼看出谁超用了 */
+.up-port-tag {
+  display: inline-block;
+  padding: 1px 9px;
+  border-radius: var(--r-full);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 11.5px;
+  line-height: 19px;
+  font-variant-numeric: tabular-nums;
+}
+
+.up-port-tag.over {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.up-over {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.up-field.narrow {
+  min-width: 100px;
+}
+
+.up-role.role-nodeuser {
+  background: var(--accent-bg-2);
+  color: var(--accent);
+  border-color: var(--accent-border);
+}

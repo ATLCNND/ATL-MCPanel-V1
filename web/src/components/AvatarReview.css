@@ -1,0 +1,191 @@
+.avatar-review {
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+  margin-top: 16px;
+}
+
+.ar-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ar-head h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.ar-head .spacer {
+  flex: 1;
+}
+
+.ar-tabs {
+  display: inline-flex;
+  background: var(--bg-subtle);
+  border-radius: var(--r);
+  padding: 3px;
+  gap: 2px;
+}
+
+.ar-tabs button {
+  padding: 4px 12px;
+  font-size: 12.5px;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  border-radius: var(--r-sm);
+}
+
+.ar-tabs button.active {
+  background: var(--bg-surface);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.ar-hint {
+  color: var(--text-3);
+  font-size: 12.5px;
+  line-height: 1.75;
+  margin: 8px 0 12px;
+}
+
+.ar-empty {
+  color: var(--text-3);
+  font-size: 12.5px;
+  padding: 12px 0;
+}
+
+.ar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ar-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 10px 12px;
+}
+
+.ar-item.pending {
+  border-color: var(--accent-solid);
+}
+
+.ar-img {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--r-full);
+  object-fit: cover;
+  border: 1px solid var(--border);
+  flex: 0 0 48px;
+  background: var(--bg-subtle);
+}
+
+/* 加载失败时的占位：圆形底 + 极小的提示字。
+   尺寸必须与图片一致，否则整行会跳一下。 */
+.ar-img-failed {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 9px;
+  line-height: 1.25;
+  color: var(--text-3);
+  border-style: dashed;
+}
+
+.ar-meta {
+  flex: 1;
+  min-width: 160px;
+}
+
+.ar-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-1);
+  flex-wrap: wrap;
+}
+
+.ar-tag {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: var(--r-full);
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid var(--accent-solid);
+}
+
+.ar-status {
+  font-size: 10.5px;
+  padding: 1px 8px;
+  border-radius: var(--r-full);
+  border: 1px solid transparent;
+  font-weight: 600;
+}
+
+.ar-status.pending {
+  color: var(--warning);
+  background: var(--warning-bg);
+  border-color: var(--warning-border);
+}
+
+.ar-status.approved {
+  color: var(--success);
+  background: var(--success-bg);
+  border-color: var(--success);
+}
+
+.ar-status.rejected {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
+
+.ar-sub {
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-top: 3px;
+  word-break: break-all;
+}
+
+.ar-ops {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.ar-ops button {
+  padding: 5px 14px;
+  font-size: 12.5px;
+}
+
+.ar-reject {
+  flex: 1 0 100%;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.ar-reject input {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  padding: 6px 10px;
+}
+
+.ar-reject button {
+  padding: 6px 12px;
+  font-size: 12.5px;
+  flex: 0 0 auto;
+}

@@ -1,0 +1,95 @@
+.schedule-panel {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+
+.schedule-panel h4 {
+  color: var(--accent);
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+
+.schedule-hint {
+  color: var(--text-3);
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+
+.schedule-form {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.schedule-form label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+.schedule-form input[type="checkbox"] {
+  width: auto;
+}
+
+.schedule-status {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 12px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+/* 生效策略明细 */
+.policy-effective {
+  margin-top: 12px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 10px 14px;
+}
+.pe-line {
+  display: flex;
+  gap: 12px;
+  font-size: 12.5px;
+  padding: 4px 0;
+  border-top: 1px solid var(--bg-subtle);
+}
+.pe-line:first-child { border-top: none; }
+.pe-k {
+  flex: 0 0 76px;
+  color: var(--text-3);
+}
+.pe-v {
+  flex: 1;
+  color: var(--text-2);
+  min-width: 0;
+  word-break: break-all;
+}
+.pe-desc { color: var(--accent-light); }
+.pe-path {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+/* 策略下拉 */
+.schedule-form select {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  color: var(--text-2);
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  min-width: 160px;
+}
+
+.backup-calendar-wrap {
+  margin-top: 16px;
+}

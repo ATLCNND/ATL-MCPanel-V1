@@ -1,0 +1,236 @@
+.tunnels-page {
+  /* 填满外壳内容区（滚动由 .shell-body 承担） */
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.tunnels-page .topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 20px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.tunnels-page .topbar .spacer {
+  flex: 1;
+}
+
+.tunnels-error {
+  background: var(--danger-bg);
+  color: var(--danger);
+  padding: 10px 20px;
+  font-size: 13px;
+}
+
+.tunnels-success {
+  background: var(--success-bg);
+  color: var(--success);
+  padding: 10px 20px;
+  font-size: 13px;
+}
+
+.tunnels-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.tunnels-body .panel {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 16px;
+}
+
+.tunnels-body .panel h3 {
+  margin-bottom: 12px;
+  color: var(--accent);
+  font-size: 15px;
+}
+
+.form-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.form-row input {
+  flex: 1;
+  min-width: 110px;
+}
+
+.form-row select {
+  min-width: 160px;
+}
+
+.tunnels-body table {
+  width: 100%;
+  font-size: 13px;
+}
+
+.tunnels-body th,
+.tunnels-body td {
+  padding: 9px 10px;
+}
+
+.mono.small {
+  font-size: 11px;
+}
+
+/* 线路表格里的「对外域名」就地编辑：输入框 + 保存按钮 */
+.domain-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.domain-edit input {
+  /* 覆盖 .form-row input 的 flex:1 —— 它在表格里会把单元格撑变形 */
+  flex: 0 0 auto;
+  width: 190px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.domain-edit button {
+  padding: 3px 9px;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+/* 「未配置 → 实例页会显示节点 IP」这类提醒 */
+.err-text.small {
+  font-size: 11px;
+}
+
+.err-text {
+  color: var(--danger);
+  font-size: 11px;
+  margin-top: 3px;
+  max-width: 260px;
+}
+
+.status-pending {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.status-error {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.tunnels-hint {
+  margin-top: 12px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.panel-status {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+/* ---- 线路自检结果 ---- */
+
+.frps-row-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.frps-test {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 1.7;
+  /* 结果可能来自表格单元格，限宽避免把表格撑变形 */
+  max-width: 520px;
+  text-align: left;
+  white-space: normal;
+}
+
+.frps-test.ok {
+  background: var(--success-bg-2);
+  border-color: var(--success);
+  color: var(--text-1);
+}
+
+.frps-test.bad {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  color: var(--text-1);
+}
+
+.frps-test-head {
+  font-weight: 600;
+}
+
+.frps-test-steps {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.frps-test-steps code {
+  font-size: 11.5px;
+}
+
+.frps-test details {
+  margin-top: 6px;
+}
+
+.frps-test summary {
+  cursor: pointer;
+  color: var(--text-3);
+}
+
+/* 日志尾部：原样保留换行，超高时自己滚动，别把页面撑长 */
+.frps-test-log {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  max-height: 160px;
+  overflow: auto;
+  background: var(--bg-subtle);
+  border-radius: var(--r-sm);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.public-addr a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.public-addr a:hover {
+  text-decoration: underline;
+}
+
+.muted {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.tls-on {
+  color: var(--success);
+}
+
+.switch input {
+  width: auto;
+}
+

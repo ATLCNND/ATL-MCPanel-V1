@@ -1,0 +1,450 @@
+.instances {
+  /* 填满外壳内容区（滚动由 .shell-body 承担） */
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.logo {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.error-banner {
+  background: var(--danger-bg);
+  color: var(--danger);
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--danger-dark);
+}
+
+.create-form {
+  padding: 18px 22px 20px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.create-form h3 {
+  margin-bottom: 4px;
+  color: var(--accent);
+  font-size: 16px;
+}
+
+/* ---------------- 创建表单：带标签与说明 ---------------- */
+
+.cf-head {
+  margin-bottom: 16px;
+}
+
+.cf-head-note {
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.7;
+}
+
+.cf-head-note b {
+  color: var(--text-2);
+}
+
+/* 分区：把十几个参数按「是什么」分组，避免一屏平铺看不出层次 */
+.cf-section {
+  margin-bottom: 18px;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-base);
+}
+
+.cf-section-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 12px;
+  padding-left: 8px;
+  border-left: 3px solid var(--accent-solid);
+  line-height: 1.4;
+}
+
+/* 两列：说明文字需要横向空间，原来的 4 列会把每句都挤成三行 */
+.cf-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 18px;
+}
+
+@media (max-width: 1000px) {
+  .cf-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+.cf-field {
+  min-width: 0;
+}
+
+.cf-span2 {
+  grid-column: span 2;
+}
+
+@media (max-width: 1000px) {
+  .cf-span2 { grid-column: span 1; }
+}
+
+.cf-label {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-1);
+  margin-bottom: 5px;
+}
+
+.cf-req {
+  color: var(--danger);
+  font-style: normal;
+  margin-left: 3px;
+}
+
+/* 字段说明：常驻显示，不用 tooltip —— tooltip 在触屏上根本看不到，
+   而这里恰恰需要把"...与...的区别"讲清楚 */
+.cf-hint {
+  margin-top: 5px;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--text-3);
+}
+
+.cf-hint b {
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+.cf-hint code {
+  font-family: var(--mono-ui);
+  font-size: 11px;
+  background: var(--bg-subtle);
+  padding: 0 4px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+}
+
+.cf-bad {
+  color: var(--danger);
+  font-weight: 500;
+}
+
+.cf-field input,
+.cf-field select {
+  width: 100%;
+  font-size: 13px;
+}
+
+.cf-field input[spellcheck],
+.cf-field .mono {
+  font-family: var(--mono-ui);
+}
+
+.cf-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text-1);
+  cursor: pointer;
+}
+
+.cf-check input {
+  width: auto;
+  margin: 0;
+}
+
+/* 表单级提示（如"尚未登记任何节点"）。
+   此前这个类名一直没有样式定义，那段提示是以浏览器默认字号渲染的，
+   在一片 12px 的说明文字里反而最抢眼。 */
+.form-hint {
+  margin-top: 4px;
+  padding: 9px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--warning);
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--r);
+}
+
+/* 核心 jar：下拉选共享资源 + 需要时手填路径 */
+.cf-jar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ---------------- 删除确认 ---------------- */
+
+.del-dialog {
+  width: 460px;
+  max-width: 92vw;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 18px 20px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+}
+
+.del-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: var(--danger);
+  word-break: break-all;
+}
+
+.del-body {
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--text-2);
+}
+
+.del-body p {
+  margin-bottom: 10px;
+}
+
+.del-body code {
+  font-family: var(--mono-ui);
+  background: var(--bg-subtle);
+  padding: 0 4px;
+  border-radius: var(--r-sm);
+}
+
+/* 勾选项做成明显的危险样式：这是整个对话框里唯一有破坏性的开关 */
+.del-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--r);
+  cursor: pointer;
+  color: var(--text-1);
+}
+
+.del-check input {
+  margin-top: 2px;
+  width: auto;
+}
+
+.del-check em {
+  display: block;
+  font-style: normal;
+  font-size: 11.5px;
+  color: var(--danger);
+  margin-top: 2px;
+}
+
+.del-note {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.del-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.instance-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+th, td {
+  padding: 12px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--bg-subtle);
+}
+
+th {
+  background: var(--bg-base);
+  color: var(--text-3);
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.row-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.row-actions button {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.empty {
+  text-align: center;
+  color: var(--text-3);
+  padding: 40px;
+}
+/* ---------------- 实例卡片网格 ----------------
+   取代原先的表格：卡片更适合"少量实例、每个都要看状态"的场景，
+   且能给启动/停止等主要操作留出足够大的点击区域。 */
+.inst-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+}
+
+.inst-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.inst-card:hover {
+  border-color: var(--accent-solid);
+  box-shadow: var(--shadow-1, 0 1px 2px rgba(0, 0, 0, 0.06));
+}
+
+/* 运行中的卡片左侧加一道强调条，扫一眼就能区分状态 */
+.inst-card.running {
+  border-left: 3px solid var(--success);
+}
+
+.inst-card.stopped {
+  border-left: 3px solid var(--border-strong);
+}
+
+.inst-card.error {
+  border-left: 3px solid var(--danger);
+}
+
+.ic-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ic-avatar {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border-radius: var(--r-lg);
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid var(--accent-solid);
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.ic-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.ic-name {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ic-id {
+  font-size: 11.5px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ic-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-3);
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+
+.ic-tag {
+  padding: 1px 8px;
+  border-radius: var(--r-full);
+  background: var(--bg-subtle);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.ic-level {
+  margin-left: auto;
+  padding: 1px 8px;
+  border-radius: var(--r-full);
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.ic-ops {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: auto;
+}
+
+.ic-ops button {
+  padding: 5px 12px;
+  font-size: 12.5px;
+}
+
+.empty-state {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 13.5px;
+  background: var(--bg-surface);
+  border: 1px dashed var(--border);
+  border-radius: var(--r-xl);
+}

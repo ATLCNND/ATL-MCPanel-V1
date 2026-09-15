@@ -1,0 +1,63 @@
+.login-wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 用主色做一层极淡的径向光晕，避免整屏纯色显得平 */
+  background:
+    radial-gradient(circle at 50% 0%, var(--accent-bg), transparent 55%),
+    var(--bg-base);
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.login-box {
+  width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 40px 36px 30px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 22%);
+}
+
+/* 品牌标记：居中，下留一点呼吸 */
+.login-brand {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 2px;
+}
+
+.login-box h1 {
+  font-size: 26px;
+  text-align: center;
+  color: var(--accent);
+  margin: 0;
+  letter-spacing: -0.3px;
+}
+
+.login-box .subtitle {
+  text-align: center;
+  color: var(--text-3);
+  font-size: 13px;
+  margin: 0 0 8px;
+  line-height: 1.5;
+}
+
+.login-box .error {
+  color: var(--danger);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* 版本号：等宽字体、弱化，放在最底部当页脚 */
+.login-box .ver {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
+  text-align: center;
+  margin: 2px 0 0;
+  opacity: 0.75;
+}

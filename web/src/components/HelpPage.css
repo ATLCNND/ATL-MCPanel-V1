@@ -1,0 +1,188 @@
+/* 「公告与帮助」页 */
+
+.help-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 1100px;
+}
+
+.hp-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 16px 18px;
+}
+
+.hp-card-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+  margin-bottom: 12px;
+}
+
+.hp-card-sub {
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text-3);
+}
+
+/* 标题右侧的操作按钮（新建 / 编辑） */
+.hp-right {
+  margin-left: auto;
+}
+
+.hp-empty {
+  font-size: 12.5px;
+  color: var(--text-3);
+  line-height: 1.7;
+}
+
+.hp-hint {
+  font-size: 11.5px;
+  color: var(--text-3);
+  line-height: 1.7;
+}
+
+.hp-hint code {
+  font-family: var(--mono);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 0 4px;
+}
+
+/* ---------------- 编辑表单 ---------------- */
+
+.hp-form {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px;
+  margin-bottom: 14px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+}
+
+.hp-form textarea {
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.7;
+  resize: vertical;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* 帮助文档编辑器用等宽字体：写 Markdown 时对齐更清楚 */
+.hp-doc-editor {
+  font-family: var(--mono) !important;
+  font-size: 12.5px !important;
+}
+
+.hp-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+
+.hp-form-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+
+/* ---------------- 公告列表 ---------------- */
+
+.hp-anns {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.hp-ann {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--r);
+  padding: 11px 14px;
+  background: var(--bg-base);
+}
+
+/* 置顶的用主色左边条 + 淡底，扫一眼就能分出主次 */
+.hp-ann.pinned {
+  border-left-color: var(--accent-solid);
+  background: var(--accent-bg);
+}
+
+/* 草稿：整体压暗，提醒"这条用户看不到" */
+.hp-ann.draft {
+  opacity: 0.72;
+  border-style: dashed;
+}
+
+.hp-ann-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.hp-pin {
+  font-size: 11px;
+}
+
+.hp-ann-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.hp-draft {
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: var(--r-full);
+  background: var(--warning-bg);
+  color: var(--warning);
+  border: 1px solid var(--warning-border);
+}
+
+.hp-ann-time {
+  font-size: 11px;
+  color: var(--text-3);
+  font-family: var(--mono);
+}
+
+.hp-ann-ops {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.hp-ann-ops button {
+  padding: 3px 9px;
+  font-size: 11.5px;
+}
+
+.hp-ann-body {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 900px) {
+  .help-page {
+    max-width: none;
+  }
+  .hp-ann-time {
+    flex: 1 0 100%;
+  }
+  .hp-ann-ops {
+    margin-left: 0;
+    flex: 1 0 100%;
+  }
+}

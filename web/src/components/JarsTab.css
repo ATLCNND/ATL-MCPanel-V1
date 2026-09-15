@@ -1,0 +1,77 @@
+.jars-tab {
+  padding: 16px 20px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.jars-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.jars-bar h3 {
+  color: var(--accent);
+  font-size: 15px;
+}
+
+.jars-bar .spacer {
+  flex: 1;
+}
+
+.active-jar {
+  padding: 10px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  font-size: 13px;
+  margin-bottom: 12px;
+  color: var(--text-3);
+}
+
+.active-jar .mono {
+  color: var(--text-1);
+}
+
+.jars-table {
+  width: 100%;
+  font-size: 13px;
+}
+
+.jars-table th,
+.jars-table td {
+  padding: 10px;
+}
+
+.jars-table tr.is-active {
+  background: var(--success-bg);
+}
+
+.jars-note {
+  margin-top: 14px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.7;
+  max-width: 900px;
+}
+
+.warn-banner {
+  background: var(--warning-bg);
+  color: var(--warning);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--r);
+  padding: 8px 12px;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+.progress-banner {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid var(--accent-solid);
+  border-radius: var(--r);
+  padding: 8px 12px;
+  font-size: 13px;
+  margin-bottom: 10px;
+}

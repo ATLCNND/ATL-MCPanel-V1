@@ -1,0 +1,123 @@
+/* ============================================================================
+   任务页
+   ========================================================================== */
+
+.task-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+
+.task-card.off {
+  opacity: 0.75;
+}
+
+.task-card.muted-card {
+  background: transparent;
+  border-style: dashed;
+}
+
+.tc-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.tc-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-full);
+  background: var(--border-strong);
+  flex: 0 0 8px;
+}
+
+.tc-dot.on {
+  background: var(--success);
+}
+
+.tc-dot.off {
+  background: var(--border-strong);
+}
+
+.tc-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.tc-count {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.tc-err {
+  flex: 1 0 100%;
+  font-size: 11.5px;
+  color: var(--danger);
+}
+
+.tc-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.tc-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+}
+
+.tc-body > .tc-row:first-child {
+  border-top: none;
+}
+
+.tc-row .k {
+  color: var(--text-3);
+  flex: 0 0 auto;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tc-row b {
+  color: var(--text-1);
+  font-weight: 600;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.tc-desc {
+  font-weight: 500 !important;
+  color: var(--accent) !important;
+  line-height: 1.6;
+}
+
+.tc-empty {
+  font-size: 12.5px;
+  color: var(--text-3);
+  padding: 4px 0;
+  line-height: 1.7;
+}
+
+.tc-note {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--text-3);
+  line-height: 1.7;
+}
+
+.tc-note b {
+  color: var(--text-1);
+}

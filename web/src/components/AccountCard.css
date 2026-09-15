@@ -1,0 +1,176 @@
+/* ============================================================================
+   「我的账号」卡片
+   ========================================================================== */
+
+.acct-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 12px 10px;
+  margin-bottom: 12px;
+}
+
+.acct {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 4px 2px;
+  text-align: center;
+}
+
+/* 头像 + 右下角上传角标。
+   尺寸交给 Avatar 组件（内联 width/height），这里只管定位与角标。
+   头像从 52px 放大到 64px（用户反馈"再放大一些"）。 */
+.acct-avatar-box {
+  position: relative;
+  display: inline-block;
+  cursor: pointer;
+}
+
+.acct-avatar-box .av {
+  border: 2px solid var(--accent-solid);
+}
+
+.acct-avatar-box:hover .acct-avatar-cam {
+  background: var(--accent-solid-hover);
+}
+
+.acct-avatar-cam {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-full);
+  background: var(--accent-solid);
+  color: var(--text-on-accent);
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  line-height: 1;
+  border: 2px solid var(--bg-surface);
+  transition: background 0.15s;
+}
+
+.acct-name {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text-1);
+}
+
+.acct-role {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+/* 审核状态 */
+.acct-review,
+.acct-rejected {
+  font-size: 10.5px;
+  padding: 2px 9px;
+  border-radius: var(--r-full);
+  border: 1px solid transparent;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.acct-review {
+  color: var(--warning);
+  background: var(--warning-bg);
+  border-color: var(--warning-border);
+}
+
+.acct-rejected {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
+
+/* 两个统计格 */
+.acct-stats {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.acct-stats .as {
+  background: var(--bg-subtle);
+  border-radius: var(--r-lg);
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.acct-stats .as .k {
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.acct-stats .as .v {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+  margin-top: 1px;
+}
+
+.acct-stats .as .v small {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+
+/* 操作按钮 */
+.acct-ops {
+  width: 100%;
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.acct-btn {
+  flex: 1;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  border-radius: var(--r);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+}
+
+.acct-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.acct-btn.ghost {
+  flex: 0 0 56px;
+  color: var(--text-3);
+}
+
+.acct-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* 提示 */
+.acct-msg {
+  width: 100%;
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: left;
+  margin-top: 5px;
+  word-break: break-all;
+}
+
+.acct-msg.ok {
+  color: var(--success);
+}
+
+.acct-msg.err {
+  color: var(--danger);
+}

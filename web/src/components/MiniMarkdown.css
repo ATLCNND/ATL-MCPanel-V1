@@ -1,0 +1,73 @@
+/* MiniMarkdown 渲染结果的基础排版。
+   刻意保持克制：帮助文档是"读"的，字号与行距以可读为先。 */
+
+.md {
+  font-size: 13.5px;
+  line-height: 1.85;
+  color: var(--text-2);
+}
+
+.md > *:first-child {
+  margin-top: 0;
+}
+
+.md > *:last-child {
+  margin-bottom: 0;
+}
+
+.md h3,
+.md h4,
+.md h5 {
+  margin: 18px 0 8px;
+  color: var(--text-1);
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.md h3 {
+  font-size: 16px;
+}
+
+.md h4 {
+  font-size: 14.5px;
+}
+
+.md h5 {
+  font-size: 13.5px;
+  color: var(--text-2);
+}
+
+.md p {
+  margin: 9px 0;
+}
+
+.md ul,
+.md ol {
+  margin: 9px 0;
+  padding-left: 22px;
+}
+
+.md li {
+  margin: 4px 0;
+}
+
+.md strong {
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+.md code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 1px 5px;
+  color: var(--accent);
+}
+
+.md a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}

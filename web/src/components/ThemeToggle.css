@@ -1,0 +1,44 @@
+/* 深浅色切换按钮（页头右上角 / 实例页左栏 共用） */
+
+/* 尺寸刻意做得比普通次级按钮大一圈：它是个**全局**开关，
+   用户常常找不到（以前在侧边栏底部、又小又灰）。
+   加大 + 用主色描边 + 常显文字，让它一眼就能看到。 */
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border: 1px solid var(--accent-border, var(--border));
+  border-radius: var(--r);
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: 13.5px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.1s;
+}
+
+.theme-toggle:hover {
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
+  color: var(--text-on-accent);
+}
+
+.theme-toggle:active {
+  transform: scale(0.97);
+}
+
+.theme-toggle-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+
+/* 实例页左栏里是整行宽按钮，与 .vnav-item 对齐 */
+.theme-toggle.block {
+  width: 100%;
+  justify-content: flex-start;
+  margin-top: 6px;
+  padding: 9px 10px;
+  font-size: 13px;
+}

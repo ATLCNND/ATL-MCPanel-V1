@@ -1,0 +1,210 @@
+/* ============================================================================
+   设计 Token —— 全站唯一的颜色/尺度来源
+   ============================================================================
+
+   规则：**组件 CSS 里不允许出现硬编码颜色**，一律引用本文件的变量。
+   换肤、加主题、调色只需要改这一个文件。
+
+   主题通过 <html data-theme="dark|light"> 切换：
+     - dark  = 默认（GitHub 深色，与重构前完全一致）
+     - light = 品红粉浅色方案
+
+   命名约定：
+     --bg-*      背景（base 页面 / surface 卡片 / subtle 输入与悬浮）
+     --text-1..4 文字（1 最亮 → 4 最暗）
+     --border*   边框
+     --accent*   品牌强调色（链接、选中态、主按钮）
+     --success/warning/danger/info  语义色，各带 -bg / -border / -text 变体
+     --term-*    终端专用（终端整块换色，不跟随常规背景）
+   ========================================================================== */
+
+:root,
+[data-theme='dark'] {
+  /* ---- 背景 ---- */
+  --bg-base: #0d1117;
+  --bg-deep: #0f1419;
+  --bg-surface: #161b22;
+  --bg-subtle: #21262d;
+  --bg-hover: #21262d;
+  --bg-console: #0f1117;
+  --bg-console-head: #171a21;
+  --bg-console-border: #22262e;
+
+  /* ---- 边框 ---- */
+  --border: #30363d;
+  --border-strong: #6e7681;
+
+  /* ---- 文字 ---- */
+  --text-1: #e6edf3;
+  --text-2: #c9d1d9;
+  --text-3: #8b949e;
+  --text-4: #6e7681;
+
+  /* ---- 品牌强调：品红偏粉（深浅两种模式共用同一色相，保证品牌一致）----
+     深色底上使用**暗粉**：填充色取深酒玫瑰粉，观感沉稳、不刺眼。
+     配白字（对比约 8:1，远超 AA 要求）。
+     链接/选中态文字因为要落在深灰底上，需比填充色亮一档才可读，
+     因此是「填充暗、文字亮」的搭配。 */
+  --accent: #d4799f;
+  --accent-light: #e8a8c4;
+  --accent-solid: #9c1450;
+  --accent-solid-hover: #b3185e;
+  --accent-bg: rgba(156, 20, 80, 0.24);
+  --accent-bg-2: rgba(156, 20, 80, 0.34);
+  /* 淡粉描边：用于需要"粉色边框"但不应抢眼的场合
+     （如配置项卡片）。直接用 --accent-solid 作为大面积边框会过于强烈。 */
+  --accent-border: rgba(244, 114, 182, 0.38);
+  --text-on-accent: #ffffff;
+  /* 危险/成功底上的文字与之无关：红底绿底一律用白字 */
+  --text-on-danger: #ffffff;
+  --text-on-success: #ffffff;
+
+  /* ---- 语义：成功 ---- */
+  --success: #3fb950;
+  --success-dark: #238636;
+  --success-darker: #2ea043;
+  --success-bg: #0f2d17;
+  --success-bg-2: #0f3d1f;
+
+  /* ---- 语义：警告 ---- */
+  --warning: #d29922;
+  --warning-bg: #3d2f0f;
+  --warning-border: #9e6a03;
+
+  /* ---- 语义：危险 ---- */
+  --danger: #f85149;
+  --danger-dark: #da3633;
+  --danger-bg: #3d1d1d;
+  --danger-border: #6e2b2b;
+  --danger-text: #ffb3b0;
+
+  /* ---- 信息 ---- */
+  --info: #58a6ff;
+  --info-bg: #0d2c45;
+
+  /* ---- 终端 ----
+     警告行现在由 Daemon 加「黄底黑字」（见 daemon/grpcapi/console_format.go），
+     这两个 token 只用于**服务器自己输出 ANSI 黄色文字**的场合。
+     深色底上黄色文字本来就清楚，取一个明确的黄即可；
+     不要为了"加深"把它调成琥珀/褐色 —— 那样就不像黄色了。 */
+  --term-bg: #0f1117;
+  --term-head: #171a21;
+  --term-border: #22262e;
+  --term-text: #c9d1d9;
+  --term-time: #6b7280;
+  --term-info: #7ee787;
+  --term-warn: #e0ac25;
+  /* 亮黄（ANSI 93 / ESC[1;33m）。必须显式给值：不设的话 xterm 会落回
+     内置的 #ffff00 纯黄，深色终端上刺眼发糊、浅色终端上几乎看不见。 */
+  --term-warn-bright: #f2c94c;
+  --term-accent: #d4799f;
+
+  /* ---- 遮罩 ---- */
+  --mask: rgba(0, 0, 0, 0.6);
+  --mask-strong: rgba(0, 0, 0, 0.7);
+
+  /* ---- 尺度 ---- */
+  --r-sm: 4px;
+  --r: 6px;
+  --r-lg: 8px;
+  --r-xl: 12px;
+  --r-full: 999px;
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+
+  /* 界面用的等宽字体：优先选用字形更舒展、连字更克制的现代等宽字体，
+     都没有时回退到系统等宽。用于配置键名、值等需要"好看且对齐"的场合。 */
+  --mono-ui: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'SF Mono',
+    'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}
+
+/* ============================================================================
+   浅色主题 —— 品红偏粉
+   ============================================================================
+   品牌色相保持在品红/粉红区间（约 330°），通过高明度 + 中等饱和度呈现
+   「淡粉」观感；深色底上的主色需提亮一档才能保持醒目。
+   ========================================================================== */
+[data-theme='light'] {
+  /* ---- 背景 ---- */
+  --bg-base: #f8f8f8;
+  --bg-deep: #f0f0f0;
+  --bg-surface: #ffffff;
+  --bg-subtle: #f0f0f0;
+  --bg-hover: #f5f5f5;
+  --bg-console: #fdf2f8;
+  --bg-console-head: #fce7f3;
+  --bg-console-border: #fbcfe8;
+
+  /* ---- 边框 ---- */
+  --border: #e8e8e8;
+  --border-strong: #d8d8d8;
+
+  /* ---- 文字 ---- */
+  --text-1: #1f2328;
+  --text-2: #5b6570;
+  --text-3: #8b949e;
+  --text-4: #a8b0b8;
+  --text-on-accent: #ffffff;
+  --text-on-danger: #ffffff;
+  --text-on-success: #ffffff;
+
+  /* ---- 品牌强调：品红偏粉 ---- */
+  --accent: #be185d;
+  --accent-light: #db2777;
+  --accent-solid: #ec4899;
+  --accent-solid-hover: #db2777;
+  --accent-bg: #fdf2f8;
+  --accent-bg-2: #fce7f3;
+  --accent-border: #fbcfe8; /* 淡粉描边 */
+
+  /* ---- 语义：成功 ---- */
+  --success: #00a854;
+  --success-dark: #00874a;
+  --success-darker: #009a4d;
+  --success-bg: #e8f8f0;
+  --success-bg-2: #d8f0e5;
+
+  /* ---- 语义：警告 ---- */
+  --warning: #d97706;
+  --warning-bg: #fef6e7;
+  --warning-border: #f5d9a8;
+
+  /* ---- 语义：危险 ---- */
+  --danger: #dc2626;
+  --danger-dark: #b91c1c;
+  --danger-bg: #fef2f2;
+  --danger-border: #facaca;
+  --danger-text: #991b1b;
+
+  /* ---- 信息 ---- */
+  --info: #0a7ea4;
+  --info-bg: #e8f4f8;
+
+  /* ---- 终端：浅色主题下用淡粉底 + 黑字 ----
+     浅色底上"黄色文字"是个死结：纯黄在近白底上必然不可读（#f0b429 只有
+     1.4:1），能读的必然是琥珀/褐色。所以警告行改由 Daemon 加黄底黑字
+     （见 console_format.go），这里的 token 只用于服务器自己输出 ANSI 黄色
+     文字的场合 —— 那种情况优先保证可读，接受它偏褐。 */
+  --term-bg: #fdf2f8;
+  --term-head: #fce7f3;
+  --term-border: #fbcfe8;
+  --term-text: #1f2328;
+  --term-time: #9d8a96;
+  --term-info: #15803d;
+  --term-warn: #92400e;
+  /* 浅色终端里"亮黄"不能更亮（更亮 = 更看不清），
+     所以这里的 bright 取更深一档来表示强调 —— 与深色主题方向相反，是刻意为之。 */
+  --term-warn-bright: #7c2d12;
+  --term-accent: #be185d;
+
+  /* ---- 遮罩 ---- */
+  --mask: rgba(24, 24, 27, 0.42);
+  --mask-strong: rgba(24, 24, 27, 0.55);
+}

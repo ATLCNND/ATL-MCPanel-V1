@@ -1,0 +1,632 @@
+syntax = "proto3";
+
+package mcpanel;
+
+option go_package = "github.com/ATLCNND/ATL-MCPanel/internal/proto/mcpanel";
+
+// ============================================================
+// ATL-MCPanel 核心协议（Panel <-> Daemon gRPC）
+// Daemon 作为 gRPC Server，Panel 作为 gRPC Client 主动连接。
+// （也可改为双向：Panel 同时暴露控制指令流，但简化起见 Daemon 暴露服务，
+//   Panel 通过 stream 持续接收监控与日志。）
+// ============================================================
+
+// Daemon 暴露的服务
+service DaemonService {
+  // 握手/注册：Daemon 启动后向 Panel 上报自身信息（节点能力）
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+
+  // 心跳/状态上报
+  rpc Ping(PingRequest) returns (PingResponse);
+
+  // ---- 实例管理 ----
+  rpc CreateInstance(CreateInstanceRequest) returns (OperationResponse);
+  rpc StartInstance(InstanceRequest) returns (OperationResponse);
+  rpc StopInstance(InstanceRequest) returns (OperationResponse);   // 优雅停止（发 stop 命令，等待存档落盘）
+  rpc KillInstance(InstanceRequest) returns (OperationResponse);   // 强制关闭（SIGKILL，可能丢失未落盘数据）
+  rpc RestartInstance(InstanceRequest) returns (OperationResponse);
+  rpc DeleteInstance(DeleteInstanceRequest) returns (OperationResponse);
+  rpc GetInstanceStatus(InstanceRequest) returns (InstanceStatus);
+  rpc GetInstanceRuntime(InstanceRequest) returns (InstanceRuntime); // 运行时长 / 启停次数 / 磁盘用量
+
+  // 控制台：双向流（Panel 发命令，Daemon 回日志/输出）
+  rpc Console(stream ConsoleFrame) returns (stream ConsoleFrame);
+
+  // 监控数据流：Daemon -> Panel 持续推送
+  rpc StreamMetrics(InstanceRequest) returns (stream Metrics);
+
+  // ---- 文件管理（实例目录） ----
+  rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
+  rpc ReadFile(ReadFileRequest) returns (ReadFileResponse);
+  rpc WriteFile(WriteFileRequest) returns (OperationResponse);
+  rpc DeleteFile(FileRequest) returns (OperationResponse);
+  rpc Mkdir(MkdirRequest) returns (OperationResponse);
+  rpc RenameFile(RenameFileRequest) returns (OperationResponse);   // 重命名（同目录内改文件名）
+  rpc CopyFile(CopyFileRequest) returns (OperationResponse);       // 复制/移动（move=true 为移动，支持目录递归）
+  rpc SearchFiles(SearchFilesRequest) returns (ListFilesResponse); // 按名称递归搜索
+  rpc DownloadFile(DownloadFileRequest) returns (stream FileChunk); // 流式下载（不受 1MB 文本限制）
+  // 实例图标：节点按约定在实例目录里找 server-icon.png / icon.png 并流式回传。
+  // 文件名约定放在 Daemon 侧 —— 面板不该知道节点上的文件名，
+  // 也不用为此换成"面板猜文件名、失败了再猜另一个"的两次往返。
+  rpc GetInstanceIcon(InstanceRequest) returns (stream FileChunk);
+  rpc GetMetrics(InstanceRequest) returns (Metrics);
+
+  // ---- 排队任务（压缩/解压等重 IO 操作） ----
+  //
+  // 这类操作耗时可达数分钟，且大量占用磁盘 IO。若像普通请求那样同步执行，
+  // 既会拖住 HTTP 连接，也会让同一节点上的多个实例互相抢占资源。
+  // 因此统一提交到 Daemon 的公共任务队列，由固定数量的 worker 串行消费。
+  rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
+  rpc GetJob(JobRequest) returns (JobStatus);
+  rpc CancelJob(JobRequest) returns (OperationResponse);
+
+  // ---- 玩家总览（历史玩家 / 游戏时长） ----
+  rpc GetPlayerOverview(InstanceRequest) returns (PlayerOverviewResponse);
+
+  // ---- 实例指令（供定时任务下发，无需打开控制台） ----
+  rpc SendCommand(CommandRequest) returns (OperationResponse);
+
+  // ---- 节点共享资源（管理员统一上传，本节点实例复用） ----
+  rpc ListResources(EmptyRequest) returns (ListResourcesResponse);
+  rpc UploadResource(UploadResourceRequest) returns (OperationResponse);
+  rpc DeleteResource(DeleteResourceRequest) returns (OperationResponse);
+
+  // ---- 节点运行环境（实际安装的 JDK） ----
+  rpc ListJavaRuntimes(EmptyRequest) returns (ListJavaRuntimesResponse);
+
+  // 配置读写
+  rpc GetConfig(ConfigRequest) returns (ConfigResponse);
+  rpc SetConfig(ConfigRequest) returns (ConfigResponse);
+
+  // 核心 jar 管理
+  rpc UploadJar(UploadJarRequest) returns (OperationResponse);
+  rpc SetInstanceJar(SetInstanceJarRequest) returns (OperationResponse);
+  rpc ListJars(ListJarsRequest) returns (ListJarsResponse);
+
+  // 备份/回滚
+  rpc Backup(BackupRequest) returns (BackupResponse);
+  rpc Restore(RestoreRequest) returns (OperationResponse);
+  rpc ListBackups(ListBackupsRequest) returns (ListBackupsResponse);
+  rpc DeleteBackup(DeleteBackupRequest) returns (OperationResponse);
+
+  // ---- frp 隧道管理 ----
+  rpc ApplyTunnel(TunnelRequest) returns (OperationResponse);
+  rpc RemoveTunnel(TunnelRequest) returns (OperationResponse);
+  rpc ListTunnels(ListTunnelsRequest) returns (ListTunnelsResponse);
+  // 线路（frps）自检：在**本节点上**真的连一次并注册一个临时代理，随后撤掉。
+  // 放在 Daemon 侧而不是面板侧：以后真正跑 frpc 的是节点，只有从节点测才作数
+  //（面板能连通 ≠ 节点能连通）。
+  rpc TestFrps(TestFrpsRequest) returns (TestFrpsResponse);
+}
+
+// ============================================================
+// 通用消息
+// ============================================================
+
+// 操作结果
+message OperationResponse {
+  bool success = 1;
+  string message = 2;
+  string error = 3;         // 错误详情（success=false 时）
+  // code 给"客户端需要区别对待"的失败分类，例如 name_conflict。
+  // 面板据此返回 409 并询问用户是否覆盖，而不是笼统的 500。
+  // 用独立字段而不是让调用方去匹配 error 文案：文案会改，匹配会静默失效。
+  string code = 4;
+}
+
+// 实例标识
+message InstanceRequest {
+  string instance_id = 1;
+}
+
+// DeleteInstanceRequest 删除实例。
+//
+// 单独一个 message 而不是给 InstanceRequest 加字段：删除是唯一一个
+// 带"是否连文件一起删"这种危险选项的实例操作，混进通用请求里
+// 会让人以为其它操作也支持它。
+message DeleteInstanceRequest {
+  string instance_id = 1;
+  // remove_files 是否连同实例目录一起删除（世界存档、插件、jar、备份全部不可恢复）。
+  // 默认 false —— 只移除实例记录、保留文件，这是刻意的安全默认值。
+  bool remove_files = 2;
+}
+
+// ============================================================
+// 注册 / 心跳
+// ============================================================
+
+message RegisterRequest {
+  string node_id = 1;        // 节点唯一标识（Daemon 生成或配置）
+  string hostname = 2;
+  string os = 3;             // 如 "debian 13"
+  string arch = 4;           // amd64
+  int64 cpu_cores = 5;
+  int64 mem_total = 6;       // 字节
+  string version = 7;        // daemon 版本
+  repeated string java_versions = 8; // 已安装的 Java 版本
+  repeated string mc_installed = 9;  // 已安装的 MC 类型 (folia/paper)
+}
+
+message RegisterResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message PingRequest {
+  string node_id = 1;
+  int64 timestamp = 2;
+
+  // ---- 主机资源上报（供「节点监控」页展示与磁盘告警使用）----
+  double cpu_percent = 3;   // 整机 CPU 使用率（0-100）
+  int64  mem_used = 4;      // 已用内存（字节）
+  int64  mem_total = 5;     // 总内存（字节）
+  int64  disk_used = 6;     // 实例所在分区已用（字节）
+  int64  disk_total = 7;    // 实例所在分区总量（字节）
+  int64  backup_disk_used = 8;  // 备份所在分区已用（字节；与 disk_* 不同盘时可反映冷存储水位）
+  int64  backup_disk_total = 9; // 备份所在分区总量（字节）
+}
+
+message PingResponse {
+  int64 timestamp = 1;       // Panel 回显时间
+}
+
+// ============================================================
+// 实例创建与状态
+// ============================================================
+
+message CreateInstanceRequest {
+  string instance_id = 1;    // 面板生成的实例唯一 ID
+  string name = 2;
+  string mc_type = 3;        // 核心类型标识：folia/paper/bungeecord/velocity/forge/fabric/custom 等
+  string core_type = 11;     // 同上（语义化字段，与 mc_type 等价，前端用这个）
+  string java_version = 4;   // 如 "21"
+  int32 port = 5;            // 游戏端口
+  string max_mem = 6;        // 如 "2G"
+  string min_mem = 7;        // 如 "512M"
+  string eula = 8;           // 是否同意 EULA（"true"/"false"）
+  string mc_version = 9;     // 如 "1.21.4"
+  string jar_url = 10;       // jar 路径（Daemon 本地绝对路径）
+  string start_command = 12; // 自定义启动命令模板（可选）。为空则用默认 java -jar 模板
+                             // 支持占位符：{jar} {max_mem} {min_mem} {java} {dir}
+  int32 cpu_quota = 13;      // CPU 配额百分比（100 = 1 核；0 = 不限制）。由 Daemon 通过 cgroup 实施
+  string backup_dir = 14;    // 备份存放目录（留空则用节点配置的 backup_root，再退回实例目录下的 backups/）
+  string mem_limit = 15;     // cgroup 内存上限（如 "4G"；留空 = 不限制）。需比 -Xmx 留出堆外余量
+}
+
+message InstanceStatus {
+  string instance_id = 1;
+  string status = 2;         // running / stopped / starting / error
+  int32 pid = 3;
+  int64 started_at = 4;
+  string error = 5;
+  // 实例图标（实例目录下的 server-icon.png / icon.png）的修改时间（Unix 秒）。
+  // 0 = 没有可用图标。前端据此决定**要不要**去取图标，并把它当缓存击穿参数 ——
+  // 图标是由 <img src> 加载的（只能靠 ?token= 鉴权），没法带 If-None-Match 之类的头。
+  int64 icon_mtime = 6;
+}
+
+// 实例运行数据（供详情页右栏展示）
+message InstanceRuntime {
+  bool success = 1;
+  string instance_id = 2;
+  string status = 3;
+  int64 uptime_seconds = 4;   // 本次运行时长（秒）；未运行为 0
+  int64 last_start_at = 5;    // 最近一次启动的 Unix 时间戳
+  int32 start_count = 6;      // 累计开机次数
+  int32 stop_count = 7;       // 累计关机次数（含强制关闭）
+  int64 disk_used = 8;        // 实例目录占用（字节）
+  int64 disk_total = 9;       // 实例目录所在分区总量（字节）
+  int64 disk_free = 10;       // 分区剩余（字节）
+
+  // 网络吞吐（整机聚合，排除回环）
+  int64 net_rx_rate = 12;     // 下行速率（字节/秒）
+  int64 net_tx_rate = 13;     // 上行速率（字节/秒）
+  int64 net_rx_total = 14;    // 累计接收（字节，自开机起）
+  int64 net_tx_total = 15;    // 累计发送（字节）
+
+  // 两条"算出来了却没地方显示"的运行提示（空 = 正常）：
+  //   - java_note：期望的 JDK 没找到、回退到了 PATH 上的 java（"选了 17 却跑 21"）
+  //   - limit_warning：cgroup CPU 配额 / 内存上限应用失败的原因
+  // 都是"最近一次启动"的结果，因此只在启动之后才有值。
+  // 注意编号：16 已被 net_scope 占用（它在文件里排在 error 后面，容易看漏）。
+  string java_note = 17;
+  string limit_warning = 18;
+
+  string error = 11;
+  string net_scope = 16;      // node = 节点整机聚合；instance = 该实例隧道精确值
+}
+
+// ============================================================
+// 控制台流
+// ============================================================
+
+message ConsoleFrame {
+  enum Type {
+    UNKNOWN = 0;
+    COMMAND = 1;     // Panel -> Daemon：发送命令
+    OUTPUT = 2;      // Daemon -> Panel：stdout/stderr 输出
+    ATTACH = 3;      // Panel -> Daemon：打开/附加控制台
+    DETACH = 4;      // Panel -> Daemon：分离
+    STATUS = 5;      // Daemon -> Panel：状态通知（进程退出等）
+  }
+  Type type = 1;
+  string instance_id = 2;
+  string data = 3;           // 命令文本 或 输出文本
+  bool is_stdout = 4;        // OUTPUT 时区分 stdout/stderr
+  int64 timestamp = 5;
+}
+
+// ============================================================
+// 监控
+// ============================================================
+
+message Metrics {
+  string instance_id = 1;
+  double cpu_percent = 2;    // 进程 CPU 百分比
+  uint64 mem_used = 3;       // 字节
+  uint64 mem_total = 4;      // 字节
+  double tps = 5;            // 每秒 tick（如 19.9）
+  int32 players_online = 6;
+  int32 players_max = 7;
+  int64 timestamp = 8;       // unix 毫秒
+  // 进程当前线程数（取自 /proc/<pid>/status 的 Threads）。
+  // 与「CPU 配额」不是一回事：配额限的是 CPU **时间**，不是线程数；
+  // 这个值反映的是 JVM 实际开了多少线程（GC / Netty / 区块 IO 各占一批）。
+  int32 threads = 9;
+}
+
+// ============================================================
+// 配置
+// ============================================================
+
+message ConfigRequest {
+  string instance_id = 1;
+  string filename = 2;       // 如 server.properties / folia.yml
+}
+
+message ConfigResponse {
+  string filename = 1;
+  string content = 2;        // 原始文本内容
+}
+
+// ============================================================
+// 核心 jar 管理
+// ============================================================
+
+message UploadJarRequest {
+  string instance_id = 1;
+  string filename = 2;       // 目标文件名（如 folia-1.20.1.jar）
+  bytes content = 3;         // jar 二进制内容
+}
+
+message SetInstanceJarRequest {
+  string instance_id = 1;
+  string jar_path = 2;       // 相对实例目录的 jar 路径
+}
+
+message ListJarsRequest {
+  string instance_id = 1;
+}
+
+message JarInfo {
+  string filename = 1;
+  string path = 2;           // 相对实例目录
+  int64 size = 3;
+  bool active = 4;           // 是否为当前使用的核心
+}
+
+message ListJarsResponse {
+  bool success = 1;
+  string error = 2;
+  repeated JarInfo jars = 3;
+  string active_jar = 4;
+}
+
+// ============================================================
+// 备份 / 回滚
+// ============================================================
+
+message BackupRequest {
+  string instance_id = 1;
+  string name = 2;           // 备份名称（可选，自动生成）
+  bool include_config = 3;   // 是否含配置文件
+}
+
+message BackupResponse {
+  bool success = 1;
+  string backup_id = 2;
+  string message = 3;
+}
+
+message RestoreRequest {
+  string instance_id = 1;
+  string backup_id = 2;
+}
+
+message BackupInfo {
+  string backup_id = 1;
+  string name = 2;
+  int64 size = 3;         // 字节
+  int64 created_at = 4;   // unix 秒
+  bool include_config = 5;
+}
+
+message ListBackupsRequest {
+  string instance_id = 1;
+}
+
+message ListBackupsResponse {
+  bool success = 1;
+  string error = 2;
+  repeated BackupInfo backups = 3;
+}
+
+message DeleteBackupRequest {
+  string instance_id = 1;
+  string backup_id = 2;
+}
+
+// ============================================================
+// frp 隧道
+// ============================================================
+
+message TunnelRequest {
+  string instance_id = 1;
+  string tunnel_id = 2;
+  string protocol = 3;       // tcp / udp
+  int32 local_port = 4;      // 实例 VM 内部端口（MC 游戏端口）
+  int32 remote_port = 5;     // 公网 frps 端口
+  string frps_host = 6;
+  int32 frps_port = 7;       // frps 服务端口（如 7000）
+  string frps_token = 8;
+  bool enabled = 9;
+  string name = 10;          // 隧道显示名（用于 frp 代理名）
+  string display_domain = 11; // 对外展示的域名（管理员配置，可含端口）；为空则展示 IP:端口
+}
+
+message ListTunnelsRequest {
+  string instance_id = 1;
+}
+
+message TunnelInfo {
+  string tunnel_id = 1;
+  string protocol = 2;
+  int32 local_port = 3;
+  int32 remote_port = 4;
+  string display_domain = 11; // 管理员配置的对外域名（空表示未配置）
+  string status = 5;         // running / stopped / error
+  string error = 6;          // 异常原因（status=error 时）
+}
+
+message ListTunnelsResponse {
+  repeated TunnelInfo tunnels = 1;
+}
+
+// 线路自检的输入：管理员在「穿透管理」里填的那几个字段。
+// 允许在**保存之前**调用，所以配置是**传进来的**而不是按 id 查库。
+message TestFrpsRequest {
+  string host = 1;
+  int32 bind_port = 2;
+  string token = 3;
+  int32 port_start = 4;  // 端口段：自检会从中挑一个端口试注册
+  int32 port_end = 5;
+}
+
+// 线路自检的结果。分两步给出，便于定位问题出在哪一层：
+//   ① dial_ok  —— 节点到 host:bind_port 的 TCP 通不通
+//   ② register_ok —— frpc 能不能用这个 token 登录、并在端口段里占到一个端口
+message TestFrpsResponse {
+  bool success = 1;         // 整体结论（dial_ok && register_ok）
+  string error = 2;         // 失败时的一句话结论
+  bool dial_ok = 3;
+  int64 dial_ms = 4;        // 建立 TCP 连接的耗时（毫秒）
+  string dial_error = 5;
+  bool register_ok = 6;
+  int32 used_port = 7;      // 自检实际占用的远程端口（成功后立刻释放）
+  string register_error = 8;
+  string log_tail = 9;      // frpc 日志尾部，失败时给人看原始原因
+}
+
+// ============================================================
+// 文件管理
+// ============================================================
+
+message FileInfo {
+  string name = 1;
+  string path = 2;      // 相对实例根目录
+  bool is_dir = 3;
+  int64 size = 4;       // 字节
+  int64 mod_time = 5;   // unix 秒
+}
+
+message ListFilesRequest {
+  string instance_id = 1;
+  string path = 2;      // 相对路径，空/"/" 表示根目录
+}
+
+message ListFilesResponse {
+  bool success = 1;
+  string error = 2;
+  repeated FileInfo files = 3;
+}
+
+message ReadFileRequest {
+  string instance_id = 1;
+  string path = 2;
+}
+
+message ReadFileResponse {
+  bool success = 1;
+  string error = 2;
+  string content = 3;   // 文本内容（仅文本文件；二进制返回 base64 或报错）
+  int64 size = 4;
+}
+
+message WriteFileRequest {
+  string instance_id = 1;
+  string path = 2;
+  string content = 3;
+}
+
+message FileRequest {
+  string instance_id = 1;
+  string path = 2;
+}
+message MkdirRequest {
+  string instance_id = 1;
+  string path = 2;
+}
+
+message RenameFileRequest {
+  string instance_id = 1;
+  string path = 2;       // 原相对路径
+  string new_name = 3;   // 新文件名（仅名称，不含目录）
+}
+
+message CopyFileRequest {
+  string instance_id = 1;
+  string src = 2;        // 源相对路径
+  string dst = 3;        // 目标相对路径（含最终名称）
+  bool move = 4;         // true = 移动（剪切）；false = 复制
+  bool overwrite = 5;    // 目标已存在时是否覆盖
+}
+
+message SearchFilesRequest {
+  string instance_id = 1;
+  string path = 2;       // 搜索起点（空 = 实例根目录）
+  string keyword = 3;    // 名称关键字（大小写不敏感）
+  int32 limit = 4;       // 最大返回条数（0 → 200）
+}
+
+message DownloadFileRequest {
+  string instance_id = 1;
+  string path = 2;
+}
+
+// FileChunk 下载数据分片。
+// 用流式而非一次性返回：实例目录里的世界存档/模组包常有数百 MB，
+// 单条消息装不下（且会一次性吃掉 Daemon 与 Panel 的内存）。
+message FileChunk {
+  bytes data = 1;
+  int64 total = 2;   // 文件总大小（每个分片都带，便于前端显示进度）
+}
+
+// ============================================================
+// 排队任务（压缩 / 解压）
+// ============================================================
+
+message SubmitJobRequest {
+  string job_id = 1;        // 面板生成的全局唯一 ID（幂等键）
+  string instance_id = 2;
+  string kind = 3;          // compress / extract
+  string src = 4;           // 源相对路径（压缩：文件或目录；解压：压缩包）
+  string dst = 5;           // 目标相对路径
+  string format = 6;        // zip / tar.gz（留空则按扩展名推断）
+}
+
+message SubmitJobResponse {
+  bool success = 1;
+  string error = 2;
+  string job_id = 3;
+  int32 queue_position = 4;  // 前面还有几个任务（0 = 已开始或即将开始）
+}
+
+message JobRequest {
+  string job_id = 1;
+  string instance_id = 2;   // 取消时用于定位节点
+}
+
+message JobStatus {
+  string job_id = 1;
+  string instance_id = 2;
+  string kind = 3;
+  string state = 4;         // queued / running / success / failed / canceled / unknown
+  int32 progress = 5;       // 0-100
+  string message = 6;       // 当前阶段描述
+  string error = 7;
+  int64 started_at = 8;
+  int64 finished_at = 9;
+  int64 total_bytes = 10;   // 处理总字节数
+  int64 done_bytes = 11;    // 已处理字节数
+}
+
+// ============================================================
+// 玩家总览 / 实例指令
+// ============================================================
+
+message PlayerOverviewEntry {
+  string uuid = 1;
+  string name = 2;
+  int64 play_seconds = 3;   // 累计游戏时长（来自 world/stats/<uuid>.json）
+  bool online = 4;          // 当前在线
+  bool whitelisted = 5;
+  bool op = 6;
+  bool banned = 7;
+  bool has_data = 8;        // 是否存在世界数据（playerdata / stats）
+  int64 last_seen = 9;      // 最近一次记录到的时间（unix 秒；0 = 未知）
+  string source = 10;       // 数据来源：usercache / whitelist / stats / logs
+}
+
+message PlayerOverviewResponse {
+  bool success = 1;
+  string error = 2;
+  repeated PlayerOverviewEntry players = 3;
+  int32 online = 4;
+  int32 total = 5;
+  bool whitelist_enabled = 6;
+  string world_name = 7;
+}
+
+message CommandRequest {
+  string instance_id = 1;
+  string command = 2;   // 不含前导斜杠，例如 "say hello" / "stop"
+}
+
+// EmptyRequest 无参数请求。
+message EmptyRequest {}
+
+// ============================================================
+// 节点共享资源 / 运行环境
+// ============================================================
+
+message ResourceInfo {
+  string name = 1;      // 文件名
+  string path = 2;      // 节点上的绝对路径（实例的 jar 路径直接引用它）
+  int64 size = 3;
+  int64 mod_time = 4;   // unix 秒
+  // refs 引用该资源的实例 ID（Daemon 侧填充），删除前用于拦截
+  repeated string refs = 5;
+}
+
+message ListResourcesResponse {
+  bool success = 1;
+  string error = 2;
+  string dir = 3;                // 资源目录的绝对路径（便于管理员排查）
+  repeated ResourceInfo files = 4;
+}
+
+message UploadResourceRequest {
+  string filename = 1;
+  bytes content = 2;
+  bool overwrite = 3;            // 同名时是否覆盖
+}
+
+message DeleteResourceRequest {
+  string name = 1;
+  bool force = 4;                // 仍被实例引用时是否强制删除
+}
+
+message JavaRuntimeInfo {
+  string label = 1;    // 展示名（主版本号，如 "21"）
+  string path = 2;     // java 可执行文件绝对路径
+  string home = 3;     // JAVA_HOME
+  string version = 4;  // 完整版本串
+}
+
+message ListJavaRuntimesResponse {
+  bool success = 1;
+  string error = 2;
+  repeated JavaRuntimeInfo runtimes = 3;
+  // fallback 为 PATH 上的裸 java 路径（探测不到任何 JDK 时用它兜底）
+  string fallback = 4;
+}

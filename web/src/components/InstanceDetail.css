@@ -1,0 +1,815 @@
+/* ============================================================================
+   实例详情页：三列布局（严格对齐 docs/design/instance-detail-preview.html）
+   左＝全局导航 + 实例导航 + 我的账号
+   中＝页头 + 趋势图 + 标签内容
+   右＝实例信息(含公网域名) + 资源占用 + 运行时长 + 备份日历
+   ========================================================================== */
+
+.detail-shell {
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr) 268px;
+  gap: 16px;
+  align-items: start;
+}
+
+/* ---------------- 左栏 ---------------- */
+.detail-nav {
+  position: sticky;
+  top: 20px;
+}
+
+.back-link {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  margin-bottom: 10px;
+  background: transparent;
+  border: none;
+  border-radius: var(--r);
+  color: var(--text-3);
+  font-size: 12.5px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.back-link:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.side-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 12px 10px;
+  margin-bottom: 12px;
+}
+
+.side-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+  letter-spacing: 0.3px;
+  padding: 0 8px;
+  margin-bottom: 8px;
+}
+
+.side-card-title .hint2 {
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--text-4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.side-card-more {
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.vnav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.vnav-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 8px 4px;
+}
+
+.vnav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--r);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 13px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.vnav-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.vnav-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.vnav-item.active {
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* 全局导航的「展开全部 / 收起」开关（放在卡片标题右侧） */
+.nav-toggle {
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--text-3);
+}
+
+.nav-toggle:hover {
+  color: var(--accent);
+}
+
+.vnav-icon {
+  width: 15px;
+  text-align: center;
+  font-size: 12px;
+  opacity: 0.85;
+  flex: 0 0 15px;
+}
+
+.vnav-count {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.vnav-item.active .vnav-count {
+  color: var(--accent);
+}
+
+/* 账号卡 */
+.acct {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 4px 2px;
+  text-align: center;
+}
+
+/* 头像：预览中有描边，让它在白底卡片上更立体 */
+.acct-avatar {
+  width: 46px;
+  height: 46px;
+  font-size: 15px;
+  flex: 0 0 46px;
+  border: 2px solid var(--accent-solid);
+}
+
+.acct-name {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text-1);
+}
+
+.acct-role {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.acct-btn {
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  border-radius: var(--r);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+}
+
+.acct-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+/* ---------------- 中栏 ---------------- */
+.detail-center {
+  min-width: 0;
+}
+
+.center-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.center-head h2 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  color: var(--text-1);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.center-head p {
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+.center-ops {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+/* 小徽标 */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: var(--r-full);
+  border: 1px solid transparent;
+}
+
+.badge-run {
+  background: var(--success-bg);
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.badge-stop {
+  background: var(--bg-subtle);
+  color: var(--text-3);
+  border-color: var(--border);
+}
+
+/* 趋势图 */
+.charts {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.chart {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 12px 14px;
+}
+
+.chart .k {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.chart .v {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-1);
+  margin: 2px 0 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart .v em {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-3);
+  font-style: normal;
+}
+
+.spark {
+  display: block;
+  width: 100%;
+  height: 46px;
+}
+
+.spark polyline {
+  stroke: var(--accent-solid);
+}
+
+.spark.alt polyline {
+  stroke: var(--accent);
+}
+
+/* 同图第二条线（上下行速率）：只画线不填充，虚线 + 另一种颜色便于区分 */
+.spark .spark-line2 {
+  stroke: var(--success);
+  stroke-dasharray: 5 3;
+}
+
+/* 运行时长卡片里的两行小字（启动时间 / 开关机次数）。
+   它替代了原来那一格的曲线图，用文字补满高度。 */
+.chart-note {
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.7;
+}
+
+/* 运行提示（JDK 回退 / 资源限制没生效）：正常时不显示，一旦出现就要显眼 ——
+   这两条正是"界面看着配好了、实际没生效"的那类问题，颜色压过普通小字。 */
+.chart-note.warn-line {
+  color: var(--danger);
+}
+
+.tab-body {
+  min-width: 0;
+}
+
+/* ---------------- 右栏 ---------------- */
+.detail-side {
+  position: sticky;
+  top: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.detail-side .w {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 14px;
+}
+
+.w-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-3);
+  letter-spacing: 0.3px;
+  margin-bottom: 10px;
+}
+
+.w-ico {
+  color: var(--accent);
+}
+
+.widget-empty {
+  font-size: 12.5px;
+  color: var(--text-3);
+  padding: 4px 0;
+}
+
+/* 实例卡头部 */
+.inst-head-l {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.inst-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r-lg);
+  background: var(--accent-bg);
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 14px;
+  border: 1px solid var(--accent-solid);
+  flex: 0 0 34px;
+}
+
+.inst-name {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--text-1);
+}
+
+.inst-sub {
+  font-size: 11.5px;
+  color: var(--text-3);
+  font-family: var(--mono);
+}
+
+/* 公网域名 —— 实例的"门牌号"，是右栏最该一眼看到的强信息之一。
+   原来字号 12px，与正文一样大，在信息堆里淹没了，用户反馈"太小"。 */
+.domain {
+  margin-top: 12px;
+}
+
+.domain .lbl {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-bottom: 5px;
+}
+
+.domain .val {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: var(--accent);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-solid);
+  border-radius: var(--r);
+  padding: 8px 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 域名可能很长（含端口）：让文字换行，复制按钮不被挤走 */
+.domain .val > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.domain .copy {
+  opacity: 0.75;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 1px solid var(--accent-border, var(--accent-solid));
+  border-radius: var(--r-full);
+  transition: background 0.15s, color 0.15s, opacity 0.15s;
+}
+
+.domain .copy:hover {
+  opacity: 1;
+  background: var(--accent-solid);
+  color: var(--text-on-accent);
+}
+
+.domain .sync {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 6px;
+  line-height: 1.5;
+}
+
+/* 资源 */
+.res {
+  margin-bottom: 11px;
+}
+
+.res:last-child {
+  margin-bottom: 0;
+}
+
+.res-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 12px;
+  margin-bottom: 5px;
+}
+
+.res-top .k {
+  color: var(--text-3);
+}
+
+.res-top .v {
+  font-weight: 600;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.res-top .v em {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-3);
+  font-style: normal;
+}
+
+.res-note {
+  font-size: 10.5px;
+  color: var(--text-3);
+  margin-top: 5px;
+}
+
+/* 资源分配行：属于「静态配置」，与下面的实时占用区分开。
+   用品牌粉底色块 + 描边，一眼能看出这块讲的是"分到了多少"而不是"用了多少"，
+   与配置页的表单区保持同一套视觉语言。 */
+.res.alloc-row {
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--r);
+}
+
+.res.alloc-row .res-top {
+  margin-bottom: 3px;
+}
+
+.res.alloc-row .res-top .k {
+  color: var(--text-2);
+}
+
+.res.alloc-row .res-note {
+  margin-top: 0;
+  line-height: 1.5;
+}
+
+.bar {
+  height: 5px;
+  border-radius: var(--r-full);
+  background: var(--bg-subtle);
+  overflow: hidden;
+}
+
+.bar > i {
+  display: block;
+  height: 100%;
+  border-radius: var(--r-full);
+  background: var(--accent-solid);
+  transition: width 0.3s;
+}
+
+.bar > i.ok {
+  background: var(--success);
+}
+
+/* 运行时长原先在右栏，现在搬到控制台上方那一排（用 .chart / .chart-note），
+   所以 .uptime / .uptime-sub / .power / .pcell 这套样式已废弃，一并删掉 ——
+   留着只会在下次改样式时误导人以为还有东西在用。 */
+
+/* ---------------- 窄屏适配 ---------------- */
+@media (max-width: 1500px) {
+  .detail-shell {
+    grid-template-columns: 216px minmax(0, 1fr);
+  }
+  .detail-side {
+    display: none;
+  }
+}
+
+@media (max-width: 1100px) {
+  .detail-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .detail-nav {
+    position: static;
+  }
+  .charts {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------------- 强制关闭确认弹窗 ---------------- */
+.confirm-mask {
+  position: fixed;
+  inset: 0;
+  background: var(--mask-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.confirm-box {
+  width: min(520px, 92vw);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  overflow: hidden;
+}
+
+.confirm-head {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.confirm-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--danger);
+}
+
+.confirm-body {
+  padding: 16px 18px;
+  font-size: 13.5px;
+  line-height: 1.75;
+  color: var(--text-2);
+}
+
+.confirm-body p {
+  margin-bottom: 10px;
+}
+
+.confirm-warn {
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--r);
+  padding: 10px 12px;
+  color: var(--danger-text);
+  margin-bottom: 10px;
+}
+
+.confirm-hint {
+  color: var(--text-3);
+  font-size: 12.5px;
+  margin-bottom: 0 !important;
+}
+
+.confirm-foot {
+  padding: 14px 18px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ---------------- 趋势图网格背景 ----------------
+   没有参考线时，数值低时几条曲线会挤在底部，完全读不出量级。
+   网格用最弱的边框色，只在视觉上提供刻度感，不抢曲线。 */
+.spark-grid line {
+  stroke: var(--border);
+  stroke-width: 0.5;
+}
+
+.spark-grid .spark-base {
+  stroke: var(--border-strong);
+  stroke-width: 0.8;
+}
+
+/* 曲线下方填充，增强"这是一个量"的读数感 */
+.spark-area {
+  fill: var(--accent-solid);
+  opacity: 0.12;
+}
+
+.spark.alt .spark-area {
+  fill: var(--accent);
+  opacity: 0.12;
+}
+
+/* ---------------- 控制台下方信息模块 ----------------
+   原先控制台是固定 420px，下面留出大片空白。
+   这里用一排模块填充：网络吞吐（下行/上行/累计）与在线玩家。 */
+.console-modules {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.console-modules .mod {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 16px 18px;
+  min-width: 0;
+  /* 加高：原先 12px 内边距显得扁平，与中栏图表高度不协调 */
+  min-height: 116px;
+  display: flex;
+  flex-direction: column;
+}
+
+.mod-k {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.mod-v {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-1);
+  margin: 2px 0 4px;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mod-v em {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-3);
+  font-style: normal;
+}
+
+.mod-sub {
+  font-size: 11px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 模块内的图表撑满剩余空间，使各模块视觉高度一致 */
+.console-modules .chart-plot {
+  margin-top: auto;
+}
+
+/* 上下行速率：两个数值并排，配图例色块（图上是两条线，得让人分清哪条是哪条）。
+   色块颜色与 Spark 的两条线一一对应：↓ 实线主色、↑ 虚线绿色。 */
+.net-legend {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.net-legend .nl {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.net-legend .nl::before {
+  content: '';
+  width: 10px;
+  height: 2px;
+  border-radius: 1px;
+  flex: 0 0 10px;
+}
+
+.net-legend .nl-rx::before {
+  background: var(--accent-solid);
+}
+
+.net-legend .nl-tx::before {
+  /* 与 .spark-line2 的虚线对应，用 repeating 渐变做出虚线段的效果 */
+  background: repeating-linear-gradient(
+    to right,
+    var(--success) 0 4px,
+    transparent 4px 7px
+  );
+}
+
+.console-modules .chart-axis,
+.console-modules .chart-plot .spark {
+  height: 34px;
+}
+
+.console-modules .chart-axis {
+  flex: 0 0 44px;
+}
+
+@media (max-width: 1400px) {
+  .console-modules {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* ---------------- 图表 + Y 轴刻度 ----------------
+   SVG 用 preserveAspectRatio="none" 横向拉伸，内部写 <text> 会变形，
+   因此刻度用 HTML 绝对定位，与网格线共用同一套百分比映射。 */
+.chart-plot {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.chart-axis {
+  position: relative;
+  flex: 0 0 46px;
+  height: 46px;
+}
+
+.chart-axis .axis-label {
+  position: absolute;
+  right: 0;
+  transform: translateY(-50%);
+  font-size: 9.5px;
+  line-height: 1;
+  color: var(--text-4);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.chart-plot .spark {
+  flex: 1;
+  min-width: 0;
+  height: 46px;
+}
+
+/* 流量来源标注：区分"实例隧道精确值"与"节点整机聚合值"。
+   没有这个标注，用户无从判断数字代表什么范围。 */
+.k-scope {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: var(--r-full);
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+/* ---------------- 到期时间 ---------------- */
+
+/* 到期面板已搬到实例的「任务」标签页（见 ExpiryPanel.css）：
+   语义上它和定时开关机、定时备份是一类，而且右栏放不下一整行。
+   权限判断仍留在 InstanceDetail（canManageExpiry），只是不再在这里渲染。 */

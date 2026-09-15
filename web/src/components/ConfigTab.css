@@ -1,0 +1,207 @@
+/* ============================================================================
+   配置调整页（server.properties 等）
+   ========================================================================== */
+
+.config-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.config-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.config-error {
+  background: var(--danger-bg);
+  color: var(--danger);
+  padding: 8px 16px;
+  font-size: 13px;
+}
+
+.config-success {
+  background: var(--success-bg);
+  color: var(--success);
+  padding: 8px 16px;
+  font-size: 13px;
+}
+
+.config-hint {
+  padding: 8px 16px;
+  font-size: 12.5px;
+  color: var(--text-3);
+  background: var(--bg-subtle);
+}
+
+/* ---------------- 表单区：淡粉底 + 描边卡片 ----------------
+   配置项是一堆同构的键值行，用淡粉底把它们收拢成一块，
+   与周围的中性灰背景区分开，视线更容易聚焦。
+
+   底色取 --accent-bg-2 而不是更浅的 --accent-bg：后者（#fdf2f8）
+   与纯白的蓝通道只差 7 个色阶，普通显示器上会被看成"浅灰"而不是"淡粉"，
+   用户会以为样式没生效。 */
+.config-form {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+
+  background: var(--accent-bg-2);         /* 淡粉背景 */
+  border: 1px solid var(--accent-border); /* 淡粉描边 */
+  border-radius: var(--r-xl);
+
+  margin: 16px;
+  padding: 14px 16px;
+}
+
+.config-row {
+  display: grid;
+  grid-template-columns: minmax(200px, 320px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: center;
+
+  padding: 11px 14px;
+  margin-bottom: 8px;
+
+  /* 每行做成浅色卡片，与粉色底形成层次 */
+  background: var(--bg-surface);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-1, 0 1px 2px rgba(0, 0, 0, 0.04));
+
+  transition: box-shadow 0.15s, border-color 0.15s;
+}
+
+.config-row:last-child {
+  margin-bottom: 0;
+}
+
+.config-row:hover {
+  box-shadow: var(--shadow-2, 0 3px 10px rgba(0, 0, 0, 0.07));
+}
+
+/* ---------------- 键名 ----------------
+   配置键是英文标识符（spawn-protection、view-distance），等宽字体更清晰；
+   这里用一套字形更舒展的等宽栈替代默认回退。 */
+.config-key {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.config-key .key-name {
+  font-family: var(--mono-ui);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-key .key-desc {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+/* ---------------- 值 ----------------
+   值可能是路径 / ID / 数字 / 布尔，统一等宽保证字符对齐。 */
+.config-value input,
+.config-value select,
+.config-raw {
+  width: 100%;
+  font-family: var(--mono-ui);
+  font-size: 13.5px;
+  letter-spacing: -0.1px;
+}
+
+.config-value input {
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  color: var(--text-1);
+  padding: 7px 11px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.config-value input:focus {
+  border-color: var(--accent-solid);
+  box-shadow: 0 0 0 3px var(--accent-bg-2);
+}
+
+.config-value input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.config-value select {
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  color: var(--text-1);
+  padding: 7px 11px;
+}
+
+/* ---------------- 原始文本模式 ----------------
+   ⚠️ 这里必须给一个**确定的高度**，不能只写 flex:1。
+
+   原因：`.config-tab` 的父级（`.tab-body` / `.detail-center`）都是**自动高度**，
+   flex 容器没有可分配空间，而 `flex:1` 展开是 `flex:1 1 0%` ——
+   flex-basis 为 0 时连 `height` 都会被忽略，textarea 于是塌成浏览器默认行高
+   （实测只有 **77px ≈ 3 行**，而 server.properties 有 60 行，用户反馈"框太小"）。
+
+   改法：flex-basis 用 auto 让 height 生效，height 取"视口高度 − 上方那些东西"
+   （实测页头 + 页签栏 + 内边距约 240px），于是框会随窗口自适应伸缩；
+   窗口很矮时由 min-height 兜底。 */
+.config-raw {
+  flex: 1 1 auto;
+  height: calc(100vh - 240px);
+  min-height: 420px;
+  margin: 16px;
+  padding: 14px 16px;
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--r-xl);
+  color: var(--text-1);
+  line-height: 1.75;
+  resize: none;
+  outline: none;
+  tab-size: 2;
+  overflow: auto;
+  white-space: pre;
+}
+
+.config-raw:focus {
+  border-color: var(--accent-solid);
+}
+
+.config-form .empty {
+  text-align: center;
+  color: var(--text-3);
+  padding: 30px 0;
+  font-size: 13px;
+}
+
+/* 窄屏：键值改上下排列，避免键名列挤压输入框 */
+@media (max-width: 1100px) {
+  .config-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+}
+
+/* 矮窗口（笔记本横屏、分屏）不用额外处理：
+   `calc(100vh − 240px)` 变小时，上面的 min-height:420px 会接管，
+   页面整体滚动 —— 实测 760px 视口下仍是 420px（约 18 行），不会退回两行。 */
