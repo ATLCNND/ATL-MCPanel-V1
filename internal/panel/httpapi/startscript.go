@@ -27,7 +27,12 @@ type instanceSettings struct {
 	StartCommand string `json:"start_command"`
 }
 
-// readInstanceSettings 读取实例元数据（instance.json）。
+// readInstanceSettings 读取实例元数据。
+//
+// 文件的**物理位置**在平台状态目录（<state_dir>/<实例ID>/instance.json，root 0700）——
+// 它决定资源限制与接管行为，不能让实例用户改写，所以搬出了实例目录。
+// 但路径仍按"实例内路径"请求：Daemon 那边对 instance.json 做了只读虚拟映射
+// （见 grpcapi/file.go），于是这里与搬家之前完全一致，不必引入第二套数据来源。
 func (s *Server) readInstanceSettings(cli pb.DaemonServiceClient, instanceID string) (instanceSettings, error) {
 	var st instanceSettings
 	resp, err := cli.ReadFile(context.Background(), &pb.ReadFileRequest{
@@ -131,12 +136,12 @@ func generateStartScript(st instanceSettings, tunnelHint bool) string {
 // startScriptView 启动脚本状态视图。
 type startScriptView struct {
 	InstanceID  string `json:"instance_id"`
-	Mode        string `json:"mode"`         // start.sh / custom / default
-	ModeLabel   string `json:"mode_label"`   // 中文说明
-	Command     string `json:"command"`      // 实际会执行的命令
-	Template    string `json:"template"`     // 自定义命令模板（可能为空）
-	HasScript   bool   `json:"has_script"`   // 是否存在 start.sh
-	Script      string `json:"script"`       // start.sh 内容
+	Mode        string `json:"mode"`       // start.sh / custom / default
+	ModeLabel   string `json:"mode_label"` // 中文说明
+	Command     string `json:"command"`    // 实际会执行的命令
+	Template    string `json:"template"`   // 自定义命令模板（可能为空）
+	HasScript   bool   `json:"has_script"` // 是否存在 start.sh
+	Script      string `json:"script"`     // start.sh 内容
 	JarPath     string `json:"jar_path"`
 	MaxMem      string `json:"max_mem"`
 	MinMem      string `json:"min_mem"`

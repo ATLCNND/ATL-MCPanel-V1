@@ -76,12 +76,12 @@ func TestSafeJoinRejectsTraversal(t *testing.T) {
 	}
 
 	good := map[string]string{
-		"a.txt":       "a.txt",
-		"dir/b.txt":   "dir/b.txt",
-		"./c.txt":     "c.txt",
-		"a/./d.txt":   "a/d.txt",
-		"a..b.txt":    "a..b.txt", // 文件名里含 ".." 但不是路径段，应放行
-		"中文 名.txt": "中文 名.txt",
+		"a.txt":     "a.txt",
+		"dir/b.txt": "dir/b.txt",
+		"./c.txt":   "c.txt",
+		"a/./d.txt": "a/d.txt",
+		"a..b.txt":  "a..b.txt", // 文件名里含 ".." 但不是路径段，应放行
+		"中文 名.txt":  "中文 名.txt",
 	}
 	for name, wantRel := range good {
 		got, err := safeJoin(dst, name)
@@ -102,7 +102,7 @@ func TestExtractRejectsZipSlip(t *testing.T) {
 	dir := t.TempDir()
 	zipPath := filepath.Join(dir, "evil.zip")
 	writeZip(t, zipPath, map[string]string{
-		"ok.txt":       "fine",
+		"ok.txt":         "fine",
 		"../escaped.txt": "should not land here",
 	})
 

@@ -11,6 +11,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -20,6 +21,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -122,19 +124,92 @@ func generateCA() (*CA, error) {
 	}, nil
 }
 
-// IssueClientCert 为节点签发客户端证书，CN 使用节点名，有效期默认 3 年。
+// certNodeName 把节点名归一化成**可放进 X.509 的 ASCII 标识**。
+//
+// ---------------------------------------------------------------------------
+// 为什么需要它（2026-09-17 实测踩到）
+// ---------------------------------------------------------------------------
+// X.509 的 CommonName 与 DNS SAN 都必须能编码成 IA5String（即 ASCII）。
+// 节点名里只要有一个中文，x509.CreateCertificate 就直接失败：
+//
+//	x509: "HK测试8c8g10m" cannot be encoded as an IA5String
+//
+// 表现为**一键部署点了没反应，报一个和"节点名"毫无关系的错误**。
+// 而在中文环境下给节点起中文名是完全正常的用法，所以不该反过来要求用户改名字。
+//
+// ---------------------------------------------------------------------------
+// ⚠️ 签发与拨号必须共用这一个函数
+// ---------------------------------------------------------------------------
+// 节点证书的 DNS SAN 是 `certNodeName(名字)`，而面板连节点时会把
+// `certNodeName(名字)` 当作 TLS 的 ServerName 去校验（nodemgr → ClientTLSConfigWithName）。
+// 两边算出来必须是**同一个字符串**，否则 mTLS 校验必然失败 ——
+// 这也是为什么清洗逻辑放在 pki 包内部、由收发两端共用，而不是各自实现一份。
+//
+// 做过转换的名字会附上原名的短哈希：纯 ASCII 的名字原样使用，
+// 而 "测试1" / "測試1" 这类会被清成同一个前缀的名字，靠哈希区分开，避免
+// 两个节点的证书互相通过校验。
+func certNodeName(nodeName string) string {
+	s := strings.TrimSpace(nodeName)
+	if s == "" {
+		return ""
+	}
+
+	var b strings.Builder
+	prevDash := false
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+			prevDash = false
+		default:
+			// 其余字符（中文、空格、符号…）一律折叠成一个 '-'
+			if !prevDash {
+				b.WriteByte('-')
+				prevDash = true
+			}
+		}
+	}
+	out := strings.Trim(b.String(), "-._")
+
+	// 纯 ASCII 且长度合适 → 原样使用，保持可读性
+	if out == s && len(out) <= 63 {
+		return out
+	}
+	if out == "" {
+		out = "node"
+	}
+	sum := sha256.Sum256([]byte(s))
+	suffix := fmt.Sprintf("-%x", sum[:4]) // 9 个字符
+	if len(out) > 63-len(suffix) {
+		out = out[:63-len(suffix)]
+		out = strings.TrimRight(out, "-._")
+	}
+	if out == "" {
+		out = "node"
+	}
+	return out + suffix
+}
+
+// IssueClientCert 为节点签发客户端证书，CN 使用节点名（ASCII 化后），有效期默认 3 年。
 func (ca *CA) IssueClientCert(nodeName string) (certPEM, keyPEM []byte, err error) {
 	return ca.IssueClientCertWithTTL(nodeName, defaultCertTTL)
 }
 
 // IssueClientCertWithTTL 指定有效期的签发（节点证书，含 SAN = 节点名）。
+//
+// 节点名会先经过 certNodeName 归一化 —— 中文名、含空格的名字都能正常签发。
 func (ca *CA) IssueClientCertWithTTL(nodeName string, ttl time.Duration) (certPEM, keyPEM []byte, err error) {
 	if nodeName == "" {
 		return nil, nil, fmt.Errorf("节点名不能为空")
 	}
+	name := certNodeName(nodeName)
+	if name == "" {
+		return nil, nil, fmt.Errorf("节点名 %q 无法转换成可用的证书标识", nodeName)
+	}
 	return ca.issueCert(issueOptions{
-		commonName: nodeName,
-		dnsNames:   []string{nodeName},
+		commonName: name,
+		dnsNames:   []string{name},
 		// 同时用于双向通信：Daemon 作为服务端（Panel 调用它）与客户端（它连 Panel）
 		usages: []x509.ExtKeyUsage{
 			x509.ExtKeyUsageClientAuth,
@@ -176,12 +251,12 @@ func (ca *CA) PanelServerCert() (certPEM, keyPEM []byte, err error) {
 	}
 
 	c, k, err := ca.issueCert(issueOptions{
-		commonName:    PanelGRPCServerName,
-		dnsNames:      []string{PanelGRPCServerName, "localhost"},
-		ipAddresses:   []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
-		usages:        []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-		ttl:           defaultCertTTL,
-		organization:  "ATL-MCPanel",
+		commonName:   PanelGRPCServerName,
+		dnsNames:     []string{PanelGRPCServerName, "localhost"},
+		ipAddresses:  []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+		usages:       []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		ttl:          defaultCertTTL,
+		organization: "ATL-MCPanel",
 	})
 	if err != nil {
 		return nil, nil, err
@@ -275,13 +350,16 @@ func (ca *CA) ServerTLSConfigFor(certPEM, keyPEM []byte) (*tls.Config, error) {
 }
 
 // ClientTLSConfigWithName 构造客户端 mTLS 配置，并指定服务端校验名称。
+//
+// ⚠️ 这里的 serverName 也要走 certNodeName：节点证书的 SAN 就是按那个规则生成的，
+// 两边不一致的话 mTLS 必然校验失败（中文节点名前就是这么炸的）。
 func ClientTLSConfigWithName(caPEM, certPEM, keyPEM []byte, serverName string) (*tls.Config, error) {
 	cfg, err := ClientTLSConfig(caPEM, certPEM, keyPEM)
 	if err != nil {
 		return nil, err
 	}
 	if serverName != "" {
-		cfg.ServerName = serverName
+		cfg.ServerName = certNodeName(serverName)
 	}
 	return cfg, nil
 }

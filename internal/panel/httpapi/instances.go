@@ -53,7 +53,7 @@ type createInstanceReq struct {
 // instanceIDRe 实例 ID 的合法形态。
 //
 // 限制成这个字符集不是洁癖：实例 ID 会直接成为**节点上的目录名**
-//（`<instance_dir>/<ID>/`），放行 `../` 或 `/` 就能跳出实例根目录写文件。
+// （`<instance_dir>/<ID>/`），放行 `../` 或 `/` 就能跳出实例根目录写文件。
 // 同时排除大写也能避免"Linux 上建得出来、将来换到大小写不敏感的文件系统
 // 就撞车"这类问题。
 var instanceIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
@@ -247,7 +247,7 @@ func (s *Server) checkPortQuota(req createInstanceReq) error {
 // provisionInstanceTunnels 按创建请求里的 tunnels 申请公网端口并建立隧道。
 //
 // 前置条件：调用方已通过 checkPortQuota。这里只处理**分配阶段**的失败
-//（端口段耗尽、下发失败），那种情况不回滚实例 —— 实例本身是好的，
+// （端口段耗尽、下发失败），那种情况不回滚实例 —— 实例本身是好的，
 // 端口之后可以在实例页补开。
 //
 // 返回 (人类可读的摘要, 首个错误)。
@@ -288,8 +288,14 @@ func (s *Server) provisionInstanceTunnels(req createInstanceReq) (string, error)
 			}
 			continue
 		}
+		// 与**该节点上全部实例端口**冲突时避开：frps 与节点同机的话，
+		// remote_port 会和实例抢绑定，实例会以 "FAILED TO BIND TO PORT" 启动失败。
+		// 注意避开的是"整个节点上所有实例的端口"，不只是本实例自己的 ——
+		// 只避开自己的话，第二个实例的公网端口会落到第一个实例的游戏端口上，
+		// 把第一个实例挤掉（2026-09-17 建第二个实例时实测踩到）。
+		avoid := s.remotePortsToAvoid(frpsID, req.InstanceID)
 		for i := 0; i < want[frpsID]; i++ {
-			remote, err := s.allocRemotePort(frpsID, portStart, portEnd)
+			remote, err := s.allocRemotePortAvoiding(frpsID, portStart, portEnd, avoid)
 			if err != nil {
 				failed++
 				if firstErr == nil {
@@ -361,10 +367,10 @@ type instanceView struct {
 	// IconMtime 实例图标的修改时间（Unix 秒，0 = 没有图标）。
 	// 前端据此决定要不要请求 `/api/instances/{id}/icon`，并把它当缓存击穿参数
 	// —— 没有它的话列表页每行都会去请求一次注定 404 的图标。
-	IconMtime  int64  `json:"icon_mtime"`
-	Level      string `json:"level"`       // 当前用户对该实例的权限级别
-	CPUQuota   int    `json:"cpu_quota"`   // CPU 配额百分比（100 = 1 核；0 = 不限制）
-	MemLimit   string `json:"mem_limit"`   // cgroup 内存上限（空 = 不限制）
+	IconMtime    int64  `json:"icon_mtime"`
+	Level        string `json:"level"`         // 当前用户对该实例的权限级别
+	CPUQuota     int    `json:"cpu_quota"`     // CPU 配额百分比（100 = 1 核；0 = 不限制）
+	MemLimit     string `json:"mem_limit"`     // cgroup 内存上限（空 = 不限制）
 	DiskLimitMB  int64  `json:"disk_limit_mb"` // 磁盘软配额（MB，0 = 不限制）
 	DiskAutostop bool   `json:"disk_autostop"` // 超限自动停机
 	// 创建时按线路申请的穿透端口数：[{frps_id, count}]
@@ -376,11 +382,11 @@ type instanceView struct {
 		Count  int   `json:"count"`
 	} `json:"tunnels"`
 	// 到期控制
-	ExpiresAt     string `json:"expires_at"`          // RFC3339；空 = 永不到期
-	ExpiryDays    int    `json:"expiry_notice_days"`  // 提前多少天告警
-	ExpiryAutostop bool  `json:"expiry_autostop"`     // 到期是否自动停止
-	ExpiryState   string `json:"expiry_state"`        // none / active / soon / expired
-	ExpiryDaysLeft int   `json:"expiry_days_left"`    // 剩余天数（已到期为负）
+	ExpiresAt      string `json:"expires_at"`         // RFC3339；空 = 永不到期
+	ExpiryDays     int    `json:"expiry_notice_days"` // 提前多少天告警
+	ExpiryAutostop bool   `json:"expiry_autostop"`    // 到期是否自动停止
+	ExpiryState    string `json:"expiry_state"`       // none / active / soon / expired
+	ExpiryDaysLeft int    `json:"expiry_days_left"`   // 剩余天数（已到期为负）
 }
 
 func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {

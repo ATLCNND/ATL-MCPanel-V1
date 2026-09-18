@@ -14,6 +14,7 @@ func TestProtectedPaths(t *testing.T) {
 		"./frpc.toml",
 		"tunnels.json",
 		"frpc.pid",
+		"instance.json", // 实例元数据：面板侧才是权威，Daemon 这份只是建实例时的快照
 		"logs/frpc.log",
 		"/logs/frpc.log",
 	}
@@ -29,7 +30,7 @@ func TestProtectedPaths(t *testing.T) {
 		"logs/console.log",
 		"plugins/Essentials.jar",
 		"world/level.dat",
-		"frpc.toml.bak",   // 不是精确匹配
+		"frpc.toml.bak",        // 不是精确匹配
 		"backups/tunnels.json", // 仅根目录下的 tunnels.json 受保护
 		"",
 	}

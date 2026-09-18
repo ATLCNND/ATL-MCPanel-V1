@@ -238,10 +238,10 @@ func TestPlainLinesNeverTreatedAsContinuation(t *testing.T) {
 	hl := &consoleHighlighter{}
 	hl.line("[12:00:00 ERROR]: boom\n")
 	for _, in := range []string{
-		"at home with Steve\n",              // 没有前导空白
-		"Caused by something else\n",        // 不是 "Caused by:"
-		"[12:00:01 INFO]: at the beach\n",   // 正常日志行
-		"\t\tindented info line\n",          // 前导空白但不是 at/...
+		"at home with Steve\n",            // 没有前导空白
+		"Caused by something else\n",      // 不是 "Caused by:"
+		"[12:00:01 INFO]: at the beach\n", // 正常日志行
+		"\t\tindented info line\n",        // 前导空白但不是 at/...
 	} {
 		if got := hl.line(in); got != in {
 			t.Errorf("不该被当作续行却被涂：%q → %q", in, got)

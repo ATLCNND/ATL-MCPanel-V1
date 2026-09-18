@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/ATLCNND/ATL-MCPanel/internal/panel/auth"
 	"github.com/ATLCNND/ATL-MCPanel/internal/panel/db"
 	"github.com/ATLCNND/ATL-MCPanel/internal/panel/nodemgr"
@@ -302,25 +304,55 @@ func TestLoginRateLimitIntegration(t *testing.T) {
 		}
 	}
 
-	// 即使密码正确也应被限流
+	// 达到阈值后继续猜错 → 429（限流仍然生效）
 	code, body := doJSON(t, ts, "POST", "/api/auth/login", "", map[string]string{
-		"username": "admin", "password": "admin123",
+		"username": "admin", "password": "wrong",
 	})
 	if code != http.StatusTooManyRequests {
-		t.Errorf("触发限流后应 429，实际 %d body=%v", code, body)
+		t.Errorf("触发锁定后继续猜错应 429，实际 %d body=%v", code, body)
 	}
 	if body["error"] == nil {
 		t.Error("应返回错误说明")
 	}
 
+	// **正确密码必须能登录**，哪怕该账号正处于锁定窗口。
+	//
+	// 这是内测报告里的第 3 条：原来的实现在验密码之前就按用户名硬锁，
+	// 于是任何人只要知道用户名、隔一会儿发几个错密码，就能让这个账号
+	// （包括 admin）持续登录不了 —— 防护措施本身变成了 DoS 工具。
+	// 正确凭据不该被"防爆破"误伤：攻击者猜不到密码，放行正确密码
+	// 不会给他任何信息（他拿到的仍然是 429）。
+	code, body = doJSON(t, ts, "POST", "/api/auth/login", "", map[string]string{
+		"username": "admin", "password": "admin123",
+	})
+	if code != http.StatusOK {
+		t.Errorf("锁定窗口内用正确密码登录应成功（否则构成账号锁定 DoS），实际 %d body=%v", code, body)
+	}
+	if tok, _ := body["token"].(string); tok == "" {
+		t.Error("成功登录应返回 token")
+	}
+
 	// 账号维度限流不应波及其他账号（IP 维度阈值更宽松，此处未触发）
 	doJSON(t, ts, "POST", "/api/users", "", map[string]string{"username": "other", "password": "other123"})
-	// 注意：首个用户已存在，此处应 403（匿名无法创建）——仅用于确认请求未被限流中间件拦截
 	code, _ = doJSON(t, ts, "POST", "/api/auth/login", "", map[string]string{
 		"username": "other", "password": "other123",
 	})
 	if code == http.StatusTooManyRequests {
 		t.Error("其他账号不应被该账号的锁定牵连")
+	}
+}
+
+// dummyPasswordHash 必须是**合法**的 bcrypt 哈希。
+//
+// 它存在的意义是"用户不存在时也把 bcrypt 算一遍"，好让响应时间不泄露
+// 账号是否存在。常量写错（少一位、前缀不对）的话 CheckPassword 会在解析
+// 阶段立刻返回 —— 防护悄悄失效，而且没有任何症状。
+func TestDummyPasswordHashIsValidBcrypt(t *testing.T) {
+	if auth.CheckPassword(dummyPasswordHash, "anything") {
+		t.Fatal("占位哈希不可能匹配任何密码")
+	}
+	if _, err := bcrypt.Cost([]byte(dummyPasswordHash)); err != nil {
+		t.Fatalf("占位哈希不是合法的 bcrypt 哈希（%v）—— 响应时间会泄露账号是否存在", err)
 	}
 }
 

@@ -4,7 +4,7 @@ import {
   listUsers, createUser, deleteUser, changePassword, roleLabel, isNodeUser, listNodes,
   listNodeUsers, grantNodeUser, revokeNodeUser, NodeUserGrant,
   listFrps, listPortGrants, setPortGrant, deletePortGrant, FrpsServer,
-  setUserRole, currentUser,
+  setUserRole, isCurrentUser, renameUser, updateCurrentUsername,
 } from '../api'
 import './UsersPage.css'
 
@@ -117,6 +117,28 @@ export default function UsersPage() {
     run(() => changePassword('', pw, username))
   }
 
+  /**
+   * 改用户名。
+   *
+   * 这里是管理员改**别人**（或自己）的登录名。改名之所以安全，是因为
+   * 用户身份早已不是用户名 —— 后端鉴权用 UID，授权表、端口配额也全按
+   * user_id 存，所以改完名不会让任何关联错位。
+   *
+   * 唯一要顺手处理的是**改自己**的情况：本地登录态里存着用户名，
+   * 不更新的话界面右上角会一直显示旧名字。
+   */
+  const renameAccount = (u: UserInfo) => {
+    const n = prompt(`把「${u.username}」的用户名改为（UID ${u.id} 不变）：`, u.username)
+    if (n === null) return
+    const name = n.trim()
+    if (!name || name === u.username) return
+    run(async () => {
+      const r = await renameUser(u.id, name)
+      if (isCurrentUser(u)) updateCurrentUsername(name)
+      return r
+    })
+  }
+
   // 改账号类型。
   //
   // 两个提示都不能省：
@@ -145,8 +167,14 @@ export default function UsersPage() {
     run(() => setPortGrant(quotaUser.trim(), Number(quotaLine), n))
   }
 
-  const nodesOf = (username: string) => grants.filter((g) => g.username === username)
-  const portsOf = (username: string) => portGrants.filter((g) => g.username === username)
+  // 授权与配额一律按 **UID** 匹配，不按用户名。
+  //
+  // 按用户名匹配看着也能用（后端返回的授权行里同样带当前用户名），
+  // 但那是在依赖"两个接口返回的名字恰好一致"—— 用户一改名，
+  // 只要有一处没刷新，这一行就会显示成"未分配"，而数据其实好端端在库里。
+  // UID 不会变，用它匹配才是把关系说清楚。
+  const nodesOf = (userId: number) => grants.filter((g) => g.user_id === userId)
+  const portsOf = (userId: number) => portGrants.filter((g) => g.user_id === userId)
 
   return (
     <div className="users-page">
@@ -297,8 +325,9 @@ export default function UsersPage() {
           </thead>
           <tbody>
             {users.map((u) => {
-              const mine = nodesOf(u.username)
-              const ports = portsOf(u.username)
+              const mine = nodesOf(u.id)
+              const ports = portsOf(u.id)
+              const self = isCurrentUser(u)
               return (
                 <tr key={u.id}>
                   <td>
@@ -356,8 +385,8 @@ export default function UsersPage() {
                         <span>角色</span>
                         <select
                           value={isNodeUser(u.role) ? 'nodeuser' : u.role}
-                          disabled={busy || u.username === currentUser()?.username}
-                          title={u.username === currentUser()?.username
+                          disabled={busy || self}
+                          title={self
                             ? '不能修改自己的角色'
                             : '改完该用户重新登录后生效'}
                           onChange={(e) => changeRole(u, e.target.value)}
@@ -367,6 +396,7 @@ export default function UsersPage() {
                           <option value="admin">总管理员</option>
                         </select>
                       </label>
+                      <button onClick={() => renameAccount(u)} disabled={busy}>改名</button>
                       <button onClick={() => resetPw(u.username)} disabled={busy}>重置密码</button>
                       {u.role !== 'admin' && (
                         <button className="danger" onClick={() => removeUser(u.id, u.username)} disabled={busy}>

@@ -36,9 +36,9 @@ type NodeProbe func(nodeID int64, nodeName string) (online bool, freeDiskMB int6
 
 // Options 调度器配置。
 type Options struct {
-	DB           *sql.DB
-	Logger       *slog.Logger
-	Backup       BackupRunner
+	DB            *sql.DB
+	Logger        *slog.Logger
+	Backup        BackupRunner
 	InstanceProbe HealthProbe
 	// MetricsSampler 采样一个实例的实时指标。由 httpapi 注入（需要访问 Daemon）。
 	MetricsSampler MetricsSampler
@@ -50,7 +50,7 @@ type Options struct {
 	// 具体怎么调 Daemon 属于接口层的知识。
 	TaskRunner func(taskID int64) error
 
-	NodeProbe    NodeProbe
+	NodeProbe NodeProbe
 
 	// 磁盘告警阈值（MB）
 	DiskWarnMB int64
@@ -136,11 +136,11 @@ func (s *Scheduler) checkExpiry(ctx context.Context) {
 		return
 	}
 	type item struct {
-		id        string
-		expires   time.Time
-		notice    int
-		autostop  bool
-		status    string
+		id       string
+		expires  time.Time
+		notice   int
+		autostop bool
+		status   string
 	}
 	var list []item
 	for rows.Next() {

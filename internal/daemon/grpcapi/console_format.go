@@ -4,32 +4,20 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/ATLCNND/ATL-MCPanel/internal/consolefmt"
 )
 
 // 控制台按日志级别整行涂底色。
 //
-// 为什么用底色而不是改字的颜色：
-// 黄色是高明度色，当**文字色**用时，要么在浅色终端上糊成一片（#b45309 只有
-// 4.6:1），要么为了可读而加深成琥珀/褐色 —— 结果就是"看着不像黄色"。
-// 把黄色放到**底色**上就绕开了这个矛盾：底色不需要和背景"比亮"，
-// 它本身就是一块色块，可以一路保持饱和的黄；文字用近黑色，
-// 对比度反而比任何黄色文字都高（9.5:1，达到 AAA）。红色同理。
-//
-// 用 24 位真彩（SGR 38;2 / 48;2）而不是调色板槽位（ESC[30;43m）：
-// 调色板槽位会被 xterm 主题里的 black/yellow 定义改写，而 black 槽位
-// 必须留给服务器自己输出的黑色文字（映射成可读的浅灰），
-// 两者会互相打架 —— 之前 brightYellow 落回内置 #ffff00 就是这个坑。
+// 配色与级别常量放在 internal/consolefmt：那里是 Daemon（涂色）与
+// Panel（转发时给每行标级别，供前端筛选）**共用**的一份定义，
+// 详细取舍见该包注释。这里只做"识别 + 涂色"。
 const (
-	// ansiWarnBand 近黑字（#1a1408）+ 饱和黄底（#e6b422），文字对比度 9.51:1
-	ansiWarnBand = "\x1b[38;2;26;20;8m\x1b[48;2;230;180;34m"
-	// ansiErrorBand 白字（#ffffff）+ 红底（#c22f22），文字对比度 5.64:1
-	ansiErrorBand = "\x1b[38;2;255;255;255m\x1b[48;2;194;47;34m"
-
-	// ansiEraseToEOL 用当前底色把该行剩余部分填满 —— 这才是"整行通栏"的关键。
-	// 只用底色包住文字的话，底色只覆盖字符串本身（实测占行宽 69%），
-	// 看起来像记号笔涂了一道，而不是日志查看器里那种整行高亮。
-	ansiEraseToEOL = "\x1b[K"
-	ansiSGRReset   = "\x1b[0m"
+	ansiWarnBand   = consolefmt.AnsiWarnBand
+	ansiErrorBand  = consolefmt.AnsiErrorBand
+	ansiEraseToEOL = consolefmt.AnsiEraseToEOL
+	ansiSGRReset   = consolefmt.AnsiSGRReset
 )
 
 // consoleRule 一种级别的识别规则与配色。
@@ -41,8 +29,8 @@ type consoleRule struct {
 
 // 匹配顺序即优先级：错误在前，一行同时命中两者时按更严重的处理。
 var consoleRules = []consoleRule{
-	{level: "error", re: buildLevelRe(`ERROR|SEVERE|FATAL`), band: ansiErrorBand},
-	{level: "warn", re: buildLevelRe(`WARN|WARNING`), band: ansiWarnBand},
+	{level: consolefmt.LevelError, re: buildLevelRe(`ERROR|SEVERE|FATAL`), band: ansiErrorBand},
+	{level: consolefmt.LevelWarn, re: buildLevelRe(`WARN|WARNING`), band: ansiWarnBand},
 }
 
 // buildLevelRe 按级别名构造识别规则。
@@ -121,7 +109,7 @@ var stackContinuationRe = regexp.MustCompile(
 //
 // 为什么必须是有状态的：堆栈续行只能靠"紧跟在错误行之后"来识别，
 // 单行函数拿不到这个上下文。每条控制台流各持一个实例
-//（历史回放与实时输出是两条独立的流，各自从头开始判断）。
+// （历史回放与实时输出是两条独立的流，各自从头开始判断）。
 type consoleHighlighter struct {
 	contLeft int    // 还能给几条续行涂底色；0 = 不在异常块里
 	band     string // 续行沿用触发它的那行的底色

@@ -13,7 +13,7 @@ type nodeMonitorView struct {
 	ID          int64   `json:"id"`
 	Name        string  `json:"name"`
 	Status      string  `json:"status"`
-	CPU         int     `json:"cpu"`      // 核心数
+	CPU         int     `json:"cpu"`       // 核心数
 	MemTotal    int64   `json:"mem_total"` // 总内存（字节）
 	CPUPercent  float64 `json:"cpu_percent"`
 	MemUsed     int64   `json:"mem_used"`
@@ -21,9 +21,9 @@ type nodeMonitorView struct {
 	DiskTotal   int64   `json:"disk_total"`
 	LastSeen    string  `json:"last_seen"`
 	Online      bool    `json:"online"`
-	Instances   int     `json:"instances"`    // 实例总数
-	Running     int     `json:"running"`      // 运行中的实例数
-	Version     string  `json:"version"`      // 预留：Daemon 版本
+	Instances   int     `json:"instances"` // 实例总数
+	Running     int     `json:"running"`   // 运行中的实例数
+	Version     string  `json:"version"`   // 预留：Daemon 版本
 	StaleAfterS int     `json:"stale_after_s"`
 }
 
@@ -74,10 +74,10 @@ func (s *Server) handleMonitorNodes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"nodes":         list,
-		"total_nodes":   len(list),
-		"online_nodes":  countOnline(list),
-		"total_instances": totalInst,
+		"nodes":             list,
+		"total_nodes":       len(list),
+		"online_nodes":      countOnline(list),
+		"total_instances":   totalInst,
 		"running_instances": totalRunning,
 	})
 }

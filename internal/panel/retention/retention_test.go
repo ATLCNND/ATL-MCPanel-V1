@@ -125,8 +125,8 @@ func TestTiersSortedAndNormalized(t *testing.T) {
 	// 乱序与非法档位应被规整
 	p := Policy{ManualKeep: -5, Tiers: []Tier{
 		{WithinHours: 48, Keep: 2},
-		{WithinHours: 0, Keep: 5},   // 非法：区间上界必须 > 0
-		{WithinHours: 12, Keep: 0},  // 非法：保留份数必须 > 0
+		{WithinHours: 0, Keep: 5},  // 非法：区间上界必须 > 0
+		{WithinHours: 12, Keep: 0}, // 非法：保留份数必须 > 0
 		{WithinHours: 24, Keep: 4},
 	}}
 	n := p.Normalize()

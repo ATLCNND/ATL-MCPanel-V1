@@ -100,6 +100,48 @@
   font-size: 18px;
   font-weight: 700;
   color: var(--text-1);
+  /* 就地编辑时输入框 + 两个按钮会挤在一行，允许换行避免撑破卡片 */
+  flex-wrap: wrap;
+}
+
+/* 改名铅笔：默认淡，悬停名字区域才显眼 —— 常驻一个显眼的按钮
+   会把"账号"这张卡片的视觉重心从名字本身挪走。 */
+.ap-name-pen {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: var(--r);
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.ap-name:hover .ap-name-pen {
+  opacity: 1;
+  color: var(--accent);
+  border-color: var(--border);
+}
+
+.ap-name-input {
+  font-size: 16px;
+  font-weight: 600;
+  font-family: inherit;
+  min-width: 180px;
+  max-width: 260px;
+  padding: 4px 9px;
+  border-radius: var(--r);
+  border: 1px solid var(--accent-solid);
+  background: var(--bg-surface);
+  color: var(--text-1);
+  outline: none;
+}
+
+.ap-name-btn {
+  font-size: 12px;
+  padding: 4px 10px;
 }
 
 .ap-role {

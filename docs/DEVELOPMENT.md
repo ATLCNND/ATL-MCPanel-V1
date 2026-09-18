@@ -428,14 +428,52 @@ message Metrics {
 
 ### 14.1 产物平台：多架构 + 静态编译
 
-| 产物 | 目标 | 要求 |
-|---|---|---|
-| `dsh-daemon` | `linux/amd64`、`linux/arm64` | **`CGO_ENABLED=0` 静态编译**；打包脚本用 `file` 断言 `statically linked` |
-| `dsh-panel` | `linux/amd64`（arm64 可选） | 依赖 sqlite3 ⇒ 需要 CGO；交叉编译要备 `aarch64-linux-gnu-gcc` |
+> ⚠️ **本节 2026-09-16 按实测修订过**。原写法是"daemon 用 `CGO_ENABLED=0` 静态编译、
+> 用 `file` 断言 `statically linked`"，实测**两条都不成立**，详见下面的"踩过的坑"。
 
-**为什么必须静态**：动态链接的 Daemon 需要编译机的 glibc（Debian 13 → `GLIBC_2.34`），
-在旧发行版（CentOS 7 = 2.17）上**直接起不来**。这条是实测结论，不是理论担忧。
-**为什么必须 arm64**：Apple M4 这类机器真实存在于要纳管的范围里（即便它只用作 HTTP 侧接入）。
+| 产物 | 目标 | 做法 |
+|---|---|---|
+| `dsh-panel`、`dsh-daemon` | `linux/amd64`、`linux/arm64` | **CGO 保持开启 + musl 完全静态链接**（`scripts/build.sh` 已封装） |
+
+**为什么必须静态**：动态链接的二进制继承构建机的 glibc（Debian 13 → 需要 `GLIBC_2.34`），
+在旧发行版（CentOS 7 = 2.17）上**直接起不来**，报 `version 'GLIBC_2.34' not found`。
+**为什么必须 arm64**：Apple M4 这类机器真实存在于要纳管的范围里。
+
+做法（不改一行代码）：
+
+```bash
+CC=musl-gcc CGO_ENABLED=1 go build -tags netgo,osusergo \
+  -ldflags '-linkmode external -extldflags "-static"' ...
+```
+
+`netgo,osusergo` 不能省：静态链接下走 cgo 的 NSS 查询（用户/域名解析）会失败。
+构建机需要 `musl-tools`（amd64）+ `gcc-aarch64-linux-gnu`（arm64）。
+
+#### ⚠️ 踩过的坑：`CGO_ENABLED=0` 会产出"看着通过、其实全坏"的产物
+
+面板用 `mattn/go-sqlite3`（CGO 绑定）。关掉 CGO 后：
+
+| | 结果 |
+|---|---|
+| `go build` | **成功** |
+| `file` 断言 | **`statically linked` —— 通过** |
+| 实际启动 | `FATAL 初始化数据库失败: Binary was compiled with 'CGO_ENABLED=0', go-sqlite3 requires cgo to work. This is a stub` |
+
+也就是说**产物完全不可用，而构建流水线一路绿灯**，直到用户机器上才炸。
+所以验收标准不能只有 `file`，必须**真的启动一次**（`scripts/smoke-binary.sh`：
+起进程 → 建库 → 跑迁移 → HTTP 200）。这条教训值得推广到所有"构建产物"类断言上。
+
+> 另一条同样重要的断言：**产物里不应出现任何 `GLIBC_2.x` 符号版本引用**
+> （`strings binary | grep -o 'GLIBC_2\.[0-9]*'` 应为空）。
+> "statically linked" 是文件格式描述，"没有 GLIBC_ 引用"才是"能跑在旧系统上"的直接证据。
+
+#### 为什么没有改用纯 Go 的 SQLite 驱动
+
+`modernc.org/sqlite` 能彻底去掉 CGO，是个正当方案，但实测代价偏高：
+latest 版本要求 **Go 1.26**，会连带下载整套 `golang.org/toolchain`（几百 MB，
+在这台机器上十几分钟没下完）；且要改 DSN 语法（`_journal_mode=WAL` →
+`_pragma=journal_mode(WAL)`）与驱动名。**为了"静态"去动数据层不划算** ——
+musl 方案零代码改动就拿到了同样的静态产物。
 
 ### 14.2 无 systemd 的运行方式（容器场景）
 
@@ -488,6 +526,39 @@ type Runtime interface { /* 创建/启动/停止/销毁一个实例的运行环�
   Docker 能力最强但改动面最大。
 - **不在 V1 实现容器化**，只留接口；是否上容器取决于部署形态：
   "每客户一台 VM" 收益低（VM 已给隔离），"一台机器跑多个实例" 收益高（隔离 + 环境一致性）。
+
+> **2026-09-18 更新（用户拍板走 Docker，接缝细节见 `docs/CONTAINERIZATION.md`）**：
+> 内测期间发生 T0（实例以 root 运行），修复后仍是 native 模式。用户决定推进容器化，
+> 选型定为 **Docker**。已实测节点约束：`overlay` 模块可加载（overlay2 可用）、
+> Docker 官方仓库与阿里云镜像均可达（9 MB/s）、**user namespace 被内核禁用**
+> （所以没有 rootless，必须 `--user <uid>:<gid>`，否则容器里的 root 就是宿主 root）、
+> 只有 cgroup v1（与我们现有的 v1 支持同构）。
+> 关键设计：**把 `docker run` 仍当子进程启动**，这样 stdin 管道、stdout 重定向到
+> `logs/console.log`、日志尾随这些现有逻辑都不用改；改动集中在"强杀"
+> （必须 `docker rm -f`，直接 kill CLI 会留下容器）与限额归属（同一 cgroup 层级
+> 只能有一个归属，容器化的实例让 Docker 管，Daemon 跳过）。
+
+### 14.5.1 前端：借鉴 `ElementsPlus-Admin-Template` 的边界（2026-09-18 调研）
+
+用户提出研究 [NingZeStudio/ElementsPlus-Admin-Template](https://github.com/NingZeStudio/ElementsPlus-Admin-Template)
+的可利用性。**结论：可借鉴交互与信息架构，不能复用组件。** 依据（取自其 README）：
+
+- 它是 **Vue 3 + TypeScript + Element Plus**，定位是"多系统集成与微前端嵌入"、
+  **iframe-first 架构**与 Zinc 低饱和度风格；我们的前端是 **React 18 + Vite + 手写 CSS token**。
+  跨框架直接复用组件不成立。
+- **真正值得借鉴的是它的 iframe 保活容器与宿主↔子系统通信协议**（IframeBridge）：
+  - 常驻 DOM 实例池：激活过的 iframe 用 `v-show` 隐显、DOM 常驻，切标签不丢表单与滚动位置，
+    只在关闭标签时才从 DOM 移除；
+  - 双向通信：子系统可调用宿主的全局消息组件、改父级标签标题、请求路由跳转、
+    打开/关闭标签；宿主切主题时向所有 iframe 广播；
+  - 子系统可 `GET_CONTEXT` 取宿主认证令牌与环境参数；
+  - **Origin 白名单**过滤跨站消息。
+- **对我们的直接价值**：面板里已经有"嵌入外部 Web 工具"的真实需求（BlueMap / Dynmap /
+  插件自带后台 / 其它工具），现在没有统一做法。可以照这套设计做一个
+  「实例内嵌页面」能力：**标签保活**（切走不重载地图）、**主题跟随**、
+  **令牌按需下发且限定 Origin**。这与"面板内跳转"是两件事，值得单列一个功能项。
+- 不建议：换栈（React→Vue）或引入 Element Plus（React 侧对应的是 Ant Design/Arco），
+  代价是一次全站前端重写，与公开 V1 的 i18n 计划互相冲突。
 
 ### 14.6 跨平台边界（明确的"不做"）
 

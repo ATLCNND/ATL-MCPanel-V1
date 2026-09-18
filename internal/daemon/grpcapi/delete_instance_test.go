@@ -25,7 +25,12 @@ import (
 // 这个测试同时守住"没有放宽过头"：见下面第二个用例。
 func TestDeleteInstanceIdempotentWhenNotRegistered(t *testing.T) {
 	base := t.TempDir()
-	srv := NewServer(&config.DaemonConfig{}, registry.New(base), logger.New("error"), nil, nil)
+	stateDir := t.TempDir()
+	srv := NewServer(&config.DaemonConfig{
+		InstanceDir: base,
+		StateDir:    stateDir,
+		FrpStateDir: t.TempDir(),
+	}, registry.New(base, stateDir), logger.New("error"), nil, nil)
 	ctx := context.Background()
 
 	// ① 未注册、不删文件 → 成功

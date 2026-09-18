@@ -184,12 +184,12 @@ func (s *Server) handleGetMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"cpu_percent":   m.CpuPercent,
-		"mem_used":      m.MemUsed,
-		"tps":           m.Tps,
-		"players":       m.PlayersOnline,
-		"players_max":   m.PlayersMax,
-		"instance_id":   m.InstanceId,
-		"threads":       m.Threads,
+		"cpu_percent": m.CpuPercent,
+		"mem_used":    m.MemUsed,
+		"tps":         m.Tps,
+		"players":     m.PlayersOnline,
+		"players_max": m.PlayersMax,
+		"instance_id": m.InstanceId,
+		"threads":     m.Threads,
 	})
 }

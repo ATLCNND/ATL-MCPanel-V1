@@ -28,6 +28,9 @@ service DaemonService {
   rpc DeleteInstance(DeleteInstanceRequest) returns (OperationResponse);
   rpc GetInstanceStatus(InstanceRequest) returns (InstanceStatus);
   rpc GetInstanceRuntime(InstanceRequest) returns (InstanceRuntime); // 运行时长 / 启停次数 / 磁盘用量
+  // 容器化隔离：查询节点能力 / 开关某实例的容器化
+  rpc GetContainerCapability(EmptyRequest) returns (ContainerCapability);
+  rpc SetInstanceContainer(SetInstanceContainerRequest) returns (OperationResponse);
 
   // 控制台：双向流（Panel 发命令，Daemon 回日志/输出）
   rpc Console(stream ConsoleFrame) returns (stream ConsoleFrame);
@@ -191,6 +194,7 @@ message CreateInstanceRequest {
   int32 cpu_quota = 13;      // CPU 配额百分比（100 = 1 核；0 = 不限制）。由 Daemon 通过 cgroup 实施
   string backup_dir = 14;    // 备份存放目录（留空则用节点配置的 backup_root，再退回实例目录下的 backups/）
   string mem_limit = 15;     // cgroup 内存上限（如 "4G"；留空 = 不限制）。需比 -Xmx 留出堆外余量
+  bool container = 16;       // 是否以容器方式运行（容器化隔离）。需节点具备 docker 与基础镜像
 }
 
 message InstanceStatus {
@@ -232,8 +236,36 @@ message InstanceRuntime {
   string java_note = 17;
   string limit_warning = 18;
 
+  // containerized 该实例是否按容器方式运行（容器化隔离）。
+  // container_note 容器相关的说明/就绪状态（空 = 无话可说）。
+  bool containerized = 19;
+  string container_note = 20;
+
   string error = 11;
   string net_scope = 16;      // node = 节点整机聚合；instance = 该实例隧道精确值
+}
+
+// ============================================================
+// 容器化隔离
+// ============================================================
+
+// ContainerRequest 开关某实例的容器化隔离。
+//
+// 切换**要求实例处于停止状态**：容器模式改的是"怎么起进程"，
+// 运行中切换只会造成"界面显示改了、实际还在旧模式跑"。
+message SetInstanceContainerRequest {
+  string instance_id = 1;
+  bool enabled = 2;
+}
+
+// ContainerCapability 节点是否具备容器化能力（面板据此决定开关能不能点）。
+message ContainerCapability {
+  bool available = 1;        // 节点上 docker 可用且镜像已就绪
+  bool docker_present = 2;   // 有 docker 可执行文件且 daemon 应答
+  bool image_present = 3;    // 基础镜像已导入
+  string docker_version = 4;
+  string image = 5;          // 使用的镜像 tag
+  string reason = 6;         // 不可用时的一句话原因（直接展示给管理员）
 }
 
 // ============================================================

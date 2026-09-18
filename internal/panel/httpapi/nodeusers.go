@@ -546,7 +546,7 @@ func maxInt(a, b int) int {
 //
 // 权限：总管理员，或该节点上的节点用户 —— 与删除同级。
 // 到期会**自动停机**，这跟直接操作实例的破坏性相当，因此不用 owner 级别
-//（那会让租户自己给自己续期，到期就失去意义了）。
+// （那会让租户自己给自己续期，到期就失去意义了）。
 func (s *Server) handleSetExpiry(w http.ResponseWriter, r *http.Request) {
 	instanceID := r.PathValue("id")
 	if !s.canManageInstance(currentUserID(r), roleOf(r), instanceID) {

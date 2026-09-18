@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import ConsoleTab from './ConsoleTab'
+import LogShareTab from './LogShareTab'
 import FilesTab from './FilesTab'
 import ConfigTab from './ConfigTab'
 import BackupsTab from './BackupsTab'
@@ -13,18 +14,21 @@ import StatsTab from './StatsTab'
 import TasksTab from './TasksTab'
 import {
   instanceAction, levelAtLeast, listInstances, currentUser, User, isNodeUser,
-  getMetrics, listBackups, listTunnels, getSchedule, getInstanceRuntime,
-  BackupItem, Metrics, Instance, InstanceRuntime, instanceIconUrl,
+  getMetrics, listBackups, listInstancePorts, getSchedule, getInstanceRuntime,
+  BackupItem, Metrics, Instance, InstanceRuntime, instanceIconUrl, renameInstance,
 } from '../api'
 import AppShell, { NavKey, NAV_ITEMS } from './AppShell'
 import ThemeToggle from './ThemeToggle'
 import Avatar from './Avatar'
 import './InstanceDetail.css'
 
-type Tab = 'console' | 'players' | 'ports' | 'jars' | 'start' | 'files' | 'config' | 'backups' | 'stats' | 'tasks'
+type Tab = 'console' | 'loganalysis' | 'players' | 'ports' | 'jars' | 'start' | 'files' | 'config' | 'backups' | 'stats' | 'tasks'
 
 const TABS: { key: Tab; label: string; icon: string }[] = [
   { key: 'console', label: '控制台', icon: '▸' },
+  // 日志分析紧挨着控制台：它处理的就是控制台里的那些日志（崩溃、报错），
+  // 排查顺序天然是"先看控制台 → 再看不懂就交给 AI 分析"
+  { key: 'loganalysis', label: '日志分析', icon: '⌬' },
   { key: 'players', label: '玩家', icon: '◉' },
   // 公网端口放在靠前的位置：模组/插件配好后，用户最常回来查的就是地址
   { key: 'ports', label: '公网端口', icon: '⇄' },
@@ -193,7 +197,7 @@ function ChartPlot({ points, points2, max, tone, fmt }: {
   )
 }
 
-export default function InstanceDetail({ instanceId, name, status, level, user, alertCount, onBack, onNavigate, onOpenAccount, onOpenAlerts }: {
+export default function InstanceDetail({ instanceId, name, status, level, user, alertCount, onBack, onNavigate, onOpenAccount, onOpenAlerts, onRenamed }: {
   instanceId: string
   name: string
   status: string
@@ -204,6 +208,8 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
   onNavigate: (k: NavKey) => void
   onOpenAccount: () => void
   onOpenAlerts: () => void
+  /** 改名成功后通知外壳更新标题（实例名由 App 的 view 状态持有） */
+  onRenamed?: (name: string) => void
 }) {
   const [tab, setTab] = useState<Tab>('console')
   const [curStatus, setCurStatus] = useState(status)
@@ -211,6 +217,9 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
   const [error, setError] = useState('')
   const [msg, setMsg] = useState('')
   const [showKill, setShowKill] = useState(false)
+  // 实例改名（就地编辑标题）
+  const [editingName, setEditingName] = useState(false)
+  const [nameDraft, setNameDraft] = useState('')
 
   const [inst, setInst] = useState<Instance | null>(null)
   const [metrics, setMetrics] = useState<Metrics | null>(null)
@@ -232,6 +241,9 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
   const canOperate = levelAtLeast(level, 'collab')
   const canWriteFiles = levelAtLeast(level, 'owner')
   const isAdminUser = user?.role === 'admin'
+  // 改名与公网端口同级：拥有者级别的用户改自己实例的名字天经地义，
+  // 而后端判据与此一致（见 internal/panel/httpapi/instancename.go）。
+  const canRenameInstance = isAdminUser || canWriteFiles || (isNodeUser(user?.role) && level !== '')
   // 到期控制与删除同级：总管理员，或该节点上的节点用户。
   // 具体的编辑面板已搬到「任务」标签页（见 ExpiryPanel），这里只负责算权限并传下去。
   const canManageExpiry = isAdminUser || (isNodeUser(user?.role) && level !== '')
@@ -258,13 +270,22 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
   }, [instanceId])
 
   // 公网入口
+  //
+  // ⚠️ 这里必须用**实例级**的 listInstancePorts，不能用 listTunnels：
+  // `GET /api/tunnels` 是**仅总管理员**的接口，普通用户（哪怕他是这个实例的 owner）
+  // 拿到的是 403，而 catch 里是静默的 —— 于是实例页顶部的"对外地址"对**所有普通用户**
+  // 永远显示"未配置"，看起来像"没给他分配域名"。
+  // 实测就是这样被用户报上来的（2026-09-17 内测）。
+  // `GET /api/instances/{id}/ports` 对 viewer 开放，且返回的 public_address 已经
+  // 把"隧道级域名 > 线路级域名 > IP:端口"的优先级算好了，正是这里要的东西。
   useEffect(() => {
-    listTunnels()
-      .then((list) => {
-        const t = Array.isArray(list) ? list.find((x: any) => x.instance_id === instanceId) : null
-        if (t) setPubAddr((t as any).display_domain || (t as any).public_address || '')
+    listInstancePorts(instanceId)
+      .then((r) => {
+        const first = (r?.ports || [])[0]
+        // 优先用 display_domain（隧道级单独配的），否则用后端算好的 public_address
+        if (first) setPubAddr((first as any).display_domain || first.public_address || '')
       })
-      .catch(() => { /* 非管理员 403，静默 */ })
+      .catch(() => { /* 读不到就不显示，别把错误抛到界面上 */ })
   }, [instanceId])
 
   // 资源采样 + 趋势
@@ -334,6 +355,30 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
   }
 
   const confirmKill = async () => { setShowKill(false); await doAction('kill') }
+
+  /**
+   * 提交实例改名。
+   *
+   * 改的是显示名（面板数据库的 name），**不是实例 ID** —— ID 是节点上的目录名，
+   * 也是公网端口、授权、启动记录的钥匙，改名一律不动它，所以改完不会掉端口。
+   * 改完还要通知外壳（实例名由 App 的 view 状态持有），否则左侧标题栏、
+   * 返回列表后的名字都还是旧的。
+   */
+  const submitRename = async () => {
+    const n = nameDraft.trim()
+    if (!n || n === name) { setEditingName(false); return }
+    setBusy(true); setError(''); setMsg('')
+    try {
+      const r = await renameInstance(instanceId, n)
+      setMsg(r?.message || '名称已修改')
+      setEditingName(false)
+      onRenamed?.(n)
+    } catch (e: any) {
+      setError(e.message || '改名失败')
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const memLimit = parseMem(inst?.max_mem || '')
   const memPct = metrics && memLimit ? Math.min(100, Math.round((metrics.mem_used / memLimit) * 100)) : 0
@@ -439,7 +484,39 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
           <div className="center-head">
             <div>
               <h2>
-                {name} <span className={`badge badge-${curStatus === 'running' ? 'run' : 'stop'}`}>{curStatus}</span>
+                {editingName ? (
+                  <>
+                    <input
+                      className="inst-name-input"
+                      value={nameDraft}
+                      maxLength={32}
+                      autoFocus
+                      spellCheck={false}
+                      disabled={busy}
+                      onChange={(e) => setNameDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') { e.preventDefault(); submitRename() }
+                        if (e.key === 'Escape') { e.preventDefault(); setEditingName(false) }
+                      }}
+                    />
+                    <button className="primary" onClick={submitRename} disabled={busy}>保存</button>
+                    <button onClick={() => setEditingName(false)} disabled={busy}>取消</button>
+                  </>
+                ) : (
+                  <>
+                    {name}
+                    {canRenameInstance && (
+                      <button
+                        className="inst-name-pen"
+                        title="修改实例名称（只改显示名，实例 ID 与公网端口不变）"
+                        onClick={() => { setNameDraft(name); setEditingName(true) }}
+                      >
+                        ✎
+                      </button>
+                    )}
+                  </>
+                )}
+                <span className={`badge badge-${curStatus === 'running' ? 'run' : 'stop'}`}>{curStatus}</span>
               </h2>
               <p>
                 {inst?.core_type || '—'} · 端口 {inst?.port || '—'}
@@ -525,10 +602,11 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
 
           <div className="tab-body">
             {tab === 'console' && <ConsoleTab instanceId={instanceId} canSend={canOperate} />}
+            {tab === 'loganalysis' && <LogShareTab instanceId={instanceId} canWrite={canWriteFiles} />}
             {tab === 'players' && <PlayersTab instanceId={instanceId} canWrite={canWriteFiles} />}
             {tab === 'ports' && <InstancePorts instanceId={instanceId} canEdit={canManageExpiry} />}
             {tab === 'jars' && <JarsTab instanceId={instanceId} canWrite={canWriteFiles} running={curStatus === 'running'} />}
-            {tab === 'start' && <StartScriptTab instanceId={instanceId} canWrite={canWriteFiles} running={curStatus === 'running'} />}
+            {tab === 'start' && <StartScriptTab instanceId={instanceId} canWrite={canWriteFiles} running={curStatus === 'running'} isAdmin={isAdminUser} />}
             {tab === 'files' && <FilesTab instanceId={instanceId} canWrite={canWriteFiles} />}
             {tab === 'config' && <ConfigTab instanceId={instanceId} canWrite={canWriteFiles} />}
             {tab === 'backups' && (

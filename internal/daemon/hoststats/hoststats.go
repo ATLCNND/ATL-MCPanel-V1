@@ -37,8 +37,8 @@ type Collector struct {
 	lastAt   time.Time
 
 	// 网络速率需要两次采样的差值
-	lastRx uint64
-	lastTx uint64
+	lastRx    uint64
+	lastTx    uint64
 	lastNetAt time.Time
 }
 

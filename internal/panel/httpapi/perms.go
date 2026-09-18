@@ -140,6 +140,17 @@ func (s *Server) canManageInstance(userID int64, role, instanceID string) bool {
 // 注意 collab（协作者）**不在内**：开端口等于扩大对外暴露面，
 // 不该由"只被授权启停 + 看控制台"的人决定。
 func (s *Server) canManageInstancePorts(userID int64, role, instanceID string) bool {
+	return s.canManageInstanceSettings(userID, role, instanceID)
+}
+
+// canManageInstanceSettings 判断能否改这台实例的"对外呈现"设置
+// （公网端口、显示名）。判据与 canManageInstancePorts 完全一致，抽出来是为了
+// 让"谁算这台实例的主人"只有一处定义 —— 端口和改名如果各判一套，
+// 迟早出现"能改端口但不能改名"这类说不通的行为。
+//
+// 仍然排除 collab：改名会影响所有能看到这台实例的人（列表、详情页标题），
+// 属于"改别人看到的东西"，不是协作者该做的。
+func (s *Server) canManageInstanceSettings(userID int64, role, instanceID string) bool {
 	if s.canManageInstance(userID, role, instanceID) {
 		return true
 	}

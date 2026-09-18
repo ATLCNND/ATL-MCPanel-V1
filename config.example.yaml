@@ -1,4 +1,4 @@
-﻿# ATL-MCPanel 配置示例
+# ATL-MCPanel 配置示例
 # 复制为 config.yaml 并修改实际值
 
 server:
@@ -29,12 +29,42 @@ server:
 daemon:
   node_id: "node-001"
   panel_address: "127.0.0.1:9090"
-  grpc_listen: ":9091"      # Daemon 自身 gRPC 监听（Panel 反向调用）
+  # Daemon 自身 gRPC 监听（Panel 反向调用）。
+  # 默认只绑回环：这是面板与节点之间的内部通道，监听所有网卡（":9091"）
+  # 就等于把它摆到公网上（虽然有 mTLS 兜底，但没有理由多开这个面）。
+  # 面板与节点不同机时，改成内网地址（如 "10.0.0.5:9091"），别用 ":9091"。
+  grpc_listen: "127.0.0.1:9091"
   instance_dir: "instances" # 实例根目录
-  tls: false                # M6 阶段启用 mTLS
+  tls: false                # 节点 ↔ 面板 mTLS；生产环境应启用，见 docs/MTLS.md
   cert_file: ""
   key_file: ""
   ca_file: ""
+
+  # ---- 实例的运行身份（安全关键，别改成 root）----
+  # 实例进程（java / start.sh 里的任何命令）以什么身份运行：
+  #   per-instance（默认）：每个实例一个专用系统用户 atl-i-<实例ID>，
+  #                         实例之间互相读不到对方的存档、名单与插件目录。
+  #   current            ：沿用 Daemon 自身身份（**仅当 Daemon 不是 root 时可用**，
+  #                         以 root 运行 Daemon 时配它会被直接拒绝启动实例）。
+  #   <某个用户名>        ：所有实例共用该用户。能挡住"逃逸成 root"，
+  #                         但租户之间不再隔离，多租户场景不建议。
+  #
+  # 为什么必须降权：面板允许实例所有者编辑 start.sh、允许协作者往控制台发命令，
+  # 两者都能拿到 shell。实例若是 root，则"能管一台实例"就等于"拿到节点 root"
+  #（可读别的租户存档、mTLS 私钥、写 /etc 做持久化）。
+  # 注意这里**故意没有"以 root 运行实例"这个选项**。
+  instance_user: "per-instance"
+  instance_user_prefix: "atl-i-"
+
+  # ---- 平台状态目录（存放"root 会去读"的文件）----
+  # 必须位于实例目录**之外**：实例目录归实例运行用户所有，而下面这些文件
+  # 是 root 读来当依据的 —— 放在租户可写的地方等于把钥匙交出去：
+  #   instance.json（元数据：cpu_quota / mem_limit 决定资源限制）
+  #   daemon.pid    （接管与停止时向哪个进程组发信号）
+  #   frpc.toml 等  （frpc 以 root 运行，它读的配置决定"哪些本地端口挂到哪"）
+  # 留空分别使用 <实例根目录>/../state 与 <实例根目录>/../frp。
+  state_dir: ""
+  frp_state_dir: ""
 
   # ---- 实例资源限制（cgroup v2）----
   # 为实例施加 CPU 硬配额（cpu.max）。需要 cgroup v2（Debian 12+ / Ubuntu 22+ 默认支持）。
@@ -55,3 +85,26 @@ db:
 
 auth:
   jwt_secret: "CHANGE_ME_TO_A_RANDOM_SECRET"
+
+# ---- 第三方日志分析（LogShare.CN）----
+#
+# 免费服务：把实例日志交给它的 AI，拿回崩溃原因与修复建议
+#（诊断不是我们实现的，面板只负责接入与展示）。
+#
+# ⚠️ **默认关闭**，必须显式打开。原因：日志里有**玩家名与聊天内容**，
+# 把租户数据送到第三方属于基础设施所有者的决定，不该由默认值替他做。
+# 打开后，前端每次上传前仍会弹窗告知并要求用户**手动勾选**同意
+# 对方的《服务协议》与《隐私政策》；服务端也会校验这个勾选（不能只靠前端）。
+logshare:
+  enabled: false
+  # 接口根地址（对方是公开 API，无需认证）。留空即用官方地址。
+  endpoint: "https://api.logshare.cn/v1"
+  # 站点与法律文本地址（前端展示与跳转用）
+  site_url: "https://logshare.cn"
+  terms_url: "https://logshare.cn/terms"
+  privacy_url: "https://logshare.cn/privacy"
+  # 单次上传上限（默认 16MB；对方限制 20MB / 20 万行，这里留余量）。
+  # 超出时保留**尾部**（崩溃现场在日志后面）并在结果里注明截断了多少。
+  max_upload_bytes: 16777216
+  # 单次请求超时（秒，默认 300）。官方建议 ≥300 秒：AI 会多轮调用工具。
+  timeout_seconds: 300

@@ -25,7 +25,9 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
     try {
       const data = await login(username, password)
       setToken(data.token)
-      setCurrentUser(data.username, data.role)
+      // 存下 UID：它是唯一不会变的标识（用户名可以改，见账户页的改名）。
+      // 不存的话，改完名之后"这是不是我自己的账号"这类判断就会失效。
+      setCurrentUser(data.id, data.username, data.role)
       onLogin()
     } catch (err: any) {
       setError(err.message || '登录失败')

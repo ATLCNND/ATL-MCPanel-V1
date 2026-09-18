@@ -22,36 +22,36 @@ const backupsDirName = "backups"
 
 // skipDirs 备份时始终排除的顶层目录（可重新生成 / 体积大 / 内部数据）。
 var skipDirs = map[string]bool{
-	"logs":       true,
-	"backups":    true,
-	"cache":      true,
-	"libraries":  true,
-	"versions":   true,
+	"logs":          true,
+	"backups":       true,
+	"cache":         true,
+	"libraries":     true,
+	"versions":      true,
 	"crash-reports": true,
 }
 
 // configEntries include_config=false 时排除的配置项（保留纯世界数据）。
 var configEntries = map[string]bool{
-	"server.properties":     true,
-	"bukkit.yml":            true,
-	"spigot.yml":            true,
-	"paper.yml":             true,
-	"paper-global.yml":      true,
+	"server.properties":        true,
+	"bukkit.yml":               true,
+	"spigot.yml":               true,
+	"paper.yml":                true,
+	"paper-global.yml":         true,
 	"paper-world-defaults.yml": true,
-	"commands.yml":          true,
-	"permissions.yml":       true,
-	"help.yml":              true,
-	"ops.json":              true,
-	"whitelist.json":        true,
-	"banned-players.json":   true,
-	"banned-ips.json":       true,
-	"usercache.json":        true,
-	"version_history.json":  true,
-	"eula.txt":              true,
-	"config":                true,
-	"plugins":               true,
-	"mods":                  true,
-	"mods-disabled":         true,
+	"commands.yml":             true,
+	"permissions.yml":          true,
+	"help.yml":                 true,
+	"ops.json":                 true,
+	"whitelist.json":           true,
+	"banned-players.json":      true,
+	"banned-ips.json":          true,
+	"usercache.json":           true,
+	"version_history.json":     true,
+	"eula.txt":                 true,
+	"config":                   true,
+	"plugins":                  true,
+	"mods":                     true,
+	"mods-disabled":            true,
 }
 
 var unsafeNameRe = regexp.MustCompile(`[^A-Za-z0-9._\-\x{4e00}-\x{9fa5}]+`)
@@ -80,6 +80,12 @@ func (s *Server) backupDir(inst *mcprocess.Instance) (string, error) {
 	if err := os.MkdirAll(d, 0o755); err != nil {
 		return "", err
 	}
+	// 只有**实例目录内**的备份目录才交给实例用户（那是租户自己的文件，
+	// 他要能下载、重命名、删除）。配了 backup_root 放到独立磁盘时不交 ——
+	// 那份属于平台冷存储，"租户改不了"才是它的意义（否则备份就成了
+	// 可以被一并删掉的东西）。Daemon 是 root，两种情况都照样能读写；
+	// handOver 自己会拒绝越界路径，这里不必再判一次。
+	s.handOver(inst.ID, d)
 	return d, nil
 }
 
@@ -120,6 +126,10 @@ func (s *Server) Backup(ctx context.Context, req *pb.BackupRequest) (*pb.BackupR
 
 	name := sanitizeName(req.Name)
 	now := time.Now()
+	// ⚠️ 空名 = 自动备份。这条约定是**隐式契约**：面板的保留策略按"名字是不是 auto"
+	// 区分手动/自动，从而把手动备份排除在梯度淘汰之外。
+	// 面板的定时计划现在**显式**传 "auto"；手动路径（用户点「立即备份」）在面板侧
+	// 生成 "手动-<时间>"，并拒绝把名字填成 auto。这里保留默认值只为兼容老调用方。
 	if name == "" {
 		name = "auto"
 	}
@@ -131,6 +141,8 @@ func (s *Server) Backup(ctx context.Context, req *pb.BackupRequest) (*pb.BackupR
 		return &pb.BackupResponse{Success: false, Message: "创建备份文件失败: " + err.Error()}, nil
 	}
 	defer f.Close()
+	// 备份文件本身也交出去（同样只在实例目录内时才会生效，见 handOver 的不变量）
+	s.handOver(req.InstanceId, target)
 
 	gz := gzip.NewWriter(f)
 	tw := tar.NewWriter(gz)
@@ -374,6 +386,10 @@ func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.Opera
 	}
 
 	s.log.Info("回滚完成", "instance", req.InstanceId, "backup", req.BackupId, "files", count)
+	// 回滚出来的整棵目录树都要交给实例用户：这是最危险的一处遗漏 ——
+	// 恢复出来的 world/ 属主是 root 的话，服务端下次保存世界就会
+	// permission denied，而用户看到的是"回滚成功了，但服务器起不来/存不了档"。
+	s.handOver(req.InstanceId, root)
 	return &pb.OperationResponse{Success: true, Message: fmt.Sprintf("回滚完成，已恢复 %d 个文件（请启动实例）", count)}, nil
 }
 
@@ -403,11 +419,18 @@ func sanitizeName(s string) string {
 		return ""
 	}
 	s = unsafeNameRe.ReplaceAllString(s, "_")
-	if len(s) > 40 {
-		s = s[:40]
+	// 按**字符**截断而不是按字节：中文一个字 3 字节，`s[:40]` 会把第 14 个字
+	// 切成半个 UTF-8 序列 —— 文件名里留下非法字节，界面与 JSON 里显示成乱码。
+	// 保留期长的备份（比如"开荒前-正式服-第一周目"这类长中文名）很容易撞到 40。
+	if r := []rune(s); len(r) > maxBackupNameRunes {
+		s = string(r[:maxBackupNameRunes])
 	}
 	return s
 }
+
+// maxBackupNameRunes 备份名的长度上限（按字符计）。
+// 40 是历史值（当时按字节算），改成按字符后含义不变、但对中文名更宽松。
+const maxBackupNameRunes = 40
 
 // parseBackupName 从文件名解析名称与创建时间。
 func parseBackupName(fileName string, fallback time.Time) (string, int64) {

@@ -43,15 +43,15 @@ func isTaskAction(a string) bool {
 
 // taskView 定时任务的对外视图。
 type taskView struct {
-	ID         int64  `json:"id"`
-	InstanceID string `json:"instance_id"`
-	Name       string `json:"name"`
-	Action     string `json:"action"`
+	ID          int64  `json:"id"`
+	InstanceID  string `json:"instance_id"`
+	Name        string `json:"name"`
+	Action      string `json:"action"`
 	ActionLabel string `json:"action_label"`
-	Command    string `json:"command"`
-	Cron       string `json:"cron"`
-	Describe   string `json:"describe"`
-	Enabled    bool   `json:"enabled"`
+	Command     string `json:"command"`
+	Cron        string `json:"cron"`
+	Describe    string `json:"describe"`
+	Enabled     bool   `json:"enabled"`
 
 	NextRun   string `json:"next_run"`
 	LastRun   string `json:"last_run"`

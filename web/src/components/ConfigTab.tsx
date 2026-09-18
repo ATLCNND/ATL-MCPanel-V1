@@ -1,45 +1,12 @@
 import { useEffect, useState } from 'react'
 import { readFile, writeFile } from '../api'
+import { SERVER_PROPERTY_DESC, COMMON_PROPERTY_KEYS } from '../configDescriptions'
 import './ConfigTab.css'
 
-// server.properties 的关键项说明（用于分组与提示）
-const KNOWN_KEYS: Record<string, string> = {
-  'motd': '服务器描述（玩家在多人列表看到的名字）',
-  'server-port': '服务器端口',
-  'max-players': '最大同时在线玩家数',
-  'online-mode': '正版验证（true=仅正版可进）',
-  'gamemode': '默认游戏模式（survival/creative/adventure/spectator）',
-  'difficulty': '难度（peaceful/easy/normal/hard）',
-  'hardcore': '极限模式',
-  'pvp': '允许玩家互相伤害',
-  'level-name': '世界存档目录名',
-  'level-seed': '世界种子',
-  'level-type': '世界类型',
-  'view-distance': '视距（越大越吃性能）',
-  'simulation-distance': '模拟距离',
-  'spawn-protection': '出生点保护半径',
-  'allow-flight': '允许飞行',
-  'allow-nether': '允许进入下界',
-  'enable-command-block': '启用命令方块',
-  'white-list': '启用白名单',
-  'enforce-whitelist': '白名单强制模式',
-  'spawn-monsters': '生成怪物',
-  'spawn-npcs': '生成村民',
-  'spawn-animals': '生成动物',
-  'generate-structures': '生成结构（村庄等）',
-  'max-world-size': '世界边界半径',
-  'player-idle-timeout': '挂机踢出时间（分钟，0=不踢）',
-  'enable-rcon': '启用 RCON',
-  'rcon.port': 'RCON 端口',
-  'rcon.password': 'RCON 密码',
-}
-
-// 高亮为「常用」的键
-const COMMON_KEYS = new Set([
-  'motd', 'max-players', 'online-mode', 'gamemode', 'difficulty',
-  'pvp', 'view-distance', 'simulation-distance', 'spawn-protection',
-  'allow-flight', 'enable-command-block', 'white-list',
-])
+// 说明文案与「常用项」清单统一放在 configDescriptions.ts：
+// 那里是**唯一**一处集中放配置文案的地方，将来做中英切换只改那个模块。
+const KNOWN_KEYS = SERVER_PROPERTY_DESC
+const COMMON_KEYS = COMMON_PROPERTY_KEYS
 
 interface Entry {
   key: string
@@ -129,7 +96,13 @@ export default function ConfigTab({ instanceId, canWrite }: { instanceId: string
             <div className="config-row" key={e.key}>
               <div className="config-key">
                 <span className="key-name">{e.key}</span>
-                {KNOWN_KEYS[e.key] && <span className="key-desc">{KNOWN_KEYS[e.key]}</span>}
+                {KNOWN_KEYS[e.key] ? (
+                  <span className="key-desc">{KNOWN_KEYS[e.key]}</span>
+                ) : (
+                  // 不在原版 57 项里的键：多半是核心（Paper/Leaves 等）或插件追加的。
+                  // 明确说一句，比"这一项没有说明"更好 —— 用户至少知道不必去查原版文档。
+                  <span className="key-desc unknown">非原版标准项（可能是服务端核心或插件追加）</span>
+                )}
               </div>
               <div className="config-value">
                 {isBoolean(e.value) ? (

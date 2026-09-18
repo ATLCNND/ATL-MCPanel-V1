@@ -187,7 +187,7 @@ func (m *Manager) Remove(instanceID, instanceDir, tunnelID string) error {
 
 	if empty {
 		m.stopProcess(st)
-		_ = os.Remove(configPath(instanceDir))
+		CleanInstanceFiles(instanceDir)
 	} else {
 		if err := m.persist(instanceDir, st); err != nil {
 			return err
@@ -276,12 +276,67 @@ func (m *Manager) LoadFromDisk(instanceID, instanceDir string) error {
 
 // StopInstance 停止实例的 frpc（实例停止时调用）。
 // 注意：隧道定义仍保留在内存中，实例再次启动时可用 Resume 重新拉起。
+// StopInstance 停止该实例的 frpc 进程，但**保留隧道定义**。
+//
+// ⚠️ "保留定义"是刻意的：实例可能只是被**停止**，之后 `Resume` 要把隧道接回来。
+// 但如果实例是被**删除**的，就必须用 `RemoveInstance` —— 否则留下的定义会在
+// 下次实例启动时被 `LoadFromDisk` 读回来，变成继续占端口的"僵尸隧道"
+// （2026-09-17 实测踩到，见 RemoveInstance 的注释）。
 func (m *Manager) StopInstance(instanceID string) {
 	m.mu.RLock()
 	st, ok := m.byInst[instanceID]
 	m.mu.RUnlock()
 	if ok {
 		m.stopProcess(st)
+	}
+}
+
+// RemoveInstance 彻底移除某实例的穿透：停进程 + 丢弃全部隧道定义 + 清理残留文件。
+//
+// ---------------------------------------------------------------------------
+// 为什么必须与 StopInstance 分开（"僵尸隧道"的根因，2026-09-17 实测）
+// ---------------------------------------------------------------------------
+// 事故现场：面板上把隧道删干净了、实例也删了，但 frpc 每次启动仍然把旧隧道一起拉起来：
+//
+//	tunnels.json: { "beta01-tcp-25565": {"remote_port": 25565}, ... }   ← 库已删，文件还在
+//	frpc.log:     proxy added: [beta01-tcp-25565 beta01-tcp-25566]
+//
+// 后果是那个公网端口一直被占着，**实例自己反而绑不上**（Failed to bind to port），
+// 而且**面板上完全看不出还有这么一条隧道** —— 换端口、重建实例都没用，极难自查。
+//
+// 两个缺口叠加才造成它：
+//  1. `Remove()` 移除**最后一条**隧道时只删了 frpc.toml，漏删 tunnels.json
+//  2. 删除实例走的是 `StopInstance`（保留定义），而面板侧只删了数据库记录
+func (m *Manager) RemoveInstance(instanceID string) {
+	m.mu.Lock()
+	st, ok := m.byInst[instanceID]
+	if !ok {
+		m.mu.Unlock()
+		return
+	}
+	dir := st.dir
+	delete(m.byInst, instanceID)
+	m.mu.Unlock()
+
+	m.stopProcess(st)
+	CleanInstanceFiles(dir)
+}
+
+// CleanInstanceFiles 清掉实例目录里由穿透产生的残留文件。
+//
+// ⚠️ **tunnels.json 必须一起删**：它保存着隧道定义，只要还在，
+// 下次实例启动 `LoadFromDisk` 就会把"已经删掉的隧道"重新拉起来。
+// 这是上面那个僵尸隧道的直接成因，别再退回成只删 frpc.toml。
+//
+// 只删这三个明确的文件、不做任何递归删除 —— 它会被用在"实例已被删除"的路径上，
+// 万一 dir 传错也不该造成大面积误删。
+func CleanInstanceFiles(dir string) {
+	if dir == "" {
+		return
+	}
+	dir = absDir(dir)
+	for _, f := range []string{configPath(dir), metaPath(dir), pidFilePath(dir)} {
+		_ = os.Remove(f)
 	}
 }
 
@@ -378,10 +433,10 @@ func absDir(dir string) string {
 	return dir
 }
 
-func configPath(dir string) string    { return filepath.Join(dir, "frpc.toml") }
-func logPath(dir string) string       { return filepath.Join(dir, "logs", "frpc.log") }
-func metaPath(dir string) string      { return filepath.Join(dir, "tunnels.json") }
-func pidFilePath(dir string) string   { return filepath.Join(dir, "frpc.pid") }
+func configPath(dir string) string  { return filepath.Join(dir, "frpc.toml") }
+func logPath(dir string) string     { return filepath.Join(dir, "logs", "frpc.log") }
+func metaPath(dir string) string    { return filepath.Join(dir, "tunnels.json") }
+func pidFilePath(dir string) string { return filepath.Join(dir, "frpc.pid") }
 
 // killStaleFrpc 若上次运行的 frpc 仍在（进程未随管理器退出），先将其终止。
 // 否则会出现「frpc 重复启动 → 代理名已存在」的冲突。

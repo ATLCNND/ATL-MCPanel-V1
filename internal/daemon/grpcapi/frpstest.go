@@ -77,7 +77,7 @@ func (s *Server) TestFrps(ctx context.Context, req *pb.TestFrpsRequest) (*pb.Tes
 	}
 	// 端口段可能很大，试注册只需要几个候选：随机取，避免每次都撞同一个被占的端口
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	span := int(portEnd - portStart) + 1
+	span := int(portEnd-portStart) + 1
 
 	var lastLog, lastErr string
 	var lastPort int32

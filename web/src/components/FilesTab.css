@@ -278,6 +278,14 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* 容器可聚焦以接收键盘快捷键（Ctrl+A / Delete / Enter / Esc）。
+     焦点环用内阴影而不是 outline：outline 会溢出到相邻的工具栏上，
+     在整块列表周围画一圈很吵。 */
+  outline: none;
+}
+
+.files-list:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent-bg);
 }
 
 .files-list.list {
@@ -323,6 +331,36 @@
   box-shadow: inset 2px 0 0 var(--accent-solid);
 }
 
+/* 勾选态（多选）与"焦点选中"是两件事，视觉上要能区分：
+   焦点选中 = 品牌色 + 左侧竖条；勾选 = 更淡的底色 + 勾选框本身。
+   一行可能"被勾选但不是焦点"（Ctrl 点多选时），两者混同会让人误判批量范围。 */
+.files-list tbody tr.checked td {
+  background: var(--bg-subtle);
+}
+
+.files-list tbody tr.checked.selected td {
+  background: var(--accent-bg);
+}
+
+/* 勾选列：窄、居中、不参与 hover 高亮之外的交互 */
+.files-list th.col-check,
+.files-list td.col-check {
+  width: 34px;
+  padding-left: 12px;
+  padding-right: 0;
+}
+
+.files-list .col-check input[type='checkbox'] {
+  cursor: pointer;
+  vertical-align: middle;
+  accent-color: var(--accent-solid);
+}
+
+.check-hint {
+  color: var(--text-3);
+  cursor: help;
+}
+
 .file-row {
   display: flex;
   align-items: center;
@@ -359,6 +397,7 @@
   text-align: center;
   cursor: default;
   transition: border-color 0.15s, box-shadow 0.15s;
+  position: relative;
 }
 
 .grid-card:hover {
@@ -369,6 +408,22 @@
 .grid-card.selected {
   border-color: var(--accent-solid);
   background: var(--accent-bg);
+}
+
+/* 网格里的勾选框压在左上角：不占卡片布局空间（否则每张卡都要为它留一行，
+   图标会被挤下去），也符合"卡片右上/左上角有选择框"的通行做法 */
+.grid-card.checked {
+  border-color: var(--accent-solid);
+  background: var(--bg-subtle);
+}
+
+.grid-card .grid-check {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent-solid);
 }
 
 .grid-icon {
@@ -399,6 +454,70 @@
   background: var(--bg-subtle);
   border-top: 1px solid var(--border);
   line-height: 1.6;
+}
+
+/* ---------------- 批量操作条 ----------------
+   只在有勾选时出现（见组件里的条件渲染）。放在路径栏与操作栏之间：
+   它管的是"对选中的这一批做什么"，紧挨着列表比塞进操作栏更好找。 */
+.files-bulk {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: var(--accent-bg);
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+
+.files-bulk .bulk-count {
+  color: var(--text-2);
+}
+
+.files-bulk .bulk-count b {
+  color: var(--accent);
+  font-size: 13.5px;
+}
+
+.files-bulk button {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+/* ---------------- 图片预览 ---------------- */
+
+.img-preview {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  max-width: min(92vw, 1100px);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.img-preview-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+
+.img-preview img {
+  /* 棋盘底：透明 PNG 在纯色背景上分不清"透明"和"白色" */
+  background-image:
+    linear-gradient(45deg, var(--bg-subtle) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--bg-subtle) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--bg-subtle) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--bg-subtle) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  object-fit: contain;
+  max-width: 100%;
+  max-height: calc(88vh - 46px);
+  display: block;
 }
 
 /* ---------------- 输入对话框 ---------------- */

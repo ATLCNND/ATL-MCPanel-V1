@@ -20,7 +20,7 @@ func TestNormalizeDisplayHost(t *testing.T) {
 		{"https://mc.example.com", "mc.example.com"},
 		{"http://mc.example.com/", "mc.example.com"},
 		{"mc.example.com/", "mc.example.com"},
-		{"mc.example.com:25570", "mc.example.com"},   // 端口要剥掉
+		{"mc.example.com:25570", "mc.example.com"}, // 端口要剥掉
 		{"https://mc.example.com:8443/x?y=1", "mc.example.com"},
 		{"", ""},
 		{"   ", ""},

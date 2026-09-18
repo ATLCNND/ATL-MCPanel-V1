@@ -493,6 +493,47 @@ var migrations = []migration{
 			`ALTER TABLE frps_servers ADD COLUMN display_domain TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		Version: 20,
+		Name:    "logshare_uploads",
+		Statements: []string{
+			// LogShare.CN 日志分析的上传记录。
+			//
+			// 为什么必须落库（而不是"传完就算"）：
+			//   1. **删除需要 token**：对方 API 的删除接口要上传时返回的 token，
+			//      丢了就再也删不掉那份日志（官方文档明确要求调用方自行持久化）。
+			//      日志里含玩家名与聊天内容，删不掉是隐私问题，不是小疏忽。
+			//   2. **要能回答"谁把哪台实例的日志传出去了"**：审计需要。
+			//   3. 到期时间（默认 15 天）要能提前提醒，也让用户知道何时会自动消失。
+			`CREATE TABLE IF NOT EXISTS logshare_uploads (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				instance_id TEXT NOT NULL,
+				logshare_id TEXT NOT NULL,
+				token TEXT NOT NULL DEFAULT '',
+				url TEXT NOT NULL DEFAULT '',
+				source_path TEXT NOT NULL DEFAULT '',
+				size INTEGER NOT NULL DEFAULT 0,
+				lines INTEGER NOT NULL DEFAULT 0,
+				filtered_lines INTEGER NOT NULL DEFAULT 0,
+				truncated INTEGER NOT NULL DEFAULT 0,
+				uploaded_by INTEGER NOT NULL DEFAULT 0,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				expires_at DATETIME,
+				deleted_at DATETIME
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_logshare_instance ON logshare_uploads(instance_id, id DESC)`,
+			// AI 分析结论（Markdown）留一份：同一份日志没必要反复消耗对方的 AI 资源，
+			// 也方便用户回头看"上次那个报错是怎么说的"。
+			`CREATE TABLE IF NOT EXISTS logshare_analyses (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				instance_id TEXT NOT NULL,
+				logshare_id TEXT NOT NULL,
+				content TEXT NOT NULL DEFAULT '',
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				UNIQUE(instance_id, logshare_id)
+			)`,
+		},
+	},
 }
 
 // migrate 应用尚未执行的迁移。

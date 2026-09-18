@@ -7,9 +7,10 @@ import (
 )
 
 // newTestInstance 造一个用 sh 跑指定命令的实例（核心无关，测试不需要真的 java）。
+// 构造细节（状态目录、运行身份注入）见 testInstance。
 func newTestInstance(t *testing.T, dir, command string) *Instance {
 	t.Helper()
-	inst := NewInstance(filepath.Base(dir), dir, filepath.Join(dir, "server.jar"), "1G", "1G")
+	inst := testInstance(filepath.Base(dir), dir, filepath.Join(dir, "server.jar"), "1G", "1G")
 	inst.StartCommand = command
 	return inst
 }

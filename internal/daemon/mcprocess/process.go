@@ -3,6 +3,7 @@ package mcprocess
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,7 +16,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/container"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/javaruntime"
+	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/runas"
 )
 
 // Instance MC 进程实例（核心无关）。
@@ -39,17 +42,35 @@ type Instance struct {
 	// 静默回退比启动失败更难排查。
 	JavaVersion string
 
-	mu         sync.Mutex
-	cmd        *exec.Cmd
-	stdin      io.WriteCloser
-	logFile    *os.File // 控制台日志文件
-	status     string   // running / stopped / starting / error
-	subMu      sync.Mutex      // 独立锁保护订阅者列表（避免与 mu 嵌套导致死锁）
-	subs       []chan<- string // 控制台输出订阅者
-	started    bool
-	startMode  string // 实际使用的启动方式：start.sh / custom / default
-	pidFile    string // 记录子进程 PID（供 Daemon 重启后接管）
-	adoptedPID int    // 非 0 表示接管 Daemon 重启前遗留的进程
+	mu        sync.Mutex
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	logFile   *os.File      // 控制台日志文件
+	status    string        // running / stopped / starting / error
+	subMu     sync.Mutex    // 独立锁保护订阅者列表（避免与 mu 嵌套导致死锁）
+	subs      []*consoleSub // 控制台输出订阅者
+	started   bool
+	startMode string // 实际使用的启动方式：start.sh / custom / default
+
+	// pidFile 记录子进程 PID（供 Daemon 重启后接管）。
+	//
+	// **不在实例目录里**：它虽然只是一个数字，却被 root 的 Daemon 当作
+	// "这个 pid 就是我的实例进程"来信任（接管时会按它认领进程，停止时会向它
+	// 的进程组发信号）。放在实例用户可写的目录里，等于把"向任意进程组发信号"
+	// 的能力交给租户 —— 例如把 panel 或 sshd 的 pid 写进去。
+	// 因此它属于平台状态，放在 <state_dir>/<实例ID>/ 下（root 0700）。
+	pidFile string
+	// StateDir 平台状态目录（<state_dir>/<实例ID>），与实例目录分开，见 pidFile。
+	StateDir string
+
+	// RunAsFor 在启动时解析该实例的运行身份（由 Daemon 注入）。
+	//
+	// 是**函数**而不是静态值：per-instance 用户可能在 Daemon 运行期间才被创建
+	//（先建实例、后补用户的运维顺序很常见），每次启动现解析能自动跟上；
+	// 返回错误时启动会被拒绝（见 Start），不会静默退回 root。
+	RunAsFor func(instanceID string) (*runas.Identity, error)
+
+	adoptedPID int // 非 0 表示接管 Daemon 重启前遗留的进程
 
 	// CPUQuotaPercent 实例的 CPU 配额（百分比，100 = 1 核；0 = 不限制）
 	CPUQuotaPercent int
@@ -63,6 +84,20 @@ type Instance struct {
 	MemLimitBytes int64
 	// Limiter 资源限制实现（cgroup），为 nil 时使用全局默认
 	Limiter ResourceLimiter
+
+	// Container 容器运行时；非 nil 表示该实例跑在 docker 容器里。
+	//
+	// 与 native 模式的区别集中在三处：起（argv 换成 docker run）、
+	// 杀（必须 docker rm -f，kill CLI 杀不掉容器）、限额（交给 Docker，
+	// Daemon 不再写 cgroup —— 两边都写会静默失效）。
+	// stdin/stdout 这两条链路完全不变，因为 docker CLI 仍是子进程。
+	Container *container.Runtime
+	// ContainerResourcesDir 只读挂入的节点共享资源目录（如 /opt/atl-node/resources）。
+	ContainerResourcesDir string
+	// containerized 本次运行是否真的走了容器（供状态展示与限额归属判断）。
+	containerized bool
+	// wantContainer 元数据要求该实例容器化（即使运行时暂不可用）。
+	wantContainer bool
 
 	limitWarn string // 最近一次资源限制应用失败的原因
 	// javaNote 最近一次 Java 版本解析的说明（回退时会写明原因）
@@ -250,22 +285,26 @@ func (i *Instance) RenderStartCommand() (command string, scriptActive bool, scri
 }
 
 // NewInstance 创建实例管理器。
-func NewInstance(id, dir, jarPath string, maxMem, minMem string) *Instance {
+//
+// stateDir 是**平台状态目录**（<state_dir>/<实例ID>），用于存放 daemon.pid 这类
+// 被 root 信任的文件；它必须与 dir（实例目录）分开，理由见 pidFile 字段说明。
+func NewInstance(id, dir, stateDir, jarPath, maxMem, minMem string) *Instance {
 	return &Instance{
-		ID:      id,
-		Dir:     dir,
-		JarPath: jarPath,
-		MaxMem:  maxMem,
-		MinMem:  minMem,
-		status:  "stopped",
-		pidFile: filepath.Join(dir, "daemon.pid"),
+		ID:       id,
+		Dir:      dir,
+		StateDir: stateDir,
+		JarPath:  jarPath,
+		MaxMem:   maxMem,
+		MinMem:   minMem,
+		status:   "stopped",
+		pidFile:  filepath.Join(stateDir, "daemon.pid"),
 	}
 }
 
 // NewAdopted 接管一个 Daemon 重启前遗留、仍在运行的进程。
 // 由于 stdin 管道已丢失，此类实例无法接收控制台命令（只读输出），但支持停止。
-func NewAdopted(id, dir, jarPath, maxMem, minMem, startCommand string, pid int) *Instance {
-	inst := NewInstance(id, dir, jarPath, maxMem, minMem)
+func NewAdopted(id, dir, stateDir, jarPath, maxMem, minMem, startCommand string, pid int) *Instance {
+	inst := NewInstance(id, dir, stateDir, jarPath, maxMem, minMem)
 	inst.StartCommand = startCommand
 	inst.adoptedPID = pid
 	inst.status = "running"
@@ -334,10 +373,77 @@ func (i *Instance) Start() error {
 		return orphanStartError(pid)
 	}
 
+	// 容器模式额外检查：同名容器是否还在。
+	//
+	// native 模式靠 PID 记录判断"上一次的进程还在不在"，容器模式不能这么判断：
+	// 容器是 dockerd 管的独立进程，Daemon 崩溃后它照跑。所以这里直接问 docker。
+	if i.wantContainer && i.Container == nil {
+		// 元数据说要容器化，但节点上没有可用的 docker。
+		// 不静默退回 native：那会让"面板显示容器化、实际没有隔离"成为可能。
+		i.status = "error"
+		return fmt.Errorf("该实例已启用容器化隔离，但节点上没有可用的容器运行时（docker）：" +
+			"请先在节点上安装 docker 并导入基础镜像（部署脚本会做），" +
+			"或在面板上关闭该实例的容器化")
+	}
+	if i.Container != nil {
+		st, err := i.Container.Inspect(context.Background(), i.ID)
+		if err == nil && st.Exists {
+			if st.Running {
+				return fmt.Errorf("实例容器 %s 已在运行（%s）：请先停止，或用「强制关闭」清理后再启动",
+					container.NameOf(i.ID), st.Status)
+			}
+			// 已退出但没被 --rm 清掉（例如 dockerd 重启过）：先删掉，
+			// 否则 docker run --name 会直接撞名失败
+			_ = i.Container.Remove(context.Background(), i.ID, true)
+		}
+	}
+
 	// 确保实例目录存在
 	if err := os.MkdirAll(filepath.Join(i.Dir, "logs"), 0o755); err != nil {
 		i.status = "error"
 		return fmt.Errorf("创建日志目录失败: %w", err)
+	}
+
+	// ---- 解析运行身份（早做，失败要早说）----
+	//
+	// 用"每次启动现解析"而不是构造时定好的静态值：per-instance 用户可能在
+	// Daemon 运行期间才被创建（先建实例、后补用户的运维顺序很常见），
+	// 现解析能自动跟上，也不会因为一次解析失败就把实例永久卡住。
+	var identity *runas.Identity
+	if i.RunAsFor != nil {
+		id, err := i.RunAsFor(i.ID)
+		if err != nil {
+			i.status = "error"
+			return fmt.Errorf("解析实例运行身份失败：%w", err)
+		}
+		identity = id
+	}
+	if identity == nil && runas.IsRoot() {
+		// 这是整套修复的最后一道闸：Daemon 以 root 跑却没有解析出降权身份时，
+		// 宁可实例起不来，也绝不"照旧跑成 root" —— 那正是本次要修掉的漏洞。
+		i.status = "error"
+		return fmt.Errorf(
+			"Daemon 以 root 运行，但该实例没有可用的降权身份，已拒绝启动：" +
+				"以 root 运行实例会让任何能操作这台实例的用户获得节点 root（可读走其它租户的存档、mTLS 私钥）。" +
+				"请检查节点配置里的 instance_user（默认 per-instance）与 Daemon 日志")
+	}
+	if identity != nil {
+		if err := os.MkdirAll(i.StateDir, 0o700); err != nil {
+			i.status = "error"
+			return fmt.Errorf("创建实例状态目录失败: %w", err)
+		}
+		// 只有在**真的要换 uid** 时才需要这些检查与改属主：
+		// 身份与 Daemon 自己相同（非 root 的 current 模式）时，权限天然一致，
+		// 而那些检查会把测试用的 0700 临时目录、以及"实例目录 0700"这种
+		// 完全正常的布局误判成故障。
+		if identity.UID != uint32(os.Geteuid()) || identity.GID != uint32(os.Getegid()) {
+			if bad := runas.CheckTraversable(i.Dir); bad != "" {
+				i.status = "error"
+				return fmt.Errorf(
+					"目录 %s 缺少其他用户的执行位（o+x），实例进程（用户 %s）无法进入自己的目录。"+
+						"请执行：chmod o+x %s", bad, identity.Username, bad)
+			}
+		}
 	}
 
 	// 让服务端监听的端口与实例的 port 一致（隧道正是按后者下发的）。
@@ -398,6 +504,94 @@ func (i *Instance) Start() error {
 	// 独立进程组：便于停止时连同子进程一起终止（sh -c 包裹时尤其重要）
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
+	// ---- 容器模式：把"宿主命令行"换成"docker run"（见 docs/CONTAINERIZATION.md）----
+	//
+	// 注意这里**不是另起一套启动逻辑**：命令行仍按上面同一套优先级算出来
+	//（start.sh → 自定义 → 默认 java），容器模式只是把它搬进容器执行。
+	// 这样"面板里选 Java 版本""自定义启动命令""启动脚本"这些既有功能
+	// 在两种模式下语义一致，不会出现"只有容器模式才有的启动方式"。
+	if i.Container != nil {
+		if identity == nil {
+			// 没有 uid 就写不出 --user；而容器里的 root 就是宿主 root。
+			i.status = "error"
+			if i.logFile != nil {
+				i.logFile.Close()
+				i.logFile = nil
+			}
+			return fmt.Errorf("该实例启用了容器模式，但没有解析到降权身份：" +
+				"容器里的 root 等同于节点 root，因此拒绝以 root 身份启动。" +
+				"请检查节点配置里的 instance_user（默认 per-instance）")
+		}
+		cargv, cerr := i.containerArgv(cmd, identity)
+		if cerr != nil {
+			i.status = "error"
+			if i.logFile != nil {
+				i.logFile.Close()
+				i.logFile = nil
+			}
+			return cerr
+		}
+		// docker CLI 自己必须是 root（要连 /var/run/docker.sock），
+		// 降权由 --user 在容器内生效 —— 所以这里**不能**设 Credential。
+		cmd = exec.Command(cargv[0], cargv[1:]...)
+		cmd.Dir = i.Dir
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		i.containerized = true
+	}
+
+	// ---- 降权运行（T0 修复的核心）----
+	//
+	// 这一段决定了"能管一台实例"到底等于多大的权限。以前这里什么都没有，
+	// 于是 Daemon（root）exec 出来的 java / sh 也是 root，而面板允许实例所有者
+	// 编辑 start.sh、允许协作者往控制台发命令 —— 两者都能拿到 shell，
+	// 于是任何能碰一台实例的用户都拿到了节点 root。
+	//
+	// 现在把实例进程切到专用身份（每实例一个系统用户）。注意这只是修复的一半：
+	// 另一半是"root 会去读的文件不能放在租户可写的目录里"
+	//（frpc.toml / instance.json，见 config.StateDir 的说明）。
+	//
+	// 改属主必须在**这里**做，也就是在 Daemon 自己往实例目录写完（server.properties、
+	// 日志文件）之后、exec 之前：早一步的话，Daemon 随后写的文件又变回 root 属主，
+	// 服务端下次改写它就会 permission denied。
+	if identity != nil {
+		// 同 uid 时不必改属主（改也是空操作），省掉一次整棵目录的遍历
+		if identity.UID != uint32(os.Geteuid()) || identity.GID != uint32(os.Getegid()) {
+			if err := runas.ChownTree(i.Dir, identity); err != nil {
+				i.status = "error"
+				if i.logFile != nil {
+					i.logFile.Close()
+					i.logFile = nil
+				}
+				return fmt.Errorf("把实例目录交给运行用户 %s 失败: %w", identity.Username, err)
+			}
+		}
+		// 目录私有化：只改属主是不够的 —— 目录 0755 时，**另一个实例**的进程
+		// （同样是普通用户、只是 uid 不同）能穿进来读走 0644 的存档与名单。
+		// 每次启动都补一次 chmod，顺带把老装机（先前建的是 0755）纠正过来。
+		if err := os.Chmod(i.Dir, 0o700); err != nil {
+			i.status = "error"
+			if i.logFile != nil {
+				i.logFile.Close()
+				i.logFile = nil
+			}
+			return fmt.Errorf("设置实例目录权限失败: %w", err)
+		}
+		// 注意这两种模式下降权的落点不同：
+		//   - native：直接给子进程设 Credential（内核在 exec 时切换 uid）；
+		//   - container：**不能**给 docker CLI 设 Credential —— CLI 要以 root 连
+		//     /var/run/docker.sock，降权是容器内的 `--user <uid>:<gid>`。
+		//     最初这里没区分，结果 CLI 以实例 uid 去连 docker socket，
+		//     容器一个都起不来，而报错只在实例日志里（"permission denied ...
+		//     docker.sock"），很容易误判成 docker 没装好。
+		if !i.containerized {
+			cmd.SysProcAttr.Credential = identity.Credential()
+			// HOME 显式给实例目录：per-instance 用户是 --system 建的、没有真实家目录，
+			// 而 JVM 取不到 passwd 项时会把 user.home 落成 "/"，
+			// 插件往 user.home 写文件就会在根目录上碰壁。
+			cmd.Env = append(os.Environ(), "HOME="+identity.Home)
+		}
+	}
+
 	// 关键设计：stdout/stderr 直接重定向到日志文件（不经管道）。
 	// 这样 Daemon 崩溃/重启不会中断 MC 进程；Daemon 通过 tail 文件获取输出。
 	cmd.Stdout = lf
@@ -421,7 +615,14 @@ func (i *Instance) Start() error {
 
 	// 施加资源限制（CPU 配额）。必须在 Start 之后 —— cgroup 只能对已存在的
 	// 进程生效。失败不终止实例，仅记录原因供界面提示。
-	i.limitWarn = i.applyResourceLimit(cmd.Process.Pid)
+	if i.containerized {
+		// 容器实例的限额由 Docker 实施（--memory / --cpus）。**必须跳过这里**：
+		// 同一个进程在一个 cgroup 层级里只能属于一个 cgroup，Daemon 再写一次
+		// 会把容器自己的 cgroup 覆盖掉，配额静默失效（见 docs/CONTAINERIZATION.md 3.3）。
+		i.limitWarn = ""
+	} else {
+		i.limitWarn = i.applyResourceLimit(cmd.Process.Pid)
+	}
 
 	// 通知外部：本次启动成功（用于累计开机次数与运行时长）
 	i.stopRecorded = false
@@ -469,8 +670,163 @@ func (i *Instance) Start() error {
 	return nil
 }
 
+// containerArgv 把已算好的宿主命令行翻译成"docker run + 容器内命令行"。
+//
+// 翻译只做两件事：
+//  1. **路径**：实例目录挂到 /data，因此命令行里指向实例目录的路径要一并改写
+//     （start.sh 的路径、-jar 后面的 jar 路径、自定义命令里的 {dir} 等）。
+//     用"前缀替换"而不是解析参数列表，是因为自定义启动命令是一整段 shell 文本，
+//     按参数切会把 `java -jar /path/x.jar` 这种整段当成一个字符串。
+//  2. **java**：宿主的 java 路径原样可用（JDK 只读挂入同一个路径），
+//     但如果 java 落在实例目录里（用户自己传的 JDK），那它已经在 /data 下，
+//     要改写成容器内路径，并且不用再额外挂载。
+//
+// 起脚本统一用 bash 而不是 sh：节点的 /bin/sh 是 bash，用户的 start.sh
+// 多半是 bash 写法；而基础镜像里的 /bin/sh 是 dash，直接跑会踩 [[ ]]、数组。
+func (i *Instance) containerArgv(native *exec.Cmd, identity *runas.Identity) ([]string, error) {
+	if err := i.Container.EnsureNetwork(context.Background(), i.ID); err != nil {
+		return nil, fmt.Errorf("准备容器网络失败：%w", err)
+	}
+
+	// JDK：容器内要执行的 java、以及要只读挂入的 JDK 根目录
+	javaBin, javaHome := i.containerJava()
+
+	var inner []string
+	switch i.startMode {
+	case "start.sh":
+		inner = []string{"bash", container.MountPoint + "/start.sh"}
+	case "custom":
+		script := ""
+		if len(native.Args) >= 3 {
+			script = native.Args[2] // ["sh","-c",<脚本文本>]
+		}
+		inner = []string{"bash", "-c", i.toContainerPaths(script)}
+	default:
+		inner = make([]string, 0, len(native.Args))
+		for n, a := range native.Args {
+			if n == 0 && javaBin != "" {
+				inner = append(inner, javaBin)
+				continue
+			}
+			inner = append(inner, i.toContainerPaths(a))
+		}
+	}
+
+	spec := container.Spec{
+		InstanceID:   i.ID,
+		Dir:          i.Dir,
+		UID:          identity.UID,
+		GID:          identity.GID,
+		MemoryBytes:  i.MemLimitBytes,
+		CPUPercent:   i.CPUQuotaPercent,
+		Port:         i.Port,
+		JavaHome:     javaHome,
+		ResourcesDir: i.ContainerResourcesDir,
+		Command:      inner,
+	}
+	return i.Container.Argv(spec)
+}
+
+// toContainerPaths 把命令行里指向实例目录的路径改写为容器内路径。
+func (i *Instance) toContainerPaths(s string) string {
+	if s == "" {
+		return s
+	}
+	if s == i.Dir {
+		return container.MountPoint
+	}
+	return strings.ReplaceAll(s, i.Dir, container.MountPoint)
+}
+
+// containerJava 解析容器内要用的 java 可执行文件，以及需要只读挂入的 JDK 根目录。
+//
+// javaHome 为空表示"不需要额外挂载"：要么 JDK 就在实例目录里（已在 /data 下），
+// 要么根本没解析到具体 JDK（那就只能指望镜像 PATH 上的 java —— 基础镜像里
+// 没有 java，所以这种情况会在容器里以"找不到 java"失败，属于应当让人看见的错误）。
+func (i *Instance) containerJava() (javaBin, javaHome string) {
+	bin := i.resolveJavaBin()
+	if bin == "" {
+		return "", ""
+	}
+	abs := bin
+	if !filepath.IsAbs(abs) {
+		p, err := exec.LookPath(abs)
+		if err != nil {
+			return bin, "" // 找不到实体，交给容器里的 PATH 去试
+		}
+		abs = p
+	}
+	// /usr/bin/java 往往是 alternatives 的软链，而容器里没有这套 alternatives，
+	// 必须解析到 JDK 内那个真实文件
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = real
+	}
+	if filepath.Base(abs) != "java" {
+		return bin, ""
+	}
+	home := filepath.Dir(filepath.Dir(abs)) // <home>/bin/java
+
+	// JDK 在实例目录里：整个实例目录已经挂成 /data，不必重复挂载
+	if home == i.Dir || strings.HasPrefix(home, i.Dir+string(os.PathSeparator)) {
+		return i.toContainerPaths(abs), ""
+	}
+	return abs, home
+}
+
+// SetContainer 启用/停用容器模式（Daemon 在创建、加载、切换时调用）。
+//
+// rt 为 nil 表示容器运行时不可用（节点没装 docker）；
+// required 表示**元数据要求**该实例必须容器化 —— 这时 rt 为 nil 会在启动时
+// 被明确拒绝，而不是悄悄退回 native。这个区分很重要：面板上写着"容器化"、
+// 实际却跑在宿主上，比直接起不来更危险（隔离看起来在，其实不在）。
+func (i *Instance) SetContainer(rt *container.Runtime, resourcesDir string, required bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.Container = rt
+	i.ContainerResourcesDir = resourcesDir
+	i.wantContainer = required
+	// containerized 的含义是"该实例按容器模式运行"，而不是"本次是容器起的"：
+	// Daemon 重启后接管一个正在跑的容器时，Stop/Kill 也必须走容器那条路，
+	// 否则会去对容器 init 进程发信号 —— 那是 docker 的内部进程，语义完全不对。
+	i.containerized = rt != nil && required
+}
+
+// Containerized 该实例是否按容器模式运行。
+func (i *Instance) Containerized() bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.containerized
+}
+
+// tail 相关的节奏参数。
+const (
+	// tailPollInterval 读到文件末尾后的等待间隔。
+	tailPollInterval = 200 * time.Millisecond
+	// tailFlushIdleTicks 连续多少次"没有任何新数据"之后，把没带换行的残行也推出去。
+	//
+	// 为什么需要它：服务端偶尔会写下**不带换行**的内容（进度条 `\r` 刷新、
+	// 交互式提示符）。攒着不发的代价是这类内容在控制台上永远看不见。
+	// 3 × 200ms = 600ms：正常整行输出不受影响（拿到换行就立刻发），
+	// 只有"半行"要多等这 600ms，换来确定性。
+	tailFlushIdleTicks = 3
+	// tailMaxPendingBytes 残行的长度上限，超过就无条件推出，防止
+	// "服务端写了一个几十 MB 不带换行的东西"把内存吃光。
+	tailMaxPendingBytes = 64 * 1024
+)
+
 // tailLog 持续读取日志文件新增内容并广播（类似 tail -f）。
 // 用于把 MC 输出推送给控制台订阅者，且不依赖进程管道。
+//
+// 为什么要在这里按行攒：bufio.Reader.ReadString('\n') 在**追尾一个正在被写入的
+// 文件**时，读到文件末尾就会把"还没写完的半行"当作一次成功读取返回（err=EOF）。
+// 原样广播的话，一行会被拆成两条消息发给控制台，后果不只是看着断成两截：
+//
+//   - 行级别高亮（console_format.go）靠"行首的 [WARN]/[ERROR]"判断，
+//     拆开后前半截有标记、后半截没有，同一行会被涂成两种样子；
+//   - 前半截没有换行，ESC[K 会在行中间执行，底色只涂半行。
+//
+// 所以这里只广播**以换行结尾**的完整行，半行留在缓冲里等下一轮补齐；
+// 半行若长时间补不齐（服务端本来就不发换行），按上面的 idle 规则兜底推出。
 func (i *Instance) tailLog(path string) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -482,16 +838,57 @@ func (i *Instance) tailLog(path string) {
 		return
 	}
 	reader := bufio.NewReader(f)
+
+	var pending strings.Builder // 尚未收到换行的残行
+	idle := 0
+	finalizing := false // 已进入"停机前最后一次确认"阶段
+
+	// flushPending 把残行推出去（没有换行就原样推，不自己补 —— 补出来的行
+	// 会让控制台显示服务端并没有输出过的内容）。
+	flushPending := func() {
+		if pending.Len() == 0 {
+			return
+		}
+		i.broadcast(pending.String())
+		pending.Reset()
+		idle = 0
+	}
+
 	for {
-		line, err := reader.ReadString('\n')
-		if line != "" {
-			i.broadcast(line)
+		chunk, err := reader.ReadString('\n')
+		if chunk != "" {
+			pending.WriteString(chunk)
+			switch {
+			case strings.HasSuffix(chunk, "\n"):
+				// 完整行：立刻推送，不加任何延迟
+				flushPending()
+			case pending.Len() >= tailMaxPendingBytes:
+				// 半行已经太长：不能再攒了
+				flushPending()
+			default:
+				idle = 0 // 有新数据，重新计时
+			}
 		}
 		if err != nil {
 			if !i.isActive() {
+				// 实例已经停了。**不能立刻返回**：进程退出与"文件里最后几行
+				// 变得可见"之间有个很短的窗口（cmd.Wait 返回后收尾协程才把
+				// status 改成 stopped），此时直接退出会把关服日志
+				//（Stopping server / Saving worlds）整段丢掉 —— 恰恰是停机时
+				// 最想看的那几行。多等一拍再确认一次，然后才收尾。
+				if !finalizing {
+					finalizing = true
+					time.Sleep(tailPollInterval)
+					continue
+				}
+				flushPending()
 				return
 			}
-			time.Sleep(200 * time.Millisecond)
+			idle++
+			if idle >= tailFlushIdleTicks {
+				flushPending()
+			}
+			time.Sleep(tailPollInterval)
 		}
 	}
 }
@@ -545,6 +942,16 @@ func (i *Instance) Stop() error {
 	}
 	// 接管状态：无 stdin 管道，用 SIGTERM（MC 有 shutdown hook，可优雅退出）
 	if i.adoptedPID != 0 {
+		// 容器模式下"接管的进程"其实是接管的**容器**：容器没有 stdin 可写，
+		// 但可以让 docker 去送 SIGTERM（同样是优雅退出）。
+		if i.containerized && i.Container != nil {
+			if err := i.Container.GracefulStop(context.Background(), i.ID, 30*time.Second); err != nil {
+				return fmt.Errorf("停止容器失败: %w", err)
+			}
+			i.stopRecorded = true
+			go fireLifecycle(i.ID, false)
+			return nil
+		}
 		if err := syscall.Kill(-i.adoptedPID, syscall.SIGTERM); err != nil {
 			// 进程组不存在时退回单进程信号
 			if err2 := syscall.Kill(i.adoptedPID, syscall.SIGTERM); err2 != nil {
@@ -621,6 +1028,17 @@ func (i *Instance) Kill() error {
 		return nil
 	}
 	if i.cmd != nil && i.cmd.Process != nil {
+		// 容器模式：**必须先删容器**。
+		//
+		// 只杀 docker CLI 的进程组是不够的 —— 容器是 dockerd 里的独立进程，
+		// CLI 死了它照样跑（还把端口占着、把 session.lock 占着），
+		// 而面板会显示"已停止"。PoC A11 专门验的就是这条。
+		if i.containerized && i.Container != nil {
+			if err := i.Container.Remove(context.Background(), i.ID, true); err != nil {
+				slog.Warn("删除实例容器失败，实例可能仍在运行", "instance", i.ID, "error", err)
+				i.limitWarn = "删除容器失败：" + err.Error()
+			}
+		}
 		// 杀整个进程组，避免 sh -c 包裹时残留子进程
 		_ = syscall.Kill(-i.cmd.Process.Pid, syscall.SIGKILL)
 		err := i.cmd.Process.Kill()
@@ -631,9 +1049,12 @@ func (i *Instance) Kill() error {
 	return fmt.Errorf("无进程")
 }
 
-// ReadPIDFile 读取实例目录中记录的 PID（无则为 0）。
-func ReadPIDFile(dir string) int {
-	b, err := os.ReadFile(filepath.Join(dir, "daemon.pid"))
+// ReadPIDFile 读取实例的 PID 记录（无则为 0）。
+//
+// stateDir 是**平台状态目录**（<state_dir>/<实例ID>），不是实例目录 ——
+// 见下方 pidFile 字段的说明。
+func ReadPIDFile(stateDir string) int {
+	b, err := os.ReadFile(filepath.Join(stateDir, "daemon.pid"))
 	if err != nil {
 		return 0
 	}
@@ -658,19 +1079,36 @@ func (i *Instance) SendCommand(cmd string) error {
 	return err
 }
 
+// consoleSubBuf 单个控制台订阅者的输出缓冲行数。
+//
+// 256 行在"服务端刷屏"时不够用：一次世界保存 + 插件批量日志很容易在
+// 控制台把这几百行排完之前就超过它（gRPC + WS + 浏览器渲染这条链路的
+// 消费速度远低于服务端往文件里写的速度）。缓冲不是根因，只是减小触发概率；
+// 真正保证"不静默丢"的是 broadcast 里的丢帧通知。
+const consoleSubBuf = 1024
+
+// consoleSub 一个控制台订阅者。
+//
+// 为什么是结构体而不是裸 channel：需要**按订阅者**记"丢了多少行" ——
+// 一个慢订阅者不该拖累别人，丢帧提示也只需要发给落后的那一个。
+type consoleSub struct {
+	ch      chan string
+	dropped int // 上次提示之后又丢了多少行（未提示的积压）
+}
+
 // Subscribe 订阅控制台输出，返回一个 channel 和取消函数。
 func (i *Instance) Subscribe() (<-chan string, func()) {
-	ch := make(chan string, 256)
+	sub := &consoleSub{ch: make(chan string, consoleSubBuf)}
 	i.subMu.Lock()
-	i.subs = append(i.subs, ch)
+	i.subs = append(i.subs, sub)
 	i.subMu.Unlock()
-	return ch, func() {
+	return sub.ch, func() {
 		i.subMu.Lock()
 		defer i.subMu.Unlock()
 		for idx, s := range i.subs {
-			if s == ch {
+			if s == sub {
 				i.subs = append(i.subs[:idx], i.subs[idx+1:]...)
-				close(ch)
+				close(s.ch)
 				break
 			}
 		}
@@ -678,17 +1116,38 @@ func (i *Instance) Subscribe() (<-chan string, func()) {
 }
 
 // broadcast 向所有订阅者广播一行。
+//
 // 注意：使用独立的 subMu，绝不使用 mu —— 因为调用方可能正持有 mu
-//（Go 的 sync.Mutex 不可重入，嵌套加锁会永久死锁）。
+// （Go 的 sync.Mutex 不可重入，嵌套加锁会永久死锁）。
+//
+// 全程持锁，不再"拷贝一份订阅者列表后解锁再发"：
+// 那样写有个会**直接 panic** 的竞态 —— 拷贝发生在锁内、发送发生在锁外，
+// 而取消订阅的收尾会 close(channel)。两者交错时就是 send on closed channel，
+// 表现是"用户关掉控制台页签，Daemon 崩了"。
+// 这里可以安心持锁，因为发送全都是非阻塞的（select + default）：
+// 没有任何一条路径会在持锁期间等待。
 func (i *Instance) broadcast(line string) {
 	i.subMu.Lock()
-	subs := make([]chan<- string, len(i.subs))
-	copy(subs, i.subs)
-	i.subMu.Unlock()
-	for _, s := range subs {
+	defer i.subMu.Unlock()
+	for _, s := range i.subs {
+		// 落后的订阅者：先把"丢了多少行"补一条可见的提示，再发当前行。
+		// 宁可让用户看到"这里丢了 N 行"，也不要让他以为日志就长这样 ——
+		// 静默丢帧会让人以为服务端没输出，从而去查一个不存在的问题。
+		// 提示本身也可能发不进去（缓冲还满着），那就继续累计，下一条行再试。
+		if s.dropped > 0 {
+			notice := fmt.Sprintf(
+				"\x1b[93m[控制台丢帧] 上面有 %d 行因推送不及时被跳过（实例日志文件里仍然完整，可在文件管理里查看）\x1b[0m\n",
+				s.dropped)
+			select {
+			case s.ch <- notice:
+				s.dropped = 0
+			default:
+			}
+		}
 		select {
-		case s <- line:
-		default: // 订阅者消费太慢则丢弃，避免阻塞
+		case s.ch <- line:
+		default:
+			s.dropped++
 		}
 	}
 }
@@ -872,6 +1331,7 @@ func (i *Instance) renderCommand(tpl string) string {
 	}
 	return s
 }
+
 // ParseMemBytes 把 "3G" / "2048M" / "1.5G" 这类写法换算为字节数。
 // 解析失败返回 0（视为不限制），而不是报错 —— 配额解析失败不应阻止实例启动。
 func ParseMemBytes(s string) int64 {

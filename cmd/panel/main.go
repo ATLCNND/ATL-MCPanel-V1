@@ -15,7 +15,6 @@ import (
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/grpclimits"
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/logger"
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/version"
-	pb "github.com/ATLCNND/ATL-MCPanel/internal/proto/mcpanel"
 	"github.com/ATLCNND/ATL-MCPanel/internal/panel/auth"
 	"github.com/ATLCNND/ATL-MCPanel/internal/panel/db"
 	"github.com/ATLCNND/ATL-MCPanel/internal/panel/dbbackup"
@@ -23,6 +22,7 @@ import (
 	"github.com/ATLCNND/ATL-MCPanel/internal/panel/httpapi"
 	"github.com/ATLCNND/ATL-MCPanel/internal/panel/nodemgr"
 	"github.com/ATLCNND/ATL-MCPanel/internal/pki"
+	pb "github.com/ATLCNND/ATL-MCPanel/internal/proto/mcpanel"
 )
 
 func main() {
@@ -153,6 +153,8 @@ func main() {
 		DaemonServiceName: cfg.Server.DaemonServiceName,
 		DaemonGRPCListen:  cfg.Server.DaemonGRPCListen,
 		Logger:            log,
+		// 第三方日志分析（LogShare.CN）：未配置时 Enabled 为 nil → 默认关闭
+		LogShare: cfg.LogShare,
 	})
 	handler := api.Handler()
 	tlsReady := cfg.Server.TLSCert != "" && cfg.Server.TLSKey != ""

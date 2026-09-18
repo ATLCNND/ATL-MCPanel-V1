@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+
+	"github.com/ATLCNND/ATL-MCPanel/internal/common/portguard"
 )
 
 // ============================================================================
@@ -187,6 +189,15 @@ func (s *Server) handleAddInstancePort(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "请选择线路并填写本地端口")
 		return
 	}
+	// 本地端口安全检查：不许把节点自己的服务挂到公网。
+	//
+	// 这一条是**安全边界**，不是输入校验：frpc 以 root 运行、且生成的配置固定
+	// `localAddr = "127.0.0.1:<local_port>"`，所以填 22 就等于把节点的 SSH
+	// 公开到全网（实测此前确实放行）。
+	if err := portguard.Check(int(req.LocalPort), s.protectedLocalPorts()); err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
+		return
+	}
 	if req.Protocol == "" {
 		req.Protocol = "tcp"
 	}
@@ -246,7 +257,9 @@ func (s *Server) handleAddInstancePort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	remote, err := s.allocRemotePort(req.FrpsID, portStart, portEnd)
+	// 避开设该节点上**全部实例**的端口：frps 与节点同机时，公网端口会和实例抢绑定
+	// （见 allocRemotePortAvoiding 的注释）
+	remote, err := s.allocRemotePortAvoiding(req.FrpsID, portStart, portEnd, s.remotePortsToAvoid(req.FrpsID, instanceID))
 	if err != nil {
 		writeErr(w, http.StatusConflict, err.Error())
 		return
@@ -300,6 +313,11 @@ func (s *Server) handleUpdateInstancePort(w http.ResponseWriter, r *http.Request
 	}
 	if req.LocalPort <= 0 || req.LocalPort > 65535 {
 		writeErr(w, http.StatusBadRequest, "本地端口需为 1 ~ 65535 之间的整数")
+		return
+	}
+	// 与新建时同一条安全边界：改端口同样不能指向节点自己的服务
+	if err := portguard.Check(int(req.LocalPort), s.protectedLocalPorts()); err != nil {
+		writeErr(w, http.StatusForbidden, err.Error())
 		return
 	}
 

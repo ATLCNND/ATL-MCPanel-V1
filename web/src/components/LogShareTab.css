@@ -1,0 +1,469 @@
+/* ============================================================================
+   日志分析（LogShare.CN）
+   结构：归因条 + 左（选文件）/ 右（历史）双栏 + 分析结果 + 上传确认弹窗
+   这是一个**第三方服务**的入口页，所以配色刻意与面板主色区分：
+   归因条用中性强调色，让人一眼看出"这部分不是面板自己的能力"。
+   ========================================================================== */
+
+.logshare-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ---------------- 提供方归因条 ---------------- */
+.ls-provider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent-solid);
+  border-radius: var(--r-lg);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+.ls-provider-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  flex: 1;
+  min-width: 0;
+}
+
+.ls-provider-badge {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: var(--r-full);
+  background: var(--warning-bg);
+  color: var(--warning);
+  border: 1px solid var(--warning-border);
+}
+
+.ls-site-btn {
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: var(--r);
+  border: 1px solid var(--accent-solid);
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.ls-site-btn:hover {
+  background: var(--accent-bg);
+}
+
+/* ---------------- 双栏 ---------------- */
+.ls-grid {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 12px;
+}
+
+@media (max-width: 1200px) {
+  .ls-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ls-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 12px 14px;
+  min-width: 0;
+}
+
+.ls-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.ls-card-sub {
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text-3);
+}
+
+.ls-running {
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--warning);
+}
+
+.ls-empty {
+  font-size: 12.5px;
+  color: var(--text-3);
+  padding: 10px 2px;
+}
+
+/* ---------------- 文件列表 ---------------- */
+.ls-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.ls-file {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  cursor: pointer;
+  font-size: 12.5px;
+}
+
+.ls-file:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+
+.ls-file.on {
+  border-color: var(--accent-solid);
+  background: var(--accent-bg);
+}
+
+.ls-file input[type='radio'] {
+  margin: 0;
+  accent-color: var(--accent-solid);
+  flex: 0 0 auto;
+}
+
+.ls-kind {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: var(--r-full);
+  background: var(--bg-subtle);
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+/* 崩溃报告最该被一眼看到：它是"要分析的那份" */
+.ls-kind.kind-crash {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.ls-kind.kind-latest {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.ls-fname {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-1);
+}
+
+.ls-fmeta {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.ls-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.ls-actions .muted {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+/* ---------------- 历史记录 ---------------- */
+.ls-history {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.ls-hist-item {
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.ls-hist-item.deleted {
+  opacity: 0.65;
+}
+
+.ls-hist-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.ls-hist-head .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-1);
+}
+
+.ls-hist-time {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.ls-hist-meta {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.ls-hist-ops {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 7px;
+  flex-wrap: wrap;
+}
+
+.ls-hist-ops button {
+  font-size: 11.5px;
+  padding: 3px 9px;
+}
+
+.ls-hist-ops a {
+  font-size: 11.5px;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+/* ---------------- 分析结果 ---------------- */
+.ls-result {
+  min-height: 120px;
+}
+
+.ls-result .spacer {
+  flex: 1;
+}
+
+.ls-result a {
+  font-size: 11.5px;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.ls-thinking {
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--bg-base);
+}
+
+.ls-thinking summary {
+  cursor: pointer;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.ls-thinking pre {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-3);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+/* AI 回答：用等宽+预格式（对方给的是 Markdown，里面带代码块与表格对齐），
+   这里不做 Markdown 渲染是有意的 —— 渲染用户可见的第三方富文本需要
+   额外的净化层，而当前展示"原样文本"已经足够可读 */
+.ls-answer {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 620px;
+  overflow-y: auto;
+}
+
+/* ---------------- 提示条 ---------------- */
+.ls-error {
+  padding: 8px 12px;
+  border-radius: var(--r);
+  background: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid var(--danger-border);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+}
+
+.ls-msg {
+  padding: 8px 12px;
+  border-radius: var(--r);
+  background: var(--success-bg);
+  color: var(--success);
+  border: 1px solid var(--success-dark);
+  font-size: 12.5px;
+}
+
+/* ---------------- 未启用 ---------------- */
+.ls-disabled {
+  max-width: 640px;
+  padding: 18px 20px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--text-2);
+}
+
+.ls-disabled-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-1);
+  margin-bottom: 8px;
+}
+
+.ls-disabled .muted {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+/* ---------------- 上传确认弹窗 ---------------- */
+.ls-confirm {
+  width: min(680px, 94vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  overflow: hidden;
+}
+
+.ls-confirm-title {
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-1);
+}
+
+.ls-confirm-body {
+  padding: 14px 16px;
+  overflow-y: auto;
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--text-2);
+}
+
+.ls-confirm-body p {
+  margin: 0 0 8px;
+}
+
+.ls-confirm-body ul {
+  margin: 4px 0 10px;
+  padding-left: 20px;
+}
+
+.ls-confirm-body li {
+  margin-bottom: 3px;
+}
+
+/* 隐私提醒：必须显眼，但不用红色（红色在此语境下会被理解成"操作失败"） */
+.ls-warn {
+  padding: 9px 11px;
+  border-radius: var(--r);
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  color: var(--text-1) !important;
+}
+
+.ls-opt,
+.ls-agree {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+
+.ls-agree {
+  border-color: var(--accent-solid);
+  background: var(--accent-bg);
+}
+
+.ls-opt input,
+.ls-agree input {
+  margin: 3px 0 0;
+  flex: 0 0 auto;
+  accent-color: var(--accent-solid);
+}
+
+.ls-opt em {
+  display: block;
+  font-style: normal;
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+.ls-agree a {
+  color: var(--accent);
+}
+
+.ls-confirm-ops {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+
+.ls-confirm-ops .spacer {
+  flex: 1;
+}
+
+.ls-confirm-err {
+  font-size: 12px;
+  color: var(--danger);
+}

@@ -16,6 +16,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding: 9px 14px;
   background: var(--term-head);
   border-bottom: 1px solid var(--term-border);
@@ -25,6 +26,86 @@
   color: var(--term-text);
   font-size: 12px;
   font-weight: 600;
+  flex: 0 0 auto;
+}
+
+/* ---- 日志级别筛选 ----
+   三个按钮直接复用面板里胶囊标签的观感（与右侧连接状态一致），
+   只把"选中"的高亮色按级别区分：信息绿 / 警告黄 / 错误红，
+   这样不点也能一眼看出当前在看哪一类。 */
+.console-filters {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 10px;
+}
+
+.cf-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  font-family: inherit;
+  padding: 2px 9px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--term-border);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.cf-btn em {
+  font-style: normal;
+  font-size: 10.5px;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
+.cf-btn:hover {
+  color: var(--term-text);
+  border-color: var(--border-strong);
+}
+
+/* 选中态：按级别上色 */
+.cf-btn.on {
+  color: var(--term-text);
+  background: var(--bg-subtle);
+  border-color: var(--border-strong);
+}
+
+.cf-all.on {
+  color: var(--term-accent);
+  border-color: var(--term-accent);
+}
+
+.cf-info.on {
+  color: var(--success);
+  background: var(--success-bg);
+  border-color: var(--success);
+}
+
+.cf-warn.on {
+  color: var(--warning);
+  background: var(--warning-bg);
+  border-color: var(--warning-border);
+}
+
+.cf-error.on {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
+
+/* "已隐藏 N 行"：筛选开着的时候必须让人知道屏幕上的不是全部 */
+.cf-hidden {
+  font-size: 11px;
+  color: var(--text-3);
+  padding-left: 2px;
 }
 
 .console-status {
@@ -33,6 +114,7 @@
   padding: 2px 9px;
   border-radius: var(--r-full);
   border: 1px solid transparent;
+  flex: 0 0 auto;
 }
 
 .console-status.on {

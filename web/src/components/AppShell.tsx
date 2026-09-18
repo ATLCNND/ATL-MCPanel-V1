@@ -1,5 +1,5 @@
 import { ReactNode } from 'react'
-import { User } from '../api'
+import { User, roleLabel } from '../api'
 import Avatar from './Avatar'
 import BrandLogo from './BrandLogo'
 import ThemeToggle from './ThemeToggle'
@@ -139,7 +139,11 @@ export default function AppShell({
             <Avatar url={avatarUrl} name={user?.username} size={44} />
             <span className="shell-user-meta">
               <b>{user?.username || '未登录'}</b>
-              <small>{isAdmin ? '管理员' : '用户'}</small>
+              {/* 用 roleLabel() 而不是 `isAdmin ? '管理员' : '用户'`：
+                  那个二元写法把**节点用户**和普通用户都显示成「用户」，
+                  而且和「账户」页里的「总管理员」措辞对不上 ——
+                  同一个角色在两个地方叫两个名字，用户会以为自己权限变了。 */}
+              <small>{roleLabel(user?.role)}</small>
             </span>
           </button>
         </div>

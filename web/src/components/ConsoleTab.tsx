@@ -59,12 +59,83 @@ function termTheme() {
   }
 }
 
+/** 日志级别（与后端 internal/consolefmt 的取值一一对应） */
+type Level = 'info' | 'warn' | 'error'
+
+/** 级别筛选：all 之外都对应一个具体级别 */
+type Filter = 'all' | Level
+
+/** 面板转发过来的控制台消息（见 internal/panel/httpapi/console.go） */
+interface ConsoleFrame {
+  type: 'line' | 'status' | 'notice'
+  level: Level
+  data: string
+}
+
+/** 一行已收到的输出（含级别，用于切换筛选后重建视图） */
+interface BufferedLine {
+  level: Level
+  text: string
+}
+
+/**
+ * 本地保留的行数上限。
+ *
+ * 与 xterm 的 scrollback 取同一个数量级：留得比终端能显示的更多没有意义
+ * （终端本来就只记得住这么多），留得太少则切换筛选时会缺内容。
+ */
+const BUFFER_MAX = 5000
+
+const FILTERS: { key: Filter; label: string }[] = [
+  { key: 'all', label: '全部' },
+  { key: 'info', label: '信息' },
+  { key: 'warn', label: '警告' },
+  { key: 'error', label: '错误' },
+]
+
 export default function ConsoleTab({ instanceId, canSend }: { instanceId: string; canSend: boolean }) {
   const termRef = useRef<HTMLDivElement>(null)
   const term = useRef<Terminal | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const [connected, setConnected] = useState(false)
   const [input, setInput] = useState('')
+
+  // 筛选状态：用 ref 存一份给 WS 回调读（回调是闭包，拿不到最新的 state），
+  // 用 state 存一份驱动界面与计数。
+  const [filter, setFilter] = useState<Filter>('all')
+  const filterRef = useRef<Filter>('all')
+  const [counts, setCounts] = useState<Record<Level, number>>({ info: 0, warn: 0, error: 0 })
+
+  // 收到的行缓冲 + "尚未收到换行的半行"。
+  //
+  // 为什么要自己留一份缓冲：xterm 只能"往里写"，没法把已写的行藏起来。
+  // 想在切换筛选时**连历史一起**过滤（而不是只影响之后的新行），
+  // 就必须能重放 —— 切筛选时清屏，再把符合条件的行重新写一遍。
+  const bufRef = useRef<BufferedLine[]>([])
+  const pendingRef = useRef<BufferedLine | null>(null)
+
+  /** 是否显示某级别的行 */
+  const visible = (lv: Level, f: Filter) => f === 'all' || f === lv
+
+  /** 把缓冲里符合条件的行重写到终端（切换筛选时用） */
+  const replay = (f: Filter) => {
+    const t = term.current
+    if (!t) return
+    t.reset()
+    for (const line of bufRef.current) {
+      if (visible(line.level, f)) t.write(line.text)
+    }
+    if (pendingRef.current && visible(pendingRef.current.level, f)) {
+      t.write(pendingRef.current.text)
+    }
+  }
+
+  /** 重算各级别行数 */
+  const recount = () => {
+    const c: Record<Level, number> = { info: 0, warn: 0, error: 0 }
+    for (const l of bufRef.current) c[l.level]++
+    setCounts(c)
+  }
 
   // 终端初始化 + WebSocket 接入
   useEffect(() => {
@@ -92,6 +163,42 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
     let retryTimer: any = null
     let disposed = false
 
+    /**
+     * 处理一条控制台消息。
+     *
+     * 半行（没有换行的分片）要合并：Daemon 是按行推送的，但服务端偶尔会写下
+     * 不带换行的内容（进度条、交互式提示），那一行会分几片到达。合并时**沿用
+     * 第一片的级别** —— 级别标记（行首的 [WARN]/[ERROR] 配色）出现在第一片，
+     * 后续分片本来就没有标记，若按分片各自的级别算，同一行会被归到两个级别。
+     */
+    const onFrame = (f: ConsoleFrame) => {
+      const data = f.data ?? ''
+      if (!data) return
+      const lv = pendingRef.current ? pendingRef.current.level : f.level
+      const text = (pendingRef.current?.text ?? '') + data
+
+      // 按换行切分：除最后一段外都是完整行
+      const parts = text.split('\n')
+      const tail = parts.pop() ?? ''
+      let grew = false
+      for (let i = 0; i < parts.length; i++) {
+        const line = parts[i] + '\n'
+        bufRef.current.push({ level: lv, text: line })
+        if (visible(lv, filterRef.current)) t.write(line)
+        grew = true
+      }
+      // 还有没带换行的残句：留在 pending 里继续等它的后续分片
+      pendingRef.current = tail ? { level: lv, text: tail } : null
+      if (pendingRef.current && visible(lv, filterRef.current)) t.write(tail)
+
+      if (grew) {
+        if (bufRef.current.length > BUFFER_MAX) {
+          bufRef.current.splice(0, bufRef.current.length - BUFFER_MAX)
+        }
+        recount()
+      }
+    }
+
     const connect = () => {
       if (disposed) return
       ws = new WebSocket(consoleWsUrl(instanceId))
@@ -107,11 +214,20 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
         setConnected(true)
         // 服务端会回放最近日志，先重置本地缓冲避免重连后重复
         t.reset()
+        bufRef.current = []
+        pendingRef.current = null
+        recount()
         t.writeln('\x1b[90m[控制台已连接]\x1b[0m')
       }
       ws.onmessage = (e) => {
         if (disposed) return
-        t.write(e.data)
+        // 面板发的是 JSON（带级别）；解析失败就按原始文本兜底 ——
+        // 协议将来若再变，最坏也只是丢掉筛选能力，不会整屏空白。
+        try {
+          onFrame(JSON.parse(String(e.data)) as ConsoleFrame)
+        } catch {
+          t.write(String(e.data))
+        }
       }
       ws.onerror = () => {
         if (disposed) return
@@ -162,6 +278,20 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
     })
   }, [])
 
+  // 切换筛选：重建视图（连历史一起过滤）
+  useEffect(() => {
+    filterRef.current = filter
+    if (!term.current) return
+    replay(filter)
+    term.current.scrollToBottom()
+  }, [filter])
+
+  const total = counts.info + counts.warn + counts.error
+  const shown = filter === 'all' ? total : counts[filter as Level]
+  const hidden = total - shown
+
+  const countOf = (k: Filter) => (k === 'all' ? total : counts[k as Level])
+
   const sendCommand = () => {
     const ws = wsRef.current
     if (ws && ws.readyState === WebSocket.OPEN && input.trim()) {
@@ -181,6 +311,27 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
     <div className="console">
       <div className="console-head">
         <span className="t">控制台 · {instanceId}</span>
+
+        <div
+          className="console-filters"
+          title='筛选日志级别（点击后连已收到的历史一起过滤，可随时切回"全部"）'
+        >
+          {FILTERS.map((f) => (
+            <button
+              key={f.key}
+              type="button"
+              className={`cf-btn cf-${f.key}${filter === f.key ? ' on' : ''}`}
+              onClick={() => setFilter(f.key)}
+            >
+              {f.label}
+              <em>{countOf(f.key)}</em>
+            </button>
+          ))}
+          {filter !== 'all' && hidden > 0 && (
+            <span className="cf-hidden">已隐藏 {hidden} 行</span>
+          )}
+        </div>
+
         <span className={`console-status ${connected ? 'on' : 'off'}`}>
           {connected ? '已连接' : '未连接'}
         </span>

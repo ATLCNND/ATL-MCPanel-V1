@@ -10,14 +10,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ATLCNND/ATL-MCPanel/internal/common/logger"
-	"github.com/ATLCNND/ATL-MCPanel/internal/frp"
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/config"
+	"github.com/ATLCNND/ATL-MCPanel/internal/common/logger"
+	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/container"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/hoststats"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/jobqueue"
+	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/mcprocess"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/monitor"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/registry"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/resources"
+	"github.com/ATLCNND/ATL-MCPanel/internal/frp"
 	pb "github.com/ATLCNND/ATL-MCPanel/internal/proto/mcpanel"
 )
 
@@ -111,6 +113,7 @@ func (s *Server) CreateInstance(ctx context.Context, req *pb.CreateInstanceReque
 		CPUQuota:     int(req.CpuQuota),
 		BackupDir:    req.BackupDir,
 		MemLimit:     req.MemLimit,
+		Container:    req.Container,
 	})
 	if err != nil {
 		return &pb.OperationResponse{Success: false, Error: err.Error()}, nil
@@ -251,7 +254,19 @@ func (s *Server) GetInstanceRuntime(ctx context.Context, req *pb.InstanceRequest
 		// 为什么设了 CPU/内存上限却没生效。空字符串 = 一切正常。
 		JavaNote:     inst.JavaNote(),
 		LimitWarning: inst.LimitWarning(),
+		// 容器化状态：面板上要能一眼看出这个实例是"跑在容器里的"还是"直接跑在节点上的"。
+		// 这是安全属性，不能只靠管理员记得自己开过什么。
+		Containerized: inst.Containerized(),
+		ContainerNote: s.containerNote(inst),
 	}, nil
+}
+
+// containerNote 一句话说明该实例的容器化状态（空 = 无需提示）。
+func (s *Server) containerNote(inst *mcprocess.Instance) string {
+	if !inst.Containerized() {
+		return ""
+	}
+	return "该实例运行在容器 " + container.NameOf(inst.ID) + " 内（独立网络与只读根，端口只发布到本机回环）"
 }
 
 // KillInstance 强制关闭实例（SIGKILL 整个进程组）。
@@ -317,6 +332,7 @@ func (s *Server) DeleteInstance(ctx context.Context, req *pb.DeleteInstanceReque
 
 	// 目录要在注销之前取出来：注销之后注册表里就没有这条记录了
 	dir := s.reg.Dir(req.InstanceId)
+	stateDir := s.reg.StateDir(req.InstanceId)
 
 	// 幂等：节点上根本没注册过这个实例时，"删除"的**目标状态已经达成**，
 	// 不该当成失败。
@@ -336,7 +352,30 @@ func (s *Server) DeleteInstance(ctx context.Context, req *pb.DeleteInstanceReque
 	} else if err := s.reg.Delete(req.InstanceId); err != nil {
 		return &pb.OperationResponse{Success: false, Error: err.Error()}, nil
 	}
-	s.frp.StopInstance(req.InstanceId)
+
+	// 实例被删除 → 穿透的定义与文件都要一起清掉。
+	//
+	// ⚠️ 不能只 StopInstance：它是给"实例只是被停止、之后 Resume 要把隧道接回来"
+	// 用的，会**保留隧道定义**。用在删除路径上就会留下
+	// "面板里已经没有了、机器上却还在占着公网端口"的僵尸隧道 ——
+	// 那个端口被占住后实例自己反而绑不上，而且面板上完全看不出原因（2026-09-17 实测）。
+	s.frp.RemoveInstance(req.InstanceId)
+	// 兜底：管理器不认识这个实例时（例如 Daemon 重启后状态丢了、或实例本来就未注册），
+	// 仍按目录清一遍残留文件，否则下次创建同名实例时那些文件会"复活"。
+	//
+	// 注意这里用的是**平台 frp 状态目录**而不是实例目录：frpc.toml / tunnels.json /
+	// frpc.pid 已经搬出实例目录（它们由 root 的 frpc 读取，不能被租户改写）。
+	frpDir := filepath.Join(s.cfg.FrpStateDir, req.InstanceId)
+	if s.cfg.FrpStateDir == "" {
+		frpDir = filepath.Join(filepath.Dir(filepath.Clean(s.cfg.InstanceDir)), "frp", req.InstanceId)
+	}
+	frp.CleanInstanceFiles(frpDir)
+	if dir == "" {
+		dir = filepath.Join(s.cfg.InstanceDir, req.InstanceId)
+	}
+	// 平台状态目录（元数据、pid）也一并清掉：registry.Delete 只删了里面的文件，
+	// 目录本身留着，下次同名实例会复用 —— 那是无害的，但空目录堆着不好看。
+	defer func() { _ = os.Remove(stateDir) }()
 
 	// 连文件一起删：这是**不可恢复**的操作，只在管理员显式要求时执行。
 	// 默认只注销（保留世界存档），见 registry.Delete 的注释。
@@ -387,7 +426,15 @@ func (s *Server) GetInstanceStatus(ctx context.Context, req *pb.InstanceRequest)
 }
 
 // consoleHistoryLines 控制台附加时回放的历史输出行数。
-const consoleHistoryLines = 500
+//
+// 500 行太少：控制台是**每次进页签都会重新附加**的（切走再切回来就是一次
+// 重连），也就是每次切页签都只回放 500 行 —— 用户看了几千行日志、切去
+// 文件页签看一眼再回来，前面看过的就没了，观感上就是"日志丢了"。
+//
+// 2000 行在回放读取上限（consoleTailMaxBytes = 512KB）之内：
+// 服务端一行约 80~120 字节，512KB 大约能放 4000 行以上，
+// 所以调大不会读到"被截断的半个日志"，只是把窗口放宽。
+const consoleHistoryLines = 2000
 
 // Console 控制台双向流。
 //

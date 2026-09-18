@@ -115,6 +115,14 @@
   font-weight: 400;
 }
 
+/* 非原版配置项（核心/插件追加的键）用更淡的斜体区分：
+   它同样占一行说明位，但读起来要让人一眼看出"这不是原版的东西" */
+.config-key .key-desc.unknown {
+  font-style: italic;
+  opacity: 0.75;
+  font-size: 11px;
+}
+
 /* ---------------- 值 ----------------
    值可能是路径 / ID / 数字 / 布尔，统一等宽保证字符对齐。 */
 .config-value input,

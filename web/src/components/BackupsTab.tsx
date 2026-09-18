@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { BackupItem, listBackups, createBackup, deleteBackup, restoreBackup } from '../api'
 import SchedulePanel from './SchedulePanel'
 import BackupCalendar from './BackupCalendar'
@@ -90,7 +90,10 @@ export default function BackupsTab({ instanceId, canWrite, running, isAdmin }: {
 
       <div className="backups-toolbar">
         <input
-          placeholder="备份名称（可选，如：开荒前）"
+          // 名称是**可选**的：留空时由面板生成"手动-<时间>"。
+          // 这里必须说清"留空也安全" —— 否则用户会以为不填名字等于随便存一份，
+          // 而早先的 bug 正是"不填名字"导致手动备份被当成自动备份滚动淘汰。
+          placeholder="备份名称（可选，如：开荒前；留空自动命名）"
           value={name}
           onChange={(e) => setName(e.target.value)}
           disabled={!canWrite}
@@ -108,6 +111,11 @@ export default function BackupsTab({ instanceId, canWrite, running, isAdmin }: {
 
       {error && <div className="backups-error">{error}</div>}
       {msg && <div className="backups-success">{msg}</div>}
+      {/* 手动/自动的区别直接写在界面上：这决定了备份会不会被自动清理 */}
+      <div className="backups-hint">
+        「立即备份」创建的是<b>手动备份</b>，不会被自动清理的梯度规则淘汰
+        （只受保留策略里的「手动保留份数」限制）；自动备份由定时计划创建，按策略滚动淘汰。
+      </div>
       {running && <div className="backups-hint">实例运行中：备份前会自动触发存档落盘（save-all flush）以保证一致性；回滚需先停止实例。</div>}
       {!canWrite && <div className="backups-hint">只读/协作权限：创建与回滚需要 owner 及以上权限。</div>}
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
+	"time"
 
 	pb "github.com/ATLCNND/ATL-MCPanel/internal/proto/mcpanel"
 )
@@ -41,6 +43,31 @@ func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+// autoBackupName 自动备份的固定名称。**这是面板与节点之间的约定**：
+// 名字等于 auto 的备份 = 自动备份（保留策略按梯度滚动淘汰），其余 = 手动备份。
+const autoBackupName = "auto"
+
+// isAutoBackupName 是否是被当作自动备份的名字。
+//
+// 必须**精确**匹配（不区分大小写），不能写成"以 auto 开头"：
+// 用户给手动备份起名"自动化前测试"是完全合理的，前缀匹配会把他的备份
+// 当成自动备份删掉 —— 那正是这次要修的 bug。
+func isAutoBackupName(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), autoBackupName)
+}
+
+// manualBackupName 给没填名字的手动备份生成一个名字。
+//
+// 为什么必须生成而不是留空：留空的话 Daemon 会填成 "auto"，
+// 于是用户"立即备份"出来的东西在保留策略眼里就是**自动备份**，
+// 会被梯度规则滚动淘汰掉 —— 用户看到的现象就是"我手动做的备份自己没了"。
+// 手动备份是用户明确的意图，不该与自动备份混为一谈（见 retention 包的说明）。
+//
+// 用中文前缀 + 时间戳：既一眼看出是手动创建的，又天然不重名。
+func manualBackupName(now time.Time) string {
+	return "手动-" + now.Format("20060102-150405")
+}
+
 // handleCreateBackup POST /api/instances/{id}/backups  {name, include_config}
 func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
 	instanceID := r.PathValue("id")
@@ -55,6 +82,21 @@ func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "无效请求体")
 		return
 	}
+
+	name := strings.TrimSpace(req.Name)
+	// 挡住"把手动备份叫 auto"：那不是命名偏好问题，而是会让这份备份
+	// 被保留策略当作自动备份滚动淘汰 —— 与其让用户在几天后发现备份没了，
+	// 不如现在就明确拒绝并说清原因。
+	if isAutoBackupName(name) {
+		writeErr(w, http.StatusBadRequest,
+			"备份名不能是 auto：这个名字被系统用来标记「自动备份」，"+
+				"保留策略会按梯度滚动淘汰它。请换一个名字（留空则自动生成）")
+		return
+	}
+	if name == "" {
+		name = manualBackupName(time.Now())
+	}
+
 	cli, _, err := s.getDaemonClient(instanceID)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "实例不存在")
@@ -62,7 +104,7 @@ func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := cli.Backup(context.Background(), &pb.BackupRequest{
 		InstanceId:    instanceID,
-		Name:          req.Name,
+		Name:          name,
 		IncludeConfig: req.IncludeConfig,
 	})
 	if err != nil {

@@ -859,11 +859,148 @@ export async function removePlayer(instanceId: string, type: string, name: strin
   })
 }
 
+/**
+ * 踢出在线玩家。
+ *
+ * 复用"加入名单"那个接口（type=kick）：踢出是一次性动作、没有名单文件，
+ * 但它对前端的形状和"加进某个名单"是一样的 —— 都是"对某个玩家做一件事"，
+ * 单独开一个接口只会让调用方多写一条分支。后端对 kick 走的是纯控制台路径。
+ */
+export async function kickPlayer(instanceId: string, name: string): Promise<any> {
+  return addPlayer(instanceId, 'kick', name)
+}
+
+/**
+ * 设置某玩家的 OP 等级（1~4）。
+ *
+ * 注意这不是"开关 OP"，而是"设成几级"：原版的 /op 命令一律按
+ * server.properties 的 op-permission-level 设等级，表达不了具体级别，
+ * 所以后端改的是 ops.json 里的 level 字段。
+ */
+export async function setOpLevel(instanceId: string, name: string, level: number): Promise<any> {
+  return apiFetch(`/api/instances/${instanceId}/players/op-level`, {
+    method: 'POST',
+    body: JSON.stringify({ name, level }),
+  })
+}
+
 export async function setWhitelist(instanceId: string, enabled: boolean): Promise<any> {
   return apiFetch(`/api/instances/${instanceId}/whitelist`, {
     method: 'POST',
     body: JSON.stringify({ enabled }),
   })
+}
+
+// ---- 第三方日志分析（LogShare.CN） ----
+
+export interface LogShareFile {
+  path: string
+  name: string
+  size: number
+  mod_time: number
+  kind: 'crash' | 'latest' | 'console' | 'rotated' | string
+}
+
+export interface LogShareRecord {
+  id: number
+  logshare_id: string
+  url: string
+  source_path: string
+  size: number
+  lines: number
+  filtered_lines: number
+  truncated: boolean
+  created_at: string
+  expires_at: string
+  deleted: boolean
+  /** 已缓存的 AI 结论（Markdown）；为空表示还没分析过 */
+  analysis: string
+}
+
+export interface LogShareFilesResp {
+  files: LogShareFile[]
+  site_url: string
+  terms_url: string
+  privacy_url: string
+  max_bytes: number
+  history: LogShareRecord[]
+}
+
+export async function listLogShareFiles(instanceId: string): Promise<LogShareFilesResp> {
+  return apiFetch(`/api/instances/${instanceId}/logshare/files`)
+}
+
+export async function listLogShareHistory(instanceId: string): Promise<{ enabled: boolean; history: LogShareRecord[] }> {
+  return apiFetch(`/api/instances/${instanceId}/logshare`)
+}
+
+/**
+ * 上传日志并请求分析。
+ *
+ * `agree` 必须是用户**手动勾选**的结果：这是把日志（含玩家名与聊天内容）
+ * 交给第三方的唯一合法性依据，服务端也会再校验一次。
+ */
+export async function analyseLog(
+  instanceId: string, path: string, opts: { filterChat: boolean; agree: boolean },
+): Promise<{
+  id: string; url: string; size: number; lines: number
+  filtered_lines: number; truncated: number; attached: number; expires_at: string
+}> {
+  return apiFetch(`/api/instances/${instanceId}/logshare/analyse`, {
+    method: 'POST',
+    body: JSON.stringify({ path, filter_chat: opts.filterChat, agree: opts.agree }),
+  })
+}
+
+export async function deleteLogShare(instanceId: string, logshareId: string) {
+  return apiFetch(`/api/instances/${instanceId}/logshare/${encodeURIComponent(logshareId)}`, { method: 'DELETE' })
+}
+
+/**
+ * 流式读取 AI 分析（SSE）。
+ *
+ * 用 fetch + ReadableStream 而不是 EventSource：EventSource **不能带请求头**，
+ * 而我们的接口要 Authorization —— 用 EventSource 就只能把令牌放进 URL
+ *（正是我们一直在避免的做法）。
+ *
+ * 返回的每个事件形如 {event, data}；data 是对方原样的 JSON 字符串。
+ */
+export async function streamLogShareAI(
+  instanceId: string, logshareId: string,
+  onEvent: (ev: { event: string; data: string }) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const headers: Record<string, string> = { Accept: 'text/event-stream' }
+  const token = getToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const resp = await fetch(`/api/instances/${instanceId}/logshare/ai/${encodeURIComponent(logshareId)}`, { headers, signal })
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({} as any))
+    throw new Error(data.error || `HTTP ${resp.status}`)
+  }
+  if (!resp.body) throw new Error('响应没有可读流')
+
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    // SSE 以空行分隔事件
+    let idx: number
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const raw = buf.slice(0, idx)
+      buf = buf.slice(idx + 2)
+      let event = 'message'
+      const datas: string[] = []
+      for (const line of raw.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim()
+        else if (line.startsWith('data:')) datas.push(line.slice(5).trim())
+      }
+      if (datas.length) onEvent({ event, data: datas.join('\n') })
+    }
+  }
 }
 
 // ---- 核心 jar 管理 ----
@@ -921,6 +1058,33 @@ export interface StartScriptState {
 
 export async function getStartScript(instanceId: string): Promise<StartScriptState> {
   return apiFetch(`/api/instances/${instanceId}/start-script`)
+}
+
+// ---- 容器化隔离 ----
+
+/** 实例容器化状态：是否已启用、节点是否具备条件、不可用时的原因。 */
+export interface ContainerState {
+  enabled: boolean
+  available: boolean
+  running: boolean
+  reason: string
+  docker_present?: boolean
+  image_present?: boolean
+  docker_version?: string
+  image?: string
+  container_note?: string
+  status?: string
+}
+
+export async function getContainerState(instanceId: string): Promise<ContainerState> {
+  return apiFetch(`/api/instances/${instanceId}/container`)
+}
+
+export async function setContainerEnabled(instanceId: string, enabled: boolean): Promise<any> {
+  return apiFetch(`/api/instances/${instanceId}/container`, {
+    method: 'PUT',
+    body: JSON.stringify({ enabled }),
+  })
 }
 
 export async function setStartScript(
@@ -1113,6 +1277,32 @@ export function downloadUrl(instanceId: string, path: string): string {
   return `/api/instances/${instanceId}/download?${q.toString()}`
 }
 
+/**
+ * 取文件内容为 Blob（用于页面内预览，例如图片）。
+ *
+ * 为什么不直接用 `downloadUrl` 放进 `<img src>`：那条路要**把令牌写进 URL**
+ *（浏览器发起 <img> 时加不了请求头），而且下载接口返回的是
+ * `Content-Disposition: attachment` + `application/octet-stream` + `nosniff`，
+ * 浏览器会按"未知二进制"处理、拒绝当图片渲染（nosniff 明确禁止嗅探）。
+ *
+ * 这条走的是带 Authorization 头的正常请求，取回字节后由调用方
+ * `URL.createObjectURL` 成临时地址 —— 令牌不进 URL、不落浏览器历史与日志。
+ * 用完记得 `URL.revokeObjectURL`，否则这块内存会一直挂着。
+ */
+export async function fetchFileBlob(instanceId: string, path: string): Promise<Blob> {
+  const headers: Record<string, string> = {}
+  const token = getToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const q = new URLSearchParams({ path })
+  const resp = await fetch(`/api/instances/${instanceId}/download?${q.toString()}`, { headers })
+  if (!resp.ok) {
+    // 错误响应是 JSON（{error: "..."}），解析出来给人看
+    const data = await resp.json().catch(() => ({} as any))
+    throw new Error(data.error || `HTTP ${resp.status}`)
+  }
+  return resp.blob()
+}
+
 // ---- 排队任务（压缩 / 解压，走节点公共资源） ----
 
 export interface FileJob {
@@ -1250,6 +1440,32 @@ export async function setUserRole(id: number, role: string) {
   })
 }
 
+/**
+ * 改用户名（本人可改自己，总管理员可改任何人）。
+ *
+ * 用户名不再是身份标识（身份是 UID），所以改名不影响实例授权、端口配额
+ * 等任何关联 —— 后端返回的 message 里写明了这一点，界面照原样展示。
+ */
+export async function renameUser(id: number, username: string) {
+  return apiFetch(`/api/users/${id}/username`, {
+    method: 'PUT',
+    body: JSON.stringify({ username }),
+  })
+}
+
+/**
+ * 改实例的显示名。
+ *
+ * 改的是面板数据库里的 name，**不是实例 ID**：ID 是目录名与所有关联的钥匙，
+ * 改名不会动它，所以公网端口、授权、启动记录都不受影响。
+ */
+export async function renameInstance(instanceId: string, name: string) {
+  return apiFetch(`/api/instances/${encodeURIComponent(instanceId)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ name }),
+  })
+}
+
 export async function changePassword(oldPassword: string, newPassword: string, targetUser?: string) {
   return apiFetch('/api/auth/change-password', {
     method: 'POST',
@@ -1257,8 +1473,22 @@ export async function changePassword(oldPassword: string, newPassword: string, t
   })
 }
 
-/** 当前登录用户（同步读取，登录时写入本地存储） */
+/**
+ * 当前登录用户（同步读取，登录时写入本地存储）。
+ *
+ * `id` 是 UID，也是**唯一不会变**的标识。
+ *
+ * 为什么必须有它：用户名可以改（PUT /api/users/{id}/username），一旦
+ * 前端还拿用户名当身份用（"这行是不是我自己"、按用户名匹配授权），
+ * 用户改完名就会出现"认不出自己"这类怪现象 —— 比如把自己显示成普通用户、
+ * 或者在对自己的账号点删除时不再拦住。凡是"记住这个人是谁"的地方，
+ * 一律比 id，不要比 username。
+ *
+ * 老版本浏览器里可能存着没有 id 的登录态（登录时后端还没返回 id），
+ * 所以它是可选的：读不到就回退到按用户名比较，等下次登录自然补齐。
+ */
 export interface User {
+  id?: number
   username: string
   role: string
 }
@@ -1273,8 +1503,46 @@ export function currentUser(): User | null {
   }
 }
 
-export function setCurrentUser(username: string, role: string) {
-  localStorage.setItem('atlmcpanel_user', JSON.stringify({ username, role }))
+/**
+ * 登录态变化事件。
+ *
+ * 为什么要广播：改自己的用户名之后，右上角/左下角显示的名字来自本地登录态，
+ * 而那条链路（App → AppShell）是另一棵组件树，够不着账户页里的这次修改。
+ * 用一个 window 事件把"登录态变了"这件事说出去，比把 setState 回调
+ * 从 App 一路传进账户页更省事，也不会因为将来多一处入口（比如管理员
+ * 在用户页改了自己）就漏掉刷新。
+ */
+export const USER_EVENT = 'atlmcpanel:user-changed'
+
+export function setCurrentUser(id: number | undefined, username: string, role: string) {
+  localStorage.setItem('atlmcpanel_user', JSON.stringify({ id, username, role }))
+  window.dispatchEvent(new Event(USER_EVENT))
+}
+
+/**
+ * 只更新本地登录态里的用户名（改完自己的名字后调用）。
+ *
+ * 令牌里带的用户名是签发时的旧值且**不会**随之改变 —— 但这不影响任何权限
+ * （后端鉴权只用 uid），所以这里只需把界面上的显示名刷新过来即可，
+ * 不必强制重新登录。
+ */
+export function updateCurrentUsername(username: string) {
+  const u = currentUser()
+  if (!u) return
+  setCurrentUser(u.id, username, u.role)
+}
+
+/**
+ * 当前用户是不是指定的那个账号。
+ *
+ * 优先比 UID：用户名可以改，UID 改不了。只有当本地登录态里没有 id
+ * （旧版本存下来的）时才退回按用户名比较。
+ */
+export function isCurrentUser(u: { id?: number; username: string }): boolean {
+  const me = currentUser()
+  if (!me) return false
+  if (me.id != null && u.id != null) return me.id === u.id
+  return me.username === u.username
 }
 // ---- 实例运行数据（运行时长 / 启停次数 / 磁盘 / 网络） ----
 

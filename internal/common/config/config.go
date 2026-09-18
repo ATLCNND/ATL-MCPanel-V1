@@ -19,6 +19,48 @@ type Config struct {
 	Daemon DaemonConfig `yaml:"daemon"`
 	DB     DBConfig     `yaml:"db"`
 	Auth   AuthConfig   `yaml:"auth"`
+
+	// LogShare 第三方日志分析（https://logshare.cn）的接入配置。
+	LogShare LogShareConfig `yaml:"logshare"`
+}
+
+// LogShareConfig LogShare.CN 日志分析接入。
+//
+// 它是**第三方免费服务**：面板把实例日志上传到 api.logshare.cn，由对方的 AI
+// 给出崩溃根因与修复建议。因此默认**关闭** —— 多租户面板不该默认把租户的
+// 日志（含玩家名与聊天内容）送出去，必须由基础设施所有者显式打开。
+//
+// 无论开关如何，前端每次上传前都会弹窗告知并**要求手动勾选**
+// 同意对方的《服务协议》与《隐私政策》，且提供"过滤玩家聊天行"（默认开）。
+type LogShareConfig struct {
+	Enabled *bool `yaml:"enabled"` // 指针以区分"未配置"与"显式关闭"；默认关闭
+
+	// Endpoint 接口根地址（默认 https://api.logshare.cn/v1）。
+	// 留出可配置性是为了将来对方换域名、或自建兼容服务。
+	Endpoint string `yaml:"endpoint"`
+
+	// 站点与法律文本地址（前端展示与跳转用；对方改路径时不必改前端）。
+	SiteURL    string `yaml:"site_url"`
+	TermsURL   string `yaml:"terms_url"`
+	PrivacyURL string `yaml:"privacy_url"`
+
+	// MaxUploadBytes 单次上传的字节上限（默认 16MB）。
+	//
+	// 对方限制是 20MB / 20 万行，这里留出余量：超了就本地截断**尾部**
+	//（崩溃现场在日志后面），并在界面上说明截掉了多少。
+	MaxUploadBytes int64 `yaml:"max_upload_bytes"`
+
+	// TimeoutSeconds 单次请求超时（默认 300 秒）。
+	// 官方明确建议 AI 分析读超时 ≥300 秒（多轮工具调用可能持续数十秒到几分钟）。
+	TimeoutSeconds int `yaml:"timeout_seconds"`
+}
+
+// EnabledOr 返回是否启用（未配置时用 def）。
+func (c *LogShareConfig) EnabledOr(def bool) bool {
+	if c.Enabled == nil {
+		return def
+	}
+	return *c.Enabled
 }
 
 // ServerConfig Panel HTTP/gRPC 服务配置。
@@ -118,7 +160,78 @@ type DaemonConfig struct {
 	//   - 实例可被删除/清理，而共享资源不该被实例层的操作波及；
 	//   - 大 jar 单独挂盘或单独备份也更方便。
 	ResourceDir string `yaml:"resource_dir"`
+
+	// StateDir 平台自有状态的存放根目录：实例元数据（instance.json）、
+	// 由 root 运行的 frpc 配置与 pid 等。
+	//
+	// **必须放在实例目录之外**，且权限 0700（属主 root）。
+	// 原因：实例目录归实例的运行用户所有，而下面这些文件是 root 会去读的 ——
+	//   - frpc.toml：实例用户若能改写它，就能把节点上任意本地端口
+	//     （例如 22/SSH、9091/Daemon gRPC）挂到自己的 frps 上对外暴露；
+	//   - instance.json：里面的 cpu_quota / mem_limit 是施加资源限制的依据，
+	//     改掉就等于自己给自己解除配额（影响同节点其他实例）；
+	//   - daemon.pid：Daemon 开机时按它接管遗留进程。
+	// 这些都属于"root 信任的文件落在租户可写目录里"，与"实例跑成 root"是同一类问题，
+	// 只降权而不搬走这些文件等于只堵了一半。
+	//
+	// 空则用 <实例根目录>/../state。
+	StateDir string `yaml:"state_dir"`
+
+	// FrpStateDir 实例级 frpc 工作目录的根目录（配置、pid、日志）。
+	//
+	// 与 StateDir 同样必须位于实例目录之外、权限 0700：frpc 以 root 运行，
+	// 它读的配置就是 root 信任的输入。
+	// 空则用 <实例根目录>/../frp。
+	FrpStateDir string `yaml:"frp_state_dir"`
+
+	// InstanceUser 实例进程以什么身份运行。
+	//
+	// 取值：
+	//   - "per-instance"（默认）：每个实例一个专用系统用户 atl-i-<实例ID>，
+	//     实例之间互相读不到对方的存档、名单与插件目录；
+	//   - "current"：沿用 Daemon 自身的身份。**仅当 Daemon 不是 root 时可用**，
+	//     否则直接拒绝启动实例 —— 以 root 跑实例就是本次要修的那个洞；
+	//   - 其它值：当成一个已存在的用户名，所有实例共用它。
+	//     能挡住"逃逸成 root"，但租户之间不再隔离，多租户场景不建议。
+	//
+	// 注意这里**故意没有"以 root 运行"这个选项**：任何模式下实例都不会是 root。
+	// 真要那么干，只能把 Daemon 本身降权后配 current —— 那是个显式、看得见的决定。
+	InstanceUser string `yaml:"instance_user"`
+
+	// InstanceUserPrefix per-instance 模式下系统用户名的前缀。
+	// 空则用 "atl-i-"。
+	InstanceUserPrefix string `yaml:"instance_user_prefix"`
+
+	// Container 容器化隔离（可选，需节点装了 docker）。
+	//
+	// 这里**没有"默认容器化"这种选项**：单个实例是否容器化由实例元数据
+	//（instance.json 的 container 字段）决定，面板上按实例开关。
+	// 节点级只提供两件事：允不允许（Enabled）与用哪个镜像（Image）。
+	Container ContainerConfig `yaml:"container"`
 }
+
+// ContainerConfig 容器化隔离的节点级设置。
+type ContainerConfig struct {
+	// Enabled 是否允许在节点上开启容器化。
+	//
+	// 指针以区分"未配置"与"显式关闭"；未配置 = 允许（前提是装了 docker）。
+	// 显式关闭的用途：节点上 docker 被别人共享、或管理员暂时不想引入容器。
+	Enabled *bool `yaml:"enabled"`
+
+	// Image 实例运行时基础镜像。
+	//
+	// 由 scripts/build-runtime-image.sh 产出、随部署包分发（节点侧 docker load）。
+	// 空则用 atl-mcpanel-runtime:latest。
+	Image string `yaml:"image"`
+}
+
+// 实例运行身份的取值。
+const (
+	// InstanceUserPerInstance 每个实例一个专用系统用户（默认，隔离最强）。
+	InstanceUserPerInstance = "per-instance"
+	// InstanceUserCurrent 沿用 Daemon 自身身份（Daemon 必须是普通用户）。
+	InstanceUserCurrent = "current"
+)
 
 // Defaults 填充 Daemon 默认值。
 func (d *DaemonConfig) Defaults() {
@@ -132,6 +245,29 @@ func (d *DaemonConfig) Defaults() {
 		// 与实例根目录平级，而不是塞在它里面 —— 见 ResourceDir 的注释
 		d.ResourceDir = filepath.Join(filepath.Dir(filepath.Clean(d.InstanceDir)), "resources")
 	}
+	if d.StateDir == "" {
+		d.StateDir = filepath.Join(filepath.Dir(filepath.Clean(d.InstanceDir)), "state")
+	}
+	if d.FrpStateDir == "" {
+		d.FrpStateDir = filepath.Join(filepath.Dir(filepath.Clean(d.InstanceDir)), "frp")
+	}
+	if d.InstanceUser == "" {
+		d.InstanceUser = InstanceUserPerInstance
+	}
+	if d.InstanceUserPrefix == "" {
+		d.InstanceUserPrefix = "atl-i-"
+	}
+	if d.Container.Image == "" {
+		d.Container.Image = "atl-mcpanel-runtime:latest"
+	}
+}
+
+// ContainerEnabledOr 节点是否允许开启容器化（未配置时使用 defaultVal）。
+func (c *ContainerConfig) ContainerEnabledOr(defaultVal bool) bool {
+	if c.Enabled == nil {
+		return defaultVal
+	}
+	return *c.Enabled
 }
 
 // DBConfig 数据库配置。
@@ -222,6 +358,33 @@ func (c *Config) applyDefaults() {
 		c.DB.BackupKeep = 7
 	}
 	c.Daemon.Defaults()
+	c.LogShare.applyDefaults()
+}
+
+// applyDefaults 填 LogShare 的默认值。
+//
+// 注意这里**不**把 Enabled 设成 true：留着 nil 表示"未配置"，
+// 由 EnabledOr(false) 决定实际行为 —— 默认关闭是刻意的（见 LogShareConfig 注释）。
+func (l *LogShareConfig) applyDefaults() {
+	if l.Endpoint == "" {
+		l.Endpoint = "https://api.logshare.cn/v1"
+	}
+	if l.SiteURL == "" {
+		l.SiteURL = "https://logshare.cn"
+	}
+	if l.TermsURL == "" {
+		l.TermsURL = "https://logshare.cn/terms"
+	}
+	if l.PrivacyURL == "" {
+		l.PrivacyURL = "https://logshare.cn/privacy"
+	}
+	if l.MaxUploadBytes <= 0 {
+		// 对方上限 20MB，这里留余量后按 16MB 截断
+		l.MaxUploadBytes = 16 << 20
+	}
+	if l.TimeoutSeconds <= 0 {
+		l.TimeoutSeconds = 300
+	}
 }
 
 // MinJWTSecretLength JWT 密钥的最小长度。
@@ -229,17 +392,17 @@ const MinJWTSecretLength = 32
 
 // placeholderExact 完全匹配即视为占位密钥。
 var placeholderExact = map[string]bool{
-	"":                       true,
-	"secret":                 true,
-	"password":               true,
-	"changeme":               true,
-	"change_me":              true,
-	"jwt_secret":             true,
-	"your_secret":            true,
-	"your_secret_here":       true,
-	"atlmcpanel":             true,
-	"test":                   true,
-	"dev":                    true,
+	"":                 true,
+	"secret":           true,
+	"password":         true,
+	"changeme":         true,
+	"change_me":        true,
+	"jwt_secret":       true,
+	"your_secret":      true,
+	"your_secret_here": true,
+	"atlmcpanel":       true,
+	"test":             true,
+	"dev":              true,
 }
 
 // placeholderFragments 含这些片段即视为示例密钥。

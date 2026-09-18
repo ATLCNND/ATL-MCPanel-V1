@@ -15,7 +15,7 @@ import (
 // maxJarSize 单个 jar 的大小上限。
 //
 // 与共享资源、gRPC 消息上限共用同一个常量：这三者原本各写各的
-//（256MB / 512MB / gRPC 默认 4MB），结果就是传一个 41MB 的 jar
+// （256MB / 512MB / gRPC 默认 4MB），结果就是传一个 41MB 的 jar
 // 会撞上传输层的 4MB 限制，报出一句与真实原因无关的 ResourceExhausted。
 const maxJarSize = grpclimits.MaxUploadBytes
 
@@ -84,6 +84,10 @@ func (s *Server) UploadJar(ctx context.Context, req *pb.UploadJarRequest) (*pb.O
 	if err := os.WriteFile(dst, req.Content, 0o644); err != nil {
 		return &pb.OperationResponse{Success: false, Error: "写入 jar 失败: " + err.Error()}, nil
 	}
+	// jar 是**实例进程要读**的文件（java -jar）：root 写出来的 jar 若属主是 root、
+	// 模式又是 0644，实例用户仍能读；但用户之后用「核心管理」重新上传/替换时会
+	// 撞上"目录属主不是自己"的删除权限问题 —— 一并交出去，边界只有一处。
+	s.handOver(req.InstanceId, dst)
 
 	s.log.Info("核心 jar 已上传", "instance", req.InstanceId, "file", name, "size", len(req.Content))
 	return &pb.OperationResponse{Success: true,

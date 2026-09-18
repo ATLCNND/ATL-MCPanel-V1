@@ -7,22 +7,30 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/runas"
 	pb "github.com/ATLCNND/ATL-MCPanel/internal/proto/mcpanel"
 )
 
 // protectedFiles 实例目录中不通过文件接口暴露的内部文件。
 //
+// protectedFiles 受保护文件。
+//
 // 这些文件由面板/穿透引擎自动生成并维护，属于**平台级内部状态**：
 //   - frpc.toml 含 frps 地址与 auth token（共享密钥，泄露即可在 frps 上自建隧道）
 //   - tunnels.json 同样含 frps 信息与隧道定义
 //   - frpc.pid 为进程管理文件，改动会破坏隧道状态跟踪
+//   - instance.json 为实例元数据（核心类型、jar 路径、启停统计、配额）。
+//     其中 name 字段属于**面板侧**的显示名：改名的权威数据在面板数据库里，
+//     Daemon 这份是建实例时写下的快照、之后不会再更新。留在文件管理里只会
+//     造成"两个名字对不上"的困惑，因此一并归入内部状态。
 //
 // 实例协作者（collab，只读即可）理应看不到它们：穿透由管理员在
 // 「穿透管理」中统一分配，无需也不应让租户接触 frp 凭据。
 var protectedFiles = map[string]bool{
-	"frpc.toml":    true,
-	"tunnels.json": true,
-	"frpc.pid":     true,
+	"frpc.toml":     true,
+	"tunnels.json":  true,
+	"frpc.pid":      true,
+	"instance.json": true,
 }
 
 // protectedLogFiles 受保护目录下的敏感日志（相对实例目录，使用 / 分隔）。
@@ -33,6 +41,18 @@ var protectedLogFiles = map[string]bool{
 // errProtected 受保护文件的统一拒绝信息。
 // 不透露文件是否存在及其内容，仅说明由面板统一管理。
 const errProtected = "该文件由面板统一管理（穿透配置），不支持通过文件管理访问"
+
+// metaFileName 实例元数据文件名（物理位置在平台状态目录，见 config.StateDir）。
+const metaFileName = "instance.json"
+
+// isInstanceMetaPath 判断请求路径是否指向实例元数据文件。
+//
+// 允许带前导 "/" 或 "./"：面板不同代码路径里写法不完全一致，
+// 而这里只需要认出一个固定文件名，没必要让调用方先规范化。
+func isInstanceMetaPath(p string) bool {
+	clean := strings.TrimPrefix(filepath.ToSlash(filepath.Clean("/"+strings.TrimPrefix(p, "/"))), "/")
+	return clean == metaFileName
+}
 
 // isProtectedPath 判断实例内相对路径是否为受保护的内部文件。
 func isProtectedPath(rel string) bool {
@@ -128,6 +148,22 @@ func (s *Server) ReadFile(ctx context.Context, req *pb.ReadFileRequest) (*pb.Rea
 		return &pb.ReadFileResponse{Success: false, Error: err.Error()}, nil
 	}
 	if isProtectedPath(req.Path) {
+		// instance.json 例外：它**读**得到、改不了。
+		//
+		// 原因：它的物理位置已经搬到平台状态目录（root 0700），但面板的
+		// 「启动脚本」等功能仍按"实例内路径"读它（拿 jar 路径与内存参数）。
+		// 与其让面板换一套数据来源（那样共享 jar 目录的场景会退化），
+		// 不如在这里做一个**只读虚拟映射**：读走状态目录里的那份真文件，
+		// 而写/删/复制仍然被 isProtectedPath 挡住 —— 那份文件决定资源限制
+		// 与接管行为，不该由文件管理面篡改。
+		if isInstanceMetaPath(req.Path) {
+			metaPath := filepath.Join(s.reg.StateDir(req.InstanceId), metaFileName)
+			data, err := os.ReadFile(metaPath)
+			if err != nil {
+				return &pb.ReadFileResponse{Success: false, Error: "实例元数据不存在"}, nil
+			}
+			return &pb.ReadFileResponse{Success: true, Content: string(data), Size: int64(len(data))}, nil
+		}
 		return &pb.ReadFileResponse{Success: false, Error: errProtected}, nil
 	}
 	target, err := resolvePath(dir, req.Path)
@@ -170,6 +206,10 @@ func (s *Server) WriteFile(ctx context.Context, req *pb.WriteFileRequest) (*pb.O
 	if err := os.WriteFile(target, []byte(req.Content), 0o644); err != nil {
 		return &pb.OperationResponse{Success: false, Error: err.Error()}, nil
 	}
+	// 交给实例的运行用户：root 写出来的文件属主是 root，而真正要读写它的
+	// 是实例进程（另一个 uid）—— 不改属主，服务端下次改写这个文件就会
+	// permission denied（面板里改完配置、服务器却说没权限）。
+	s.handOver(req.InstanceId, target)
 	return &pb.OperationResponse{Success: true, Message: "写入成功"}, nil
 }
 
@@ -217,5 +257,55 @@ func (s *Server) Mkdir(ctx context.Context, req *pb.MkdirRequest) (*pb.Operation
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		return &pb.OperationResponse{Success: false, Error: err.Error()}, nil
 	}
+	// 目录也要交出去：实例用户要往里面写（插件建 data 目录、服务端建 world_nether）
+	s.handOver(req.InstanceId, target)
 	return &pb.OperationResponse{Success: true, Message: "创建成功"}, nil
+}
+
+// handOver 把刚写入的路径交给实例的运行用户（属主改成它）。
+//
+// 三条不变量，缺一条都会出问题：
+//
+//  1. **只处理实例目录内的路径**。handOver 的语义是"把租户自己的文件交给租户"，
+//     一旦落到实例目录之外（例如配了 backup_root 的冷存储备份），
+//     改属主就等于把平台的备份交到租户手里 —— 那种备份"租户删不掉"才是它的意义。
+//     所以越界的路径直接返回，而不是"尽力而为"。
+//
+//  2. **目标本身 + 新创建出来的上级目录都要交**。只 chown 目标是不够的：
+//     写 plugins/Foo/config.yml 时，plugins/ 与 plugins/Foo/ 都是 Daemon 刚用
+//     MkdirAll 建出来的（属主 root），插件随后要在 Foo/ 里建 data/ 就会被拒。
+//     因此从目标父目录一路上溯到实例目录，逐级改属主。
+//
+//  3. **失败只记日志、不改变调用方的成功语义**。改属主失败最坏是"实例之后写不了
+//     这个文件"，而写入本身已经成功了；把一个已经落盘的写入报成失败，
+//     只会让用户重试出一堆重复文件。真正的问题在日志里，且下次启动实例时
+//     整棵 chown 会把它纠正过来。
+//
+// 静默通过的情形：实例不托管、非 root 且拿不到身份（那种情况下进程与 Daemon
+// 同 uid，属主本来就不是问题）、路径不存在（删除类操作之后调用是正常的）。
+func (s *Server) handOver(instanceID, path string) {
+	if path == "" {
+		return
+	}
+	inst, ok := s.reg.Get(instanceID)
+	if !ok {
+		return
+	}
+	root := filepath.Clean(inst.Dir)
+	target := filepath.Clean(path)
+	if !isSubPath(root, target) {
+		return // 不变量 1
+	}
+	id, err := s.reg.Identity(instanceID)
+	if err != nil || id == nil {
+		return
+	}
+	if runas.ChownTree(target, id) != nil {
+		s.log.Warn("把文件交给实例运行用户失败，实例可能无法写入它",
+			"instance", instanceID, "path", target, "user", id.Username)
+	}
+
+	for dir := filepath.Dir(target); dir != root && isSubPath(root, dir); dir = filepath.Dir(dir) {
+		runas.Chown(dir, id)
+	}
 }

@@ -1,7 +1,20 @@
 import { useEffect, useState } from 'react'
-import { listAssignments, grantAssignment, revokeAssignment, listUsers } from '../api'
+import { listAssignments, grantAssignment, revokeAssignment, listUsers, currentUser } from '../api'
 import './AssignmentsModal.css'
 
+/**
+ * AssignmentsModal 实例授权（协作者管理）。
+ *
+ * 两种身份两种输入方式，这是刻意的：
+ *
+ *   - **总管理员**：从下拉里挑账号 —— 他能读全站用户列表（GET /api/users）。
+ *   - **实例拥有者 / 该节点的节点用户**：手填用户名。
+ *     他们**不该**拿到全站账号清单（那是管理员信息），
+ *     但"把实例分享给谁"本来就是拥有者的权力（级别定义里 owner 含授权）。
+ *     以前这里只按管理员做，前端却给 owner 也显示了授权按钮，
+ *     于是非管理员点进来必然 403。现在后端按同一口径判权，
+ *     前端则按身份换输入方式 —— 不因为"要显示下拉"就把用户表暴露出去。
+ */
 export default function AssignmentsModal({ instanceId, onClose }: { instanceId: string; onClose: () => void }) {
   const [list, setList] = useState<any[]>([])
   const [users, setUsers] = useState<any[]>([])
@@ -9,6 +22,8 @@ export default function AssignmentsModal({ instanceId, onClose }: { instanceId: 
   const [level, setLevel] = useState('collab')
   const [error, setError] = useState('')
   const [msg, setMsg] = useState('')
+
+  const isAdmin = currentUser()?.role === 'admin'
 
   const load = async () => {
     try {
@@ -19,6 +34,9 @@ export default function AssignmentsModal({ instanceId, onClose }: { instanceId: 
   }
 
   const loadUsers = async () => {
+    // 非管理员拿不到用户列表（403 是预期的，不是错误）—— 静默跳过，
+    // 让输入框退化成手填，而不是在弹窗顶部糊一条红色错误。
+    if (!isAdmin) return
     try {
       const all = await listUsers()
       // 管理员默认拥有全部权限，不参与单独授权
@@ -35,10 +53,11 @@ export default function AssignmentsModal({ instanceId, onClose }: { instanceId: 
 
   const grant = async () => {
     setError(''); setMsg('')
-    if (!username) { setError('请选择账号'); return }
+    const name = username.trim()
+    if (!name) { setError(isAdmin ? '请选择账号' : '请填写要授权的用户名'); return }
     try {
-      await grantAssignment(instanceId, username, level)
-      setMsg(`已授予 ${username} ${level} 权限`)
+      await grantAssignment(instanceId, name, level)
+      setMsg(`已授予 ${name} ${level} 权限`)
       setUsername('')
       await load()
     } catch (e: any) {
@@ -73,16 +92,26 @@ export default function AssignmentsModal({ instanceId, onClose }: { instanceId: 
         {msg && <div className="modal-success">{msg}</div>}
 
         <div className="assign-form">
-          <h4>从账号列表中选择并授权</h4>
+          <h4>{isAdmin ? '从账号列表中选择并授权' : '填写用户名并授权'}</h4>
           <div className="row">
-            <select value={username} onChange={(e) => setUsername(e.target.value)}>
-              <option value="">— 请选择账号 —</option>
-              {users.map((u) => (
-                <option key={u.id} value={u.username}>
-                  {u.username}{assignedNames.has(u.username) ? '（已授权，可修改级别）' : ''}
-                </option>
-              ))}
-            </select>
+            {isAdmin ? (
+              <select value={username} onChange={(e) => setUsername(e.target.value)}>
+                <option value="">— 请选择账号 —</option>
+                {users.map((u) => (
+                  <option key={u.id} value={u.username}>
+                    {u.username}{assignedNames.has(u.username) ? '（已授权，可修改级别）' : ''}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="对方的登录用户名"
+                spellCheck={false}
+                list="assign-known-users"
+              />
+            )}
             <select value={level} onChange={(e) => setLevel(e.target.value)}>
               <option value="viewer">viewer（只读）</option>
               <option value="collab">collab（可启停+控制台）</option>
@@ -90,9 +119,19 @@ export default function AssignmentsModal({ instanceId, onClose }: { instanceId: 
             </select>
             <button className="primary" onClick={grant}>授权</button>
           </div>
-          {users.length === 0 && (
+          {/* 已授权的人名做候选：这不是"全站用户列表"，
+              只是这台实例上已经存在的关系，不构成信息泄露 */}
+          <datalist id="assign-known-users">
+            {list.map((a) => <option key={a.user_id} value={a.username} />)}
+          </datalist>
+          {isAdmin && users.length === 0 && (
             <div className="assign-hint-inline">
               暂无可授权的普通账号，请先到「账户设置 → 用户管理」创建账号。
+            </div>
+          )}
+          {!isAdmin && (
+            <div className="assign-hint-inline">
+              你只能管理本实例的授权。用户名需要填对方的**登录名**（不是昵称）。
             </div>
           )}
         </div>
@@ -121,8 +160,9 @@ export default function AssignmentsModal({ instanceId, onClose }: { instanceId: 
         </div>
 
         <div className="assign-hint">
-          说明：授权管理仅限管理员操作；管理员对所有实例默认拥有 owner 权限且不可被撤销。
-          owner 可启停、使用控制台、管理文件，但删除实例与授权仍需管理员。
+          说明：<b>总管理员</b>对所有实例默认拥有 owner 权限且不可被撤销；
+          <b>实例拥有者</b>（owner）可以管理本实例的协作者。
+          owner 可启停、使用控制台、管理文件与授权，但**删除实例**仍需管理员。
         </div>
       </div>
     </div>

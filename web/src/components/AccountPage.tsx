@@ -3,6 +3,7 @@ import {
   MyProfile, MyPermission, MyPortLine, Instance,
   getMyProfile, listMyPermissions, listMyPorts, listInstances, getInstanceRuntime,
   changePassword, uploadAvatar, deleteMyAvatar, roleLabel, isNodeUser, levelAtLeast,
+  renameUser, updateCurrentUsername,
 } from '../api'
 import Avatar from './Avatar'
 import './AccountPage.css'
@@ -68,6 +69,11 @@ export default function AccountPage({ onLogout }: { onLogout: () => void }) {
   const [newPw, setNewPw] = useState('')
   const [confirmPw, setConfirmPw] = useState('')
   const [pwBusy, setPwBusy] = useState(false)
+
+  // 改用户名（就地编辑）
+  const [editingName, setEditingName] = useState(false)
+  const [nameDraft, setNameDraft] = useState('')
+  const [nameBusy, setNameBusy] = useState(false)
 
   const loadProfile = () => getMyProfile().then(setMe).catch((e) => setError(e.message))
 
@@ -176,6 +182,42 @@ export default function AccountPage({ onLogout }: { onLogout: () => void }) {
     }
   }
 
+  const startEditName = () => {
+    setNameDraft(me?.username || '')
+    setEditingName(true)
+    setError(''); setMsg('')
+  }
+
+  const cancelEditName = () => {
+    setEditingName(false)
+    setNameDraft('')
+  }
+
+  /**
+   * 提交改名。
+   *
+   * 改完要同时更新本地登录态里的用户名 —— 令牌里带的仍是签发时的旧值，
+   * 而且**不会**因为改名而失效（后端鉴权只看 UID，不看用户名），
+   * 所以这里不需要强制重新登录；只要把界面上显示的名字刷新过来即可。
+   */
+  const submitName = async () => {
+    if (!me) return
+    const n = nameDraft.trim()
+    if (!n || n === me.username) { setEditingName(false); return }
+    setNameBusy(true); setError(''); setMsg('')
+    try {
+      const r = await renameUser(me.id, n)
+      updateCurrentUsername(n)
+      setEditingName(false)
+      setMsg(r?.message || '用户名已修改')
+      loadProfile()
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setNameBusy(false)
+    }
+  }
+
   // 首字母交给 Avatar 组件；avatar_status 仍要用来显示"审核中/被驳回"提示
   const avatarStatus = me?.avatar_status || 'none'
   const days = me?.registered_at
@@ -203,14 +245,46 @@ export default function AccountPage({ onLogout }: { onLogout: () => void }) {
 
         <div className="ap-identity-main">
           <div className="ap-name">
-            {me?.username || '—'}
-            <span className={`ap-role role-${me?.role || 'user'}`}>{roleLabel(me?.role)}</span>
+            {editingName ? (
+              <>
+                <input
+                  className="ap-name-input"
+                  value={nameDraft}
+                  maxLength={32}
+                  autoFocus
+                  spellCheck={false}
+                  onChange={(e) => setNameDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); submitName() }
+                    if (e.key === 'Escape') { e.preventDefault(); cancelEditName() }
+                  }}
+                />
+                <button className="primary ap-name-btn" onClick={submitName} disabled={nameBusy}>
+                  {nameBusy ? '保存中…' : '保存'}
+                </button>
+                <button className="ghost ap-name-btn" onClick={cancelEditName} disabled={nameBusy}>取消</button>
+              </>
+            ) : (
+              <>
+                <span className="ap-name-text">{me?.username || '—'}</span>
+                {me && (
+                  <button className="ap-name-pen" onClick={startEditName} title="修改用户名">✎</button>
+                )}
+                <span className={`ap-role role-${me?.role || 'user'}`}>{roleLabel(me?.role)}</span>
+              </>
+            )}
           </div>
           <div className="ap-meta">
             {me ? `UID ${me.id}` : '—'}
             {me?.registered_at ? ` · 注册 ${days} 天` : ''}
             {me ? ` · 累计在线 ${fmtDuration(me.total_online_seconds)}` : ''}
           </div>
+          {editingName && (
+            <div className="ap-note">
+              用户名可以随时修改。UID {me?.id} 与实例授权、公网端口配额都不受影响；
+              改完当前登录状态依然有效，无需重新登录。
+            </div>
+          )}
           {avatarStatus === 'pending' && <div className="ap-note pending">⏳ 新头像审核中，通过后其他人才能看到</div>}
           {avatarStatus === 'rejected' && (
             <div className="ap-note rejected" title={me?.avatar_note}>

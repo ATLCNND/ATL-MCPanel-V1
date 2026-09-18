@@ -104,7 +104,7 @@ func (c *AdminClient) trafficTotal(names map[string]bool) (in, out int64, conns 
 
 // trafficSampler 记录上一次采样，用于把累计值换算成速率。
 type trafficSampler struct {
-	mu     sync.Mutex
+	mu      sync.Mutex
 	lastIn  int64
 	lastOut int64
 	lastAt  time.Time

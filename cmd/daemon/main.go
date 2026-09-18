@@ -2,6 +2,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -68,6 +69,12 @@ func main() {
 	}
 
 	if runErr != nil {
+		// 收到退出信号导致的返回不算故障 —— 否则 systemctl stop 会在日志里
+		// 留下一条 ERROR，看着像服务崩了
+		if errors.Is(runErr, daemon.ErrShutdown) {
+			log.Info("Daemon 已退出")
+			return
+		}
 		log.Error("Daemon 运行失败", "error", runErr)
 		os.Exit(1)
 	}

@@ -211,6 +211,58 @@
   max-width: 900px;
 }
 
+/* ---- 总览表里的一键操作 ---- */
+
+.player-ops {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.player-ops button {
+  font-size: 12px;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
+/* OP 等级选择：紧贴在一排按钮末尾，用 label 把 "OP" 两个字和下拉框绑在一起，
+   否则单看一个下拉框不知道它在设什么 */
+.player-ops .op-level {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.player-ops .op-level select {
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: var(--r);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-1);
+}
+
+.players-oplevel-note {
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.9;
+  color: var(--text-3);
+  max-width: 900px;
+}
+
+.players-oplevel-note .op-hint-item {
+  display: inline-block;
+  margin-right: 12px;
+  white-space: nowrap;
+}
+
+.players-oplevel-note .op-hint-item b {
+  color: var(--text-2);
+}
+
 .success-banner {
   background: var(--success-bg);
   color: var(--success);

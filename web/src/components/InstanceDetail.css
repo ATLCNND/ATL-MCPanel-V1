@@ -216,6 +216,48 @@
   display: flex;
   align-items: center;
   gap: 9px;
+  /* 就地编辑时输入框与两个按钮要能换行，否则窄屏会把状态徽章挤出卡片 */
+  flex-wrap: wrap;
+}
+
+/* 改名铅笔：默认很淡，鼠标移到标题上才显出来 —— 常驻一个显眼按钮会抢走
+   "实例名 + 运行状态"这条主信息的注意力 */
+.inst-name-pen {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: var(--r);
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.center-head h2:hover .inst-name-pen {
+  opacity: 1;
+  color: var(--accent);
+  border-color: var(--border);
+}
+
+.inst-name-input {
+  font-size: 17px;
+  font-weight: 700;
+  font-family: inherit;
+  min-width: 180px;
+  max-width: 280px;
+  padding: 3px 9px;
+  border-radius: var(--r);
+  border: 1px solid var(--accent-solid);
+  background: var(--bg-surface);
+  color: var(--text-1);
+  outline: none;
+}
+
+.center-head h2 button {
+  font-size: 12px;
+  padding: 4px 10px;
 }
 
 .center-head p {

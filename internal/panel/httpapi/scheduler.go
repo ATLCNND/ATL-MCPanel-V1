@@ -131,9 +131,13 @@ func (s *Server) scheduledBackup(instanceID string, includeConfig bool, policy r
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	// name 留空 → Daemon 使用 "auto" 命名，从而与手动备份区分开
+	// 自动备份**显式**用 "auto" 命名：这个名字是"自动备份"的标记，
+	// 保留策略据此把手动备份排除在梯度淘汰之外（见 pruneByPolicy）。
+	// 显式传而不是靠 Daemon 的空名默认值 —— 默认值是隐式契约，
+	// 将来任何一处改动都可能让自动备份变成"手动"，从而不再被清理。
 	resp, err := cli.Backup(ctx, &pb.BackupRequest{
 		InstanceId:    instanceID,
+		Name:          autoBackupName,
 		IncludeConfig: includeConfig,
 	})
 	if err != nil {
@@ -160,11 +164,11 @@ type scheduleView struct {
 	NextRun       string `json:"next_run"`
 
 	// 生效的保留策略
-	PolicyID      int64  `json:"policy_id"`      // 0 = 默认策略
-	PolicyName    string `json:"policy_name"`
-	PolicyDesc    string `json:"policy_desc"`
-	ManualKeep    int    `json:"manual_keep"`
-	EffectiveHours int   `json:"effective_hours"` // 实际生效的间隔（策略优先）
+	PolicyID       int64  `json:"policy_id"` // 0 = 默认策略
+	PolicyName     string `json:"policy_name"`
+	PolicyDesc     string `json:"policy_desc"`
+	ManualKeep     int    `json:"manual_keep"`
+	EffectiveHours int    `json:"effective_hours"` // 实际生效的间隔（策略优先）
 }
 
 // handleGetSchedule GET /api/instances/{id}/schedule

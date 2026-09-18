@@ -151,7 +151,6 @@ func (s *Server) handleUploadNodeResource(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-
 	s.audit(r, "upload_resource", strconv.FormatInt(nodeID, 10),
 		fmt.Sprintf("%s（%.1f MB）", hdr.Filename, float64(len(content))/1024/1024))
 	writeJSON(w, http.StatusOK, map[string]string{"message": resp.Message})

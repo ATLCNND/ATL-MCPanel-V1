@@ -399,4 +399,3 @@ func TestApplyWithoutStateFnAlwaysStarts(t *testing.T) {
 		t.Fatalf("未注入判断时应照旧尝试启动 frpc，实际 err=%v", err)
 	}
 }
-

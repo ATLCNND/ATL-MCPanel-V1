@@ -37,7 +37,7 @@ func TestReconcileLimitIgnoresDeadProcess(t *testing.T) {
 	pid := cmd.Process.Pid
 	_, _ = cmd.Process.Wait()
 
-	inst := NewInstance("t1", t.TempDir(), "", "1G", "1G")
+	inst := testInstance("t1", t.TempDir(), "", "1G", "1G")
 	inst.cmd = cmd // 模拟尚未被清理
 	lim := &stubLimiter{assignTreeErr: errors.New("write /sys/fs/cgroup/atlmcpanel/t1/cgroup.procs: no such process")}
 	inst.Limiter = lim
@@ -61,7 +61,7 @@ func TestReconcileLimitReportsErrorForLiveProcess(t *testing.T) {
 	}
 	defer func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }()
 
-	inst := NewInstance("t2", t.TempDir(), "", "1G", "1G")
+	inst := testInstance("t2", t.TempDir(), "", "1G", "1G")
 	inst.cmd = cmd
 	inst.Limiter = &stubLimiter{assignTreeErr: errors.New("permission denied")}
 

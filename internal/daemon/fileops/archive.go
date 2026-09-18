@@ -33,14 +33,14 @@ type Filter func(name string) bool
 // 压缩包是用户可控输入，zip 炸弹（几 KB 解开几个 TB）会把节点磁盘打满，
 // 连带影响同节点其它实例。因此在解包过程中实时校验，而不是事后检查。
 const (
-	maxExtractBytes  = int64(200) << 30 // 200 GB
-	maxExtractFiles  = 500000           // 条目数上限
-	maxExtractDepth  = 64               // 目录层级上限
-	compressBufSize  = 1 << 20          // 1 MB 缓冲区
+	maxExtractBytes = int64(200) << 30 // 200 GB
+	maxExtractFiles = 500000           // 条目数上限
+	maxExtractDepth = 64               // 目录层级上限
+	compressBufSize = 1 << 20          // 1 MB 缓冲区
 )
 
 // ErrUnsupported 不支持的归档格式。
-var ErrUnsupported = errors.New("不支持的压缩格式（仅支持 zip / tar.gz / tar）")
+var ErrUnsupported = errors.New("不支持的压缩格式（仅支持 zip / tar.gz / tar / gz）")
 
 // FormatFromName 按文件名推断格式。返回空串表示无法推断。
 func FormatFromName(name string) string {
@@ -52,6 +52,11 @@ func FormatFromName(name string) string {
 		return "tar.gz"
 	case strings.HasSuffix(l, ".tar"):
 		return "tar"
+	case strings.HasSuffix(l, ".gz"):
+		// .gz 可能是 tar.gz（归档），也可能只是单个文件被 gzip 压过
+		//（服务端日志轮转就是后者：2026-09-17-1.log.gz）。
+		// 扩展名分不出来，交给解包时按内容判断。
+		return "gz"
 	}
 	return ""
 }
@@ -63,6 +68,8 @@ func DefaultExt(format string) string {
 		return ".tar.gz"
 	case "tar":
 		return ".tar"
+	case "gz":
+		return ".gz"
 	default:
 		return ".zip"
 	}
@@ -128,7 +135,7 @@ func Compress(ctx context.Context, src, dst, format string, filter Filter, repor
 // measure 统计待打包的总字节数。
 //
 // 需要排除输出文件自身：把压缩包写在源目录内是很自然的做法
-//（"把这个世界打包到它旁边"），而打包过程中那个文件正在被写入 ——
+// （"把这个世界打包到它旁边"），而打包过程中那个文件正在被写入 ——
 // 把它算进总量会让进度算错，若再被 Walk 读到还会把"半个自己"塞进归档。
 func measure(src, dst string, filter Filter) (int64, error) {
 	var total int64
@@ -314,7 +321,15 @@ func Extract(ctx context.Context, src, dst, format string, filter Filter, report
 	case len(magic) >= 2 && magic[0] == 'P' && magic[1] == 'K':
 		format = "zip"
 	case len(magic) >= 2 && magic[0] == 0x1f && magic[1] == 0x8b:
-		format = "tar.gz"
+		// gzip 魔数只说明"被 gzip 压过"，**不说明里面是归档**：
+		// Minecraft 日志轮转产出的 2026-09-17-1.log.gz 就是单个文件，
+		// 按 tar 解会直接失败（实测报 archive/tar: invalid tar header）。
+		// 只能真的试读一个 tar 条头来区分 —— 空归档（无条目）也算归档。
+		if gzipHoldsTar(src) {
+			format = "tar.gz"
+		} else {
+			format = "gz"
+		}
 	default:
 		// tar 没有魔数，只能按扩展名判断；无法判断时沿用调用方传入的 format
 		if format == "" {
@@ -334,9 +349,105 @@ func Extract(ctx context.Context, src, dst, format string, filter Filter, report
 		return extractZip(ctx, src, dst, filter, report)
 	case "tar.gz", "tar":
 		return extractTar(ctx, f, dst, format == "tar.gz", filter, report)
+	case "gz":
+		return extractGzipSingle(ctx, f, dst, filepath.Base(src), filter, report)
 	default:
 		return ErrUnsupported
 	}
+}
+
+// gzipHoldsTar 判断一个 gzip 文件里装的是 tar 归档，还是"只有一个文件"。
+//
+// 判据是**试读一个 tar 条头**：能读出条目 → 是归档；
+// 读到 io.EOF → 是空的 tar 归档（gzip 里没有任何内容，但仍然是 tar 的形态）；
+// 其它错误（archive/tar: invalid tar header）→ 不是 tar，即裸 gzip 流。
+//
+// 不用"看第 257 字节是不是 ustar"那种魔数判断：老式 GNU tar 没有 ustar 魔法字，
+// 而 tar.Reader 自己就把各种变体都处理了，试读是唯一不遗漏的办法。
+func gzipHoldsTar(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return false
+	}
+	defer gz.Close()
+	_, err = tar.NewReader(gz).Next()
+	return err == nil || errors.Is(err, io.EOF)
+}
+
+// extractGzipSingle 解压"裸 gzip 流"（单个文件被 gzip 压过，不是归档）。
+//
+// 输出文件名取原名的去 .gz 形式（2026-09-17-1.log.gz → 2026-09-17-1.log）；
+// 没有 .gz 后缀时退回加 .out，避免把压缩流写成同名文件把源覆盖掉。
+func extractGzipSingle(ctx context.Context, f *os.File, dst, srcName string, filter Filter, report Report) error {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	outName := srcName
+	switch {
+	case strings.HasSuffix(strings.ToLower(outName), ".gz"):
+		outName = outName[:len(outName)-3]
+	case strings.HasSuffix(strings.ToLower(outName), ".tgz"):
+		outName = outName[:len(outName)-4] + ".tar"
+	default:
+		outName = outName + ".out"
+	}
+	// 单文件也要过受保护名单：否则可以把 frpc.toml.gz 解出来绕过保护
+	if filter != nil && !filter(outName) {
+		return nil
+	}
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("打开 gzip 失败: %w", err)
+	}
+	defer gz.Close()
+
+	target, err := safeJoin(dst, outName)
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	// 限额：gzip 是用户可控输入，几 KB 压出几百 GB 的"炸弹"必须挡住。
+	// 多读 1 字节来判断"是否正好超限"，否则恰好等于上限的文件会被误报。
+	var done int64
+	buf := make([]byte, compressBufSize)
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		n, rerr := gz.Read(buf)
+		if n > 0 {
+			done += int64(n)
+			if done > maxExtractBytes {
+				return fmt.Errorf("解压后体积过大（超过 %d GB）", maxExtractBytes>>30)
+			}
+			if _, werr := out.Write(buf[:n]); werr != nil {
+				return werr
+			}
+			if report != nil {
+				report(0, fmt.Sprintf("正在解包… %s", humanBytes(done)), done, 0)
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return fmt.Errorf("解压失败: %w", rerr)
+		}
+	}
+	if report != nil {
+		report(100, fmt.Sprintf("已解出 %s（%s）", outName, humanBytes(done)), done, done)
+	}
+	return nil
 }
 
 func extractZip(ctx context.Context, src, dst string, filter Filter, report Report) error {
@@ -651,6 +762,20 @@ func percent(done, total int64) int {
 		p = 0
 	}
 	return p
+}
+
+// humanBytes 字节数转成人话（只用于进度提示）。
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.2f GB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
 }
 
 func zipPercent(done, total int64) int {

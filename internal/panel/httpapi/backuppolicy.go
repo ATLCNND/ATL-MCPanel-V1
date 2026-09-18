@@ -232,9 +232,14 @@ func boolInt(b bool) int {
 
 // pruneByPolicy 依据策略淘汰备份。
 //
-// 关键：**先按名称区分手动/自动** —— 自动备份由面板创建（名称固定为 "auto"），
-// 手动备份带用户填写或自动生成的名称。两者分别计数，手动备份不会被
-// 自动备份的滚动淘汰挤掉。
+// 关键：**先按名称区分手动/自动** —— 名字为 "auto" 的是自动备份
+// （由定时计划创建），其余是手动备份（用户点「立即备份」或自己起的名字）。
+// 两者分别计数，手动备份不会被自动备份的滚动淘汰挤掉。
+//
+// ⚠️ 这条规则依赖**手动路径永远给出非 auto 的名字**，见 handleCreateBackup：
+// 那里在名字为空时生成"手动-<时间>"，并拒绝用户把名字填成 auto。
+// 早先的 bug 正是这里被破坏：前端"名称可选"留空 → Daemon 填成 auto →
+// 用户的手动备份在保留策略眼里成了自动备份，被梯度滚动淘汰（且日历里显示为「自动」）。
 func (s *Server) pruneByPolicy(ctx context.Context, cli pb.DaemonServiceClient, instanceID string, policy retention.Policy) {
 	list, err := cli.ListBackups(ctx, &pb.ListBackupsRequest{InstanceId: instanceID})
 	if err != nil || !list.Success {
@@ -245,7 +250,7 @@ func (s *Server) pruneByPolicy(ctx context.Context, cli pb.DaemonServiceClient, 
 		entries = append(entries, retention.Entry{
 			ID:        b.BackupId,
 			CreatedAt: time.Unix(b.CreatedAt, 0),
-			Manual:    !isAutoBackup(b.Name),
+			Manual:    !isAutoBackupName(b.Name),
 		})
 	}
 	if len(entries) == 0 {
@@ -267,7 +272,8 @@ func (s *Server) pruneByPolicy(ctx context.Context, cli pb.DaemonServiceClient, 
 	}
 }
 
-// isAutoBackup 判断备份是否由自动计划创建（面板创建时名称为 "auto"）。
+// isAutoBackup 判断备份是否由自动计划创建。
+// 保留旧名以便外部/测试引用，实现见 backups.go 的 isAutoBackupName。
 func isAutoBackup(name string) bool {
-	return strings.EqualFold(strings.TrimSpace(name), "auto")
+	return isAutoBackupName(name)
 }

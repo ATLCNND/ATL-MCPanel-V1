@@ -63,10 +63,10 @@ func TestSystemdUnitHasKillModeProcess(t *testing.T) {
 
 func TestShellQuote(t *testing.T) {
 	cases := map[string]string{
-		"/opt/mcpanel":       "'/opt/mcpanel'",
-		"/path with space":   "'/path with space'",
-		"/it's":              `'/it'\''s'`,
-		"/a;rm -rf /":        "'/a;rm -rf /'",
+		"/opt/mcpanel":     "'/opt/mcpanel'",
+		"/path with space": "'/path with space'",
+		"/it's":            `'/it'\''s'`,
+		"/a;rm -rf /":      "'/a;rm -rf /'",
 	}
 	for in, want := range cases {
 		if got := shellQuote(in); got != want {

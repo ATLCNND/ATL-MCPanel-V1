@@ -8,12 +8,12 @@ import (
 
 func TestSanitize(t *testing.T) {
 	cases := map[string]string{
-		"test1":        "test1",
-		"my-server_1":  "my-server_1",
-		"a.b":          "a.b",
-		"中文实例":         "____",
-		"a/b":          "a_b",
-		"":             "instance",
+		"test1":         "test1",
+		"my-server_1":   "my-server_1",
+		"a.b":           "a.b",
+		"中文实例":          "____",
+		"a/b":           "a_b",
+		"":              "instance",
 		"../etc/passwd": ".._etc_passwd",
 	}
 	for in, want := range cases {
@@ -88,6 +88,7 @@ func TestApplyInTempRoot(t *testing.T) {
 	root := t.TempDir()
 	m := New(root)
 	m.enabled = true // 直接置为启用，绕过对真实 /sys 的依赖
+	m.version = cgV2 // 这两个测试针对 v2 的文件名（cpu.max）；v1 见 v1_test.go
 
 	if err := m.Apply("inst1", 400); err != nil {
 		t.Fatalf("Apply 失败: %v", err)
@@ -114,6 +115,7 @@ func TestStatsParsing(t *testing.T) {
 	root := t.TempDir()
 	m := New(root)
 	m.enabled = true
+	m.version = cgV2 // cpu.stat 的字段名与单位是 v2 的（微秒）
 
 	dir := filepath.Join(root, "inst1")
 	if err := os.MkdirAll(dir, 0o755); err != nil {

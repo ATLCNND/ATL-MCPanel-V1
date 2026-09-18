@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
+	"syscall"
 	"time"
 
 	"google.golang.org/grpc"
@@ -18,12 +20,15 @@ import (
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/config"
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/grpclimits"
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/logger"
+	"github.com/ATLCNND/ATL-MCPanel/internal/common/version"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/cgroup"
+	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/container"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/grpcapi"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/hoststats"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/mcprocess"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/monitor"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/registry"
+	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/runas"
 	"github.com/ATLCNND/ATL-MCPanel/internal/frp"
 	"github.com/ATLCNND/ATL-MCPanel/internal/pki"
 	pb "github.com/ATLCNND/ATL-MCPanel/internal/proto/mcpanel"
@@ -31,12 +36,13 @@ import (
 
 // Daemon 节点守护进程。
 type Daemon struct {
-	cfg   *config.DaemonConfig
-	log   *logger.Logger
-	reg   *registry.Registry
-	stats *monitor.Store
-	frp   *frp.Manager
-	cg    *cgroup.Manager
+	cfg    *config.DaemonConfig
+	log    *logger.Logger
+	reg    *registry.Registry
+	stats  *monitor.Store
+	frp    *frp.Manager
+	cg     *cgroup.Manager
+	runner *runas.Manager
 
 	// shutdown 关闭 Run() 的心跳循环。
 	// 由 main 在收到 SIGTERM/SIGINT 时触发 —— 让 Run 正常返回，
@@ -54,12 +60,95 @@ func New(cfg config.DaemonConfig, log *logger.Logger) (*Daemon, error) {
 		return nil, errors.New("daemon.panel_address 不能为空")
 	}
 	cfg.Defaults()
-	reg := registry.New(cfg.InstanceDir)
+
+	// 实例运行身份。这一步只解析配置、不碰系统；真正的用户创建推迟到
+	// 建实例 / 启实例时（见 runas.Ensure）。
+	runner, err := runas.New(cfg.InstanceUser, cfg.InstanceUserPrefix)
+	if err != nil {
+		return nil, err
+	}
+	// 启动时就把"实例会不会跑成 root"这件事说清楚。以 root 跑实例是本次修掉的
+	// 漏洞，所以这里用 Warn/Info 明确打印当前生效的身份，而不是让它默默生效。
+	if runas.IsRoot() {
+		log.Info("实例进程将以降权身份运行", "模式", runner.Describe())
+	} else {
+		log.Warn("Daemon 未以 root 运行：无法创建实例专用系统用户，"+
+			"实例将与 Daemon 同身份运行（cgroup 资源限制通常也需要 root）",
+			"模式", runner.Describe())
+	}
+
+	// 目录布局与权限（见 config.StateDir 的说明）：
+	//   实例根目录    0711 —— 实例用户必须能**穿过**它（才能进自己那层），
+	//                        但不必能列目录：列出来只会让别人知道这台机器上有哪些实例
+	//   实例目录      0700 —— 由各实例在创建/启动时设置（见 registry.Create / mcprocess.Start）
+	//   状态目录      0700 —— 只有 root 能进：里面是被 root 信任的元数据与 pid
+	//   frp 状态目录  0700 —— 同理：frpc 以 root 运行、读这里的配置
+	if err := runas.EnsureDir(cfg.InstanceDir, 0o711); err != nil {
+		return nil, fmt.Errorf("准备实例根目录失败: %w", err)
+	}
+	if err := runas.EnsureDir(cfg.StateDir, 0o700); err != nil {
+		return nil, fmt.Errorf("准备状态目录失败: %w", err)
+	}
+	if err := runas.EnsureDir(cfg.FrpStateDir, 0o700); err != nil {
+		return nil, fmt.Errorf("准备 frp 状态目录失败: %w", err)
+	}
+
+	// 老布局迁移：元数据与 frp 文件原先就在实例目录里，现在要搬到平台状态目录。
+	// 放在 Load 之前做 —— Load 是按新位置读元数据的，先搬再读才不会"实例全丢"。
+	migrated := migrateLegacyLayout(cfg, log)
+	if migrated > 0 {
+		log.Info("已把实例元数据与穿透文件迁移到平台状态目录（实例目录不再存放 root 信任的文件）",
+			"count", migrated, "state_dir", cfg.StateDir, "frp_state_dir", cfg.FrpStateDir)
+	}
+
+	reg := registry.New(cfg.InstanceDir, cfg.StateDir)
+	reg.SetRunner(runner)
+
+	// 容器运行时（可选）：节点装了 docker 才有。没有也不影响其它功能，
+	// 只是容器化开关在面板上会被拒绝（见 registry.SetContainerMode）。
+	//
+	// 注意这里**不**检查镜像是否存在：镜像缺失是"启动实例时"的错误，
+	// 而 Daemon 启动路径上做 docker 调用会让节点重启变慢、也会在 docker 未起时误判。
+	// 面板侧的节点信息里会单独显示 docker 与镜像的就绪状态。
+	var ctr *container.Runtime
+	if cfg.Container.ContainerEnabledOr(true) {
+		ctr = container.Detect(cfg.Container.Image)
+	}
+	if ctr != nil {
+		// 共享资源目录可能是相对路径（config.yaml 的默认值就是 "resources"），
+		// 而容器挂载**必须**用绝对路径，否则 docker 会把 "resources:resources:ro"
+		// 当成命名卷并直接拒绝启动。这里统一转成绝对路径再交给运行时。
+		resDir := cfg.ResourceDir
+		if abs, err := filepath.Abs(resDir); err == nil {
+			resDir = abs
+		}
+		reg.SetContainerRuntime(ctr, resDir)
+		ver := ctr.Version(context.Background())
+		log.Info("容器化隔离可用", "docker", ver, "image", ctr.Image(),
+			"resources_dir", resDir)
+	} else {
+		log.Info("容器化隔离不可用（未安装 docker 或已在配置里关闭）")
+	}
 
 	// 从磁盘恢复实例（Daemon 重启后不丢实例；对遗留进程做接管）
 	loaded, adopted := reg.Load()
 	if loaded > 0 {
 		log.Info("已从磁盘恢复实例", "count", loaded, "adopted", adopted)
+	}
+
+	// 老装机的属主/权限纠正：以前实例目录是 root:root 0755。
+	//
+	// 为什么要在这里做一次，而不是只靠"启动实例时顺手改"：
+	//   - 权限是**静态**的暴露面。一个已经停了很久的实例，它的 0755 目录
+	//     与 0644 存档照样能被同机器上别的实例进程读走 —— 只要它还没被启动过，
+	//     "启动时纠正"就永远轮不到它。
+	//   - 所以启动时扫一遍：只对"属主或权限不对"的实例动手（各一次 stat），
+	//     已经迁移过的实例零成本。
+	// 失败只记警告：一个坏目录不该让整个 Daemon 起不来。
+	if n, err := fixInstanceOwnership(reg, runner, log); err != nil {
+		log.Warn("纠正实例目录属主/权限时出错", "error", err)
+	} else if n > 0 {
+		log.Info("已把老装机的实例目录交给各自的运行用户并收紧为 0700", "count", n)
 	}
 
 	return &Daemon{
@@ -68,8 +157,118 @@ func New(cfg config.DaemonConfig, log *logger.Logger) (*Daemon, error) {
 		reg:      reg,
 		stats:    monitor.NewStore(),
 		frp:      frp.NewManager(""),
+		runner:   runner,
 		shutdown: make(chan struct{}),
 	}, nil
+}
+
+// FrpDir 返回某实例的 frpc 工作目录（平台状态目录下，root 0700）。
+//
+// **不再用实例目录**：frpc.toml 决定"把哪些端口挂到哪个 frps 上"，而 frpc 以 root
+// 运行 —— 让实例用户能改写这份配置，等于允许他把节点上任意本地端口
+// （22/SSH、9091/Daemon gRPC）挂到自己的 frps 上对外暴露。
+func (d *Daemon) FrpDir(instanceID string) string {
+	return filepath.Join(d.cfg.FrpStateDir, instanceID)
+}
+
+// fixInstanceOwnership 把老装机的实例目录交给各自的运行用户并收紧权限。
+//
+// 判据是"属主不对或权限不是 0700"——已经迁移过的实例只需一次 stat。
+// 返回被纠正的实例数。
+func fixInstanceOwnership(reg *registry.Registry, runner *runas.Manager, log *logger.Logger) (int, error) {
+	if runner == nil || !runas.IsRoot() {
+		return 0, nil
+	}
+	fixed := 0
+	for _, id := range reg.List() {
+		dir := reg.Dir(id)
+		fi, err := os.Stat(dir)
+		if err != nil {
+			continue
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok {
+			continue
+		}
+		ident, err := runner.Ensure(id, dir)
+		if err != nil {
+			log.Warn("实例运行用户不可用，跳过属主纠正", "instance", id, "error", err)
+			continue
+		}
+		if st.Uid == ident.UID && st.Gid == ident.GID && fi.Mode().Perm() == 0o700 {
+			continue // 已经是目标状态
+		}
+		if err := runas.ChownTree(dir, ident); err != nil {
+			log.Warn("纠正实例目录属主失败", "instance", id, "error", err)
+			continue
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			log.Warn("收紧实例目录权限失败", "instance", id, "error", err)
+			continue
+		}
+		fixed++
+	}
+	return fixed, nil
+}
+
+// migrateLegacyLayout 把老装机里放在实例目录下的平台状态搬到状态目录。
+//
+// 迁移的对象只有三样，都是"root 会去读、因此不能被租户改写"的文件：
+//   - instance.json（元数据：配额、jar 路径、启停统计）
+//   - daemon.pid（PID 记录：接管与停止时的依据）
+//   - frpc.toml / tunnels.json / frpc.pid / logs/frpc.log（穿透配置与状态）
+//
+// 幂等：目标目录已有该文件时不覆盖（可能已经是新的、正在用的那份）。
+// 单个实例失败只记警告并继续 —— 一个坏目录不该让整个 Daemon 起不来。
+func migrateLegacyLayout(cfg config.DaemonConfig, log *logger.Logger) int {
+	entries, err := os.ReadDir(cfg.InstanceDir)
+	if err != nil {
+		return 0
+	}
+	moved := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		id := e.Name()
+		instDir := filepath.Join(cfg.InstanceDir, id)
+		stateDir := filepath.Join(cfg.StateDir, id)
+		frpDir := filepath.Join(cfg.FrpStateDir, id)
+
+		type pair struct{ from, to string }
+		var moves []pair
+		for _, f := range []string{"instance.json", "daemon.pid"} {
+			moves = append(moves, pair{filepath.Join(instDir, f), filepath.Join(stateDir, f)})
+		}
+		for _, f := range []string{"frpc.toml", "tunnels.json", "frpc.pid"} {
+			moves = append(moves, pair{filepath.Join(instDir, f), filepath.Join(frpDir, f)})
+		}
+		// frpc 的日志在 <实例目录>/logs/frpc.log，搬到 <frp 状态目录>/logs/frpc.log
+		moves = append(moves, pair{filepath.Join(instDir, "logs", "frpc.log"), filepath.Join(frpDir, "logs", "frpc.log")})
+
+		did := 0
+		for _, mv := range moves {
+			if _, err := os.Stat(mv.from); err != nil {
+				continue // 源不存在：无需迁移
+			}
+			if _, err := os.Stat(mv.to); err == nil {
+				continue // 目标已在：不覆盖
+			}
+			if err := os.MkdirAll(filepath.Dir(mv.to), 0o700); err != nil {
+				log.Warn("迁移状态文件失败（建目录）", "instance", id, "path", mv.to, "error", err)
+				continue
+			}
+			if err := os.Rename(mv.from, mv.to); err != nil {
+				log.Warn("迁移状态文件失败", "instance", id, "from", mv.from, "to", mv.to, "error", err)
+				continue
+			}
+			did++
+		}
+		if did > 0 {
+			moved++
+		}
+	}
+	return moved
 }
 
 // Shutdown 请求 Daemon 退出：Run() 的心跳循环会返回，各 defer 正常执行。
@@ -130,9 +329,17 @@ func (d *Daemon) Run() error {
 		d.cg.Init()
 		if d.cg.Enabled() {
 			mcprocess.SetResourceLimiter(d.cg)
-			d.log.Info("已启用 cgroup 资源限制", "root", d.cfg.CgroupRoot)
+			// 报出用的是 v1 还是 v2：两者文件名与单位都不同，
+			// 排查"设了配额却没生效"时，第一个要确认的就是这个。
+			ver := "v2"
+			if d.cg.Version() == 1 {
+				ver = "v1（老内核，如 CentOS 7）"
+			}
+			d.log.Info("已启用 cgroup 资源限制", "version", ver, "path", d.cg.RootPath(), "root", d.cfg.CgroupRoot)
 		} else {
-			d.log.Warn("cgroup 资源限制未启用，实例 CPU 配额不会生效", "reason", d.cg.Reason())
+			d.log.Warn("cgroup 资源限制未启用，实例 CPU/内存配额不会生效",
+				"reason", d.cg.Reason(),
+				"hint", "需要 cgroup v2（内核≥4.15 且统一层级）或 cgroup v1（memory 与 cpu 控制器已挂载）")
 		}
 	}
 
@@ -223,7 +430,7 @@ func (d *Daemon) Run() error {
 		if !ok {
 			continue
 		}
-		if err := d.frp.LoadFromDisk(id, inst.Dir); err != nil {
+		if err := d.frp.LoadFromDisk(id, d.FrpDir(id)); err != nil {
 			d.log.Warn("恢复隧道定义失败", "instance", id, "error", err)
 			continue
 		}
@@ -261,17 +468,17 @@ func (d *Daemon) Run() error {
 		NodeId:   d.cfg.NodeID,
 		Hostname: hostname,
 		Os:       detectOS(),
-		Arch:     "amd64",
+		// 原来这里是硬编码的 "amd64" 与 "0.2.0" —— 在 arm64 包和多版本并存时都是错的：
+		// 面板按上报的版本判断节点是否配套（文档明确要求面板与节点版本一致），
+		// 写死一个常量等于把这条检查废掉；arch 写死则让 arm64 节点上报成 amd64。
+		Arch:     runtime.GOARCH,
 		CpuCores: int64(runtime.NumCPU()),
 		MemTotal: totalMemory(),
-		Version:  "0.2.0",
+		Version:  version.Short(),
 	}
-	resp, err := client.Register(context.Background(), regReq)
+	resp, err := d.registerWithRetry(client, regReq)
 	if err != nil {
-		return fmt.Errorf("注册失败: %w", err)
-	}
-	if !resp.Accepted {
-		return fmt.Errorf("Panel 拒绝注册: %s", resp.Message)
+		return err
 	}
 	d.log.Info("注册成功", "node_id", d.cfg.NodeID, "msg", resp.Message)
 
@@ -294,18 +501,90 @@ func (d *Daemon) Run() error {
 		}
 		bstat := hostCollector.CollectPath(backupPath)
 		_, err := client.Ping(context.Background(), &pb.PingRequest{
-			NodeId:     d.cfg.NodeID,
-			Timestamp:  time.Now().UnixMilli(),
-			CpuPercent: hs.CPUPercent,
-			MemUsed:    hs.MemUsed,
-			MemTotal:   hs.MemTotal,
-			DiskUsed:   hs.DiskUsed,
-			DiskTotal:  hs.DiskTotal,
+			NodeId:          d.cfg.NodeID,
+			Timestamp:       time.Now().UnixMilli(),
+			CpuPercent:      hs.CPUPercent,
+			MemUsed:         hs.MemUsed,
+			MemTotal:        hs.MemTotal,
+			DiskUsed:        hs.DiskUsed,
+			DiskTotal:       hs.DiskTotal,
 			BackupDiskUsed:  bstat.DiskUsed,
 			BackupDiskTotal: bstat.DiskTotal,
 		})
 		if err != nil {
 			d.log.Warn("心跳失败", "error", err)
+		}
+	}
+}
+
+// ErrShutdown 表示"因为收到退出信号而提前结束"，**不是故障**。
+//
+// 为什么要单独区分：main 对 Run() 返回的任何 error 都会记 `ERROR 运行失败` 并 exit 1。
+// 于是 `systemctl stop` 会在日志里留下一条 ERROR（"收到退出请求，放弃注册"），
+// 看到的人会以为服务崩了 —— 而实际是我们自己请求的、完全正常的退出。
+// 这类"把正常路径记成错误"的日志会污染告警与排查，值得单独一个哨兵值。
+var ErrShutdown = errors.New("收到退出请求")
+
+// registerWithRetry 反复尝试注册，直到成功、被面板明确拒绝、或收到退出信号。
+//
+// ---------------------------------------------------------------------------
+// 为什么不能"失败一次就 return err"（这是 2026-09-17 在 CentOS 7 上实测出来的）
+// ---------------------------------------------------------------------------
+// 节点的启动时机和面板无关：面板可能正在重启、还没起来、或者配置里地址暂时写错。
+// 原来一失败就退出，systemd（Restart=on-failure）就会每 5 秒拉起一次 ——
+// 实测 5 分钟重启了 16 次，日志被同一段错误刷满，而且 `systemctl status` 显示的是
+// **failed**，用户看到的是"服务坏了"，而不是"还没连上面板"这个真实状态。
+//
+// 更糟的是：`deploy/install.sh` 里装了单元就 `systemctl is-active` 检查，
+// 于是**全新机器上装节点包必然报"启动失败"** —— 因为 install.sh 刚生成的配置里
+// panel_address 还是占位符 `PANEL_IP:9090`，用户甚至还没来得及改。
+//
+// 所以改成退避重试：连不上就一直试（这是节点的正常待机状态），
+// 只有"面板明确拒绝"才是真的不该重试。
+func (d *Daemon) registerWithRetry(client pb.DaemonServiceClient, req *pb.RegisterRequest) (*pb.RegisterResponse, error) {
+	const (
+		firstBackoff = 2 * time.Second
+		maxBackoff   = 60 * time.Second
+		callTimeout  = 15 * time.Second
+	)
+	backoff := firstBackoff
+	for attempt := 1; ; attempt++ {
+		// 每次尝试都要有超时：地址能解析但端口被墙时，没有 deadline 的 RPC
+		// 会一直挂着，退避逻辑就永远不会执行到（表现和"卡死"一样）。
+		ctx, cancel := context.WithTimeout(context.Background(), callTimeout)
+		resp, err := client.Register(ctx, req)
+		cancel()
+
+		if err == nil {
+			if !resp.Accepted {
+				// 面板明确拒绝（例如未授权/版本不兼容）—— 重试没有意义，如实上报
+				return nil, fmt.Errorf("Panel 拒绝注册: %s", resp.Message)
+			}
+			if attempt > 1 {
+				d.log.Info("已连接上面板", "attempt", attempt)
+			}
+			return resp, nil
+		}
+
+		if attempt == 1 {
+			d.log.Warn("暂时连不上面板，将持续重试（节点已就绪，等面板可达）",
+				"panel", d.cfg.PanelAddress, "error", err)
+		} else {
+			d.log.Warn("仍未连上面板", "attempt", attempt,
+				"next_retry_in", backoff.String(), "error", err)
+		}
+
+		select {
+		case <-d.shutdown:
+			return nil, ErrShutdown
+		case <-time.After(backoff):
+		}
+
+		if backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
 		}
 	}
 }

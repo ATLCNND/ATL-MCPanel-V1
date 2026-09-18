@@ -6,11 +6,35 @@ import (
 	"strconv"
 )
 
-// handleListAssignments 列出实例的授权关系（仅管理员）。
+// canManageAssignments 能否查看/管理某实例的协作者授权。
+//
+// 与 canManageInstanceSettings 同一口径（总管理员 / 该节点的节点用户 /
+// 该实例的 owner 级用户），而不是"仅总管理员"。
+//
+// 为什么放宽：权限级别表里 owner 的定义就是「全部（含文件、配置、删除、**授权**）」，
+// 前端的实例页也给 owner 显示了「授权」按钮 —— 后端却只认管理员，
+// 于是非管理员的实例主人点进去必然 403（内测报告第 7 条）。
+// 这不是放宽安全边界：能改一台实例的 start.sh 与文件的人，本来就已经完全控制它了，
+// 把"允许谁一起用"交给他，与"他可以把存档下载走"是同一量级的权力，
+// 而前者恰恰是多租户面板必须提供的能力。
+//
+// 仍然排除 collab/ viewer：他们只被授权"用这台实例"，不该能决定别人能不能用。
+func (s *Server) canManageAssignments(w http.ResponseWriter, r *http.Request, instanceID string) bool {
+	if requireAdminIn(w, r) {
+		return true
+	}
+	if s.canManageInstanceSettings(currentUserID(r), roleOf(r), instanceID) {
+		return true
+	}
+	writeErr(w, http.StatusForbidden, "需要该实例的拥有者或管理员权限")
+	return false
+}
+
+// handleListAssignments 列出实例的授权关系。
 // GET /api/instances/{id}/assignments
 func (s *Server) handleListAssignments(w http.ResponseWriter, r *http.Request) {
 	instanceID := r.PathValue("id")
-	if !requireAdminIn(w, r) {
+	if !s.canManageAssignments(w, r, instanceID) {
 		return
 	}
 	if !s.instanceExists(instanceID) {
@@ -47,11 +71,11 @@ func (s *Server) handleListAssignments(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
-// handleGrantAssignment 授予/更新用户对实例的权限（仅管理员）。
+// handleGrantAssignment 授予/更新用户对实例的权限。
 // POST /api/instances/{id}/assignments  {username, level}
 func (s *Server) handleGrantAssignment(w http.ResponseWriter, r *http.Request) {
 	instanceID := r.PathValue("id")
-	if !requireAdminIn(w, r) {
+	if !s.canManageAssignments(w, r, instanceID) {
 		return
 	}
 	if !s.instanceExists(instanceID) {
@@ -99,11 +123,11 @@ func (s *Server) handleGrantAssignment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "授权成功"})
 }
 
-// handleRevokeAssignment 撤销授权（仅管理员；不可撤销管理员）。
+// handleRevokeAssignment 撤销授权（不可撤销管理员）。
 // DELETE /api/instances/{id}/assignments?user_id=N
 func (s *Server) handleRevokeAssignment(w http.ResponseWriter, r *http.Request) {
 	instanceID := r.PathValue("id")
-	if !requireAdminIn(w, r) {
+	if !s.canManageAssignments(w, r, instanceID) {
 		return
 	}
 

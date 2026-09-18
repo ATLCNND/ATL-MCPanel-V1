@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { getToken, clearToken, listAlerts, currentUser, getMyProfile, User } from './api'
+import { getToken, clearToken, listAlerts, currentUser, getMyProfile, User, USER_EVENT } from './api'
 import AppShell, { NavKey } from './components/AppShell'
 import Login from './components/Login'
 import Instances from './components/Instances'
@@ -77,6 +77,14 @@ export default function App() {
     loadUser()
   }, [authed, loadUser])
 
+  // 登录态本身发生变化时也要刷新（用户在账户页改了自己的用户名）。
+  // 这条链路是另一棵组件树里的操作，只能靠事件通知过来。
+  useEffect(() => {
+    const onUserChanged = () => loadUser()
+    window.addEventListener(USER_EVENT, onUserChanged)
+    return () => window.removeEventListener(USER_EVENT, onUserChanged)
+  }, [loadUser])
+
   // 头像地址：外壳左下角、实例页的账户卡片、账户页三处都要用同一个值，
   // 所以统一在这里取一次再往下传（以前外壳那张卡片写死了首字母，
   // 用户传了头像也看不到）。
@@ -138,6 +146,8 @@ export default function App() {
           onNavigate={navigate}
           onOpenAccount={() => setView('account')}
           onOpenAlerts={() => setShowAlerts(true)}
+          // 改名后同步外壳持有的实例名（用函数式更新，避免依赖 view 的收窄）
+          onRenamed={(n) => setView((v) => (typeof v === 'object' ? { ...v, name: n } : v))}
         />
         {showAlerts && (
           <AlertsModal

@@ -7,7 +7,31 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/runas"
 )
+
+// testInstance 测试用的实例构造：状态目录就用实例目录（测试不涉及
+// "root 信任的文件不能放租户目录"那条边界），并注入一个"身份与当前进程相同"
+// 的运行身份。
+//
+// 注入身份不是为了省事：Start 里有一道安全闸 —— Daemon 以 root 运行却没有
+// 降权身份时**拒绝启动实例**（那正是我们要修掉的漏洞）。测试环境与我们的 VM
+// 本身就是 root，不注入的话一批与被测行为无关的用例会因这道闸失败。
+// 身份取当前 uid，于是 chown 与 Credential 都退化成等价操作，测试语义不变。
+// 注意这里**没有**用 t：调用点多达十几处，多传一个参数只会让改动面变大。
+func testInstance(id, dir, jar, maxMem, minMem string) *Instance {
+	inst := NewInstance(id, dir, dir, jar, maxMem, minMem)
+	inst.RunAsFor = func(string) (*runas.Identity, error) {
+		return &runas.Identity{
+			Username: "test-same-uid",
+			UID:      uint32(os.Getuid()),
+			GID:      uint32(os.Getgid()),
+			Home:     dir,
+		}, nil
+	}
+	return inst
+}
 
 func TestNormMem(t *testing.T) {
 	cases := map[string]string{
@@ -23,7 +47,7 @@ func TestNormMem(t *testing.T) {
 }
 
 func TestRenderCommand(t *testing.T) {
-	inst := NewInstance("test1", "/opt/mcpanel/instances/test1", "/jars/folia.jar", "3G", "1G")
+	inst := testInstance("test1", "/opt/mcpanel/instances/test1", "/jars/folia.jar", "3G", "1G")
 
 	cases := []struct {
 		tpl  string
@@ -73,7 +97,7 @@ func TestRecentOutputReadsTail(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	inst := NewInstance("t", dir, "", "1G", "1G")
+	inst := testInstance("t", dir, "", "1G", "1G")
 
 	// 取最近 10 行
 	got := inst.RecentOutput(10)
@@ -104,7 +128,7 @@ func TestRecentOutputReadsTail(t *testing.T) {
 }
 
 func TestRecentOutputMissingFile(t *testing.T) {
-	inst := NewInstance("t", t.TempDir(), "", "1G", "1G")
+	inst := testInstance("t", t.TempDir(), "", "1G", "1G")
 	if got := inst.RecentOutput(10); got != nil {
 		t.Errorf("日志不存在时应返回 nil，实际 %v", got)
 	}
@@ -158,7 +182,7 @@ func TestRotateBySize(t *testing.T) {
 }
 
 func TestInstanceDefaultState(t *testing.T) {
-	inst := NewInstance("id1", "/dir", "/j.jar", "2G", "1G")
+	inst := testInstance("id1", "/dir", "/j.jar", "2G", "1G")
 	if inst.Status() != "stopped" {
 		t.Errorf("初始状态应为 stopped，实际 %s", inst.Status())
 	}
@@ -198,7 +222,7 @@ func TestResolveJavaBinRelativePath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	inst := NewInstance("t1", dir, "", "1G", "1G")
+	inst := testInstance("t1", dir, "", "1G", "1G")
 	inst.JavaVersion = "jdk/bin/java"
 	if got := inst.resolveJavaBin(); got != bin {
 		t.Errorf("相对路径应按实例目录解析：期望 %s，实际 %s", bin, got)
@@ -211,7 +235,7 @@ func TestResolveJavaBinRelativePath(t *testing.T) {
 // 相对路径不存在时回退到 PATH 上的 java，但**必须留下说明**（否则用户以为生效了）。
 func TestResolveJavaBinMissingRelativeFallsBack(t *testing.T) {
 	dir := t.TempDir()
-	inst := NewInstance("t2", dir, "", "1G", "1G")
+	inst := testInstance("t2", dir, "", "1G", "1G")
 	inst.JavaVersion = "nope/bin/java"
 
 	if got := inst.resolveJavaBin(); got != "java" {
@@ -229,7 +253,7 @@ func TestResolveJavaBinMissingRelativeFallsBack(t *testing.T) {
 // 绝对路径与空值保持原行为。
 func TestResolveJavaBinAbsAndEmpty(t *testing.T) {
 	dir := t.TempDir()
-	inst := NewInstance("t3", dir, "", "1G", "1G")
+	inst := testInstance("t3", dir, "", "1G", "1G")
 
 	inst.JavaVersion = ""
 	if got := inst.resolveJavaBin(); got != "java" {

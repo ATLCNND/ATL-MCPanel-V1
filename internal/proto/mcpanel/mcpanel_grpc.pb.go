@@ -19,51 +19,53 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DaemonService_Register_FullMethodName           = "/mcpanel.DaemonService/Register"
-	DaemonService_Ping_FullMethodName               = "/mcpanel.DaemonService/Ping"
-	DaemonService_CreateInstance_FullMethodName     = "/mcpanel.DaemonService/CreateInstance"
-	DaemonService_StartInstance_FullMethodName      = "/mcpanel.DaemonService/StartInstance"
-	DaemonService_StopInstance_FullMethodName       = "/mcpanel.DaemonService/StopInstance"
-	DaemonService_KillInstance_FullMethodName       = "/mcpanel.DaemonService/KillInstance"
-	DaemonService_RestartInstance_FullMethodName    = "/mcpanel.DaemonService/RestartInstance"
-	DaemonService_DeleteInstance_FullMethodName     = "/mcpanel.DaemonService/DeleteInstance"
-	DaemonService_GetInstanceStatus_FullMethodName  = "/mcpanel.DaemonService/GetInstanceStatus"
-	DaemonService_GetInstanceRuntime_FullMethodName = "/mcpanel.DaemonService/GetInstanceRuntime"
-	DaemonService_Console_FullMethodName            = "/mcpanel.DaemonService/Console"
-	DaemonService_StreamMetrics_FullMethodName      = "/mcpanel.DaemonService/StreamMetrics"
-	DaemonService_ListFiles_FullMethodName          = "/mcpanel.DaemonService/ListFiles"
-	DaemonService_ReadFile_FullMethodName           = "/mcpanel.DaemonService/ReadFile"
-	DaemonService_WriteFile_FullMethodName          = "/mcpanel.DaemonService/WriteFile"
-	DaemonService_DeleteFile_FullMethodName         = "/mcpanel.DaemonService/DeleteFile"
-	DaemonService_Mkdir_FullMethodName              = "/mcpanel.DaemonService/Mkdir"
-	DaemonService_RenameFile_FullMethodName         = "/mcpanel.DaemonService/RenameFile"
-	DaemonService_CopyFile_FullMethodName           = "/mcpanel.DaemonService/CopyFile"
-	DaemonService_SearchFiles_FullMethodName        = "/mcpanel.DaemonService/SearchFiles"
-	DaemonService_DownloadFile_FullMethodName       = "/mcpanel.DaemonService/DownloadFile"
-	DaemonService_GetInstanceIcon_FullMethodName    = "/mcpanel.DaemonService/GetInstanceIcon"
-	DaemonService_GetMetrics_FullMethodName         = "/mcpanel.DaemonService/GetMetrics"
-	DaemonService_SubmitJob_FullMethodName          = "/mcpanel.DaemonService/SubmitJob"
-	DaemonService_GetJob_FullMethodName             = "/mcpanel.DaemonService/GetJob"
-	DaemonService_CancelJob_FullMethodName          = "/mcpanel.DaemonService/CancelJob"
-	DaemonService_GetPlayerOverview_FullMethodName  = "/mcpanel.DaemonService/GetPlayerOverview"
-	DaemonService_SendCommand_FullMethodName        = "/mcpanel.DaemonService/SendCommand"
-	DaemonService_ListResources_FullMethodName      = "/mcpanel.DaemonService/ListResources"
-	DaemonService_UploadResource_FullMethodName     = "/mcpanel.DaemonService/UploadResource"
-	DaemonService_DeleteResource_FullMethodName     = "/mcpanel.DaemonService/DeleteResource"
-	DaemonService_ListJavaRuntimes_FullMethodName   = "/mcpanel.DaemonService/ListJavaRuntimes"
-	DaemonService_GetConfig_FullMethodName          = "/mcpanel.DaemonService/GetConfig"
-	DaemonService_SetConfig_FullMethodName          = "/mcpanel.DaemonService/SetConfig"
-	DaemonService_UploadJar_FullMethodName          = "/mcpanel.DaemonService/UploadJar"
-	DaemonService_SetInstanceJar_FullMethodName     = "/mcpanel.DaemonService/SetInstanceJar"
-	DaemonService_ListJars_FullMethodName           = "/mcpanel.DaemonService/ListJars"
-	DaemonService_Backup_FullMethodName             = "/mcpanel.DaemonService/Backup"
-	DaemonService_Restore_FullMethodName            = "/mcpanel.DaemonService/Restore"
-	DaemonService_ListBackups_FullMethodName        = "/mcpanel.DaemonService/ListBackups"
-	DaemonService_DeleteBackup_FullMethodName       = "/mcpanel.DaemonService/DeleteBackup"
-	DaemonService_ApplyTunnel_FullMethodName        = "/mcpanel.DaemonService/ApplyTunnel"
-	DaemonService_RemoveTunnel_FullMethodName       = "/mcpanel.DaemonService/RemoveTunnel"
-	DaemonService_ListTunnels_FullMethodName        = "/mcpanel.DaemonService/ListTunnels"
-	DaemonService_TestFrps_FullMethodName           = "/mcpanel.DaemonService/TestFrps"
+	DaemonService_Register_FullMethodName               = "/mcpanel.DaemonService/Register"
+	DaemonService_Ping_FullMethodName                   = "/mcpanel.DaemonService/Ping"
+	DaemonService_CreateInstance_FullMethodName         = "/mcpanel.DaemonService/CreateInstance"
+	DaemonService_StartInstance_FullMethodName          = "/mcpanel.DaemonService/StartInstance"
+	DaemonService_StopInstance_FullMethodName           = "/mcpanel.DaemonService/StopInstance"
+	DaemonService_KillInstance_FullMethodName           = "/mcpanel.DaemonService/KillInstance"
+	DaemonService_RestartInstance_FullMethodName        = "/mcpanel.DaemonService/RestartInstance"
+	DaemonService_DeleteInstance_FullMethodName         = "/mcpanel.DaemonService/DeleteInstance"
+	DaemonService_GetInstanceStatus_FullMethodName      = "/mcpanel.DaemonService/GetInstanceStatus"
+	DaemonService_GetInstanceRuntime_FullMethodName     = "/mcpanel.DaemonService/GetInstanceRuntime"
+	DaemonService_GetContainerCapability_FullMethodName = "/mcpanel.DaemonService/GetContainerCapability"
+	DaemonService_SetInstanceContainer_FullMethodName   = "/mcpanel.DaemonService/SetInstanceContainer"
+	DaemonService_Console_FullMethodName                = "/mcpanel.DaemonService/Console"
+	DaemonService_StreamMetrics_FullMethodName          = "/mcpanel.DaemonService/StreamMetrics"
+	DaemonService_ListFiles_FullMethodName              = "/mcpanel.DaemonService/ListFiles"
+	DaemonService_ReadFile_FullMethodName               = "/mcpanel.DaemonService/ReadFile"
+	DaemonService_WriteFile_FullMethodName              = "/mcpanel.DaemonService/WriteFile"
+	DaemonService_DeleteFile_FullMethodName             = "/mcpanel.DaemonService/DeleteFile"
+	DaemonService_Mkdir_FullMethodName                  = "/mcpanel.DaemonService/Mkdir"
+	DaemonService_RenameFile_FullMethodName             = "/mcpanel.DaemonService/RenameFile"
+	DaemonService_CopyFile_FullMethodName               = "/mcpanel.DaemonService/CopyFile"
+	DaemonService_SearchFiles_FullMethodName            = "/mcpanel.DaemonService/SearchFiles"
+	DaemonService_DownloadFile_FullMethodName           = "/mcpanel.DaemonService/DownloadFile"
+	DaemonService_GetInstanceIcon_FullMethodName        = "/mcpanel.DaemonService/GetInstanceIcon"
+	DaemonService_GetMetrics_FullMethodName             = "/mcpanel.DaemonService/GetMetrics"
+	DaemonService_SubmitJob_FullMethodName              = "/mcpanel.DaemonService/SubmitJob"
+	DaemonService_GetJob_FullMethodName                 = "/mcpanel.DaemonService/GetJob"
+	DaemonService_CancelJob_FullMethodName              = "/mcpanel.DaemonService/CancelJob"
+	DaemonService_GetPlayerOverview_FullMethodName      = "/mcpanel.DaemonService/GetPlayerOverview"
+	DaemonService_SendCommand_FullMethodName            = "/mcpanel.DaemonService/SendCommand"
+	DaemonService_ListResources_FullMethodName          = "/mcpanel.DaemonService/ListResources"
+	DaemonService_UploadResource_FullMethodName         = "/mcpanel.DaemonService/UploadResource"
+	DaemonService_DeleteResource_FullMethodName         = "/mcpanel.DaemonService/DeleteResource"
+	DaemonService_ListJavaRuntimes_FullMethodName       = "/mcpanel.DaemonService/ListJavaRuntimes"
+	DaemonService_GetConfig_FullMethodName              = "/mcpanel.DaemonService/GetConfig"
+	DaemonService_SetConfig_FullMethodName              = "/mcpanel.DaemonService/SetConfig"
+	DaemonService_UploadJar_FullMethodName              = "/mcpanel.DaemonService/UploadJar"
+	DaemonService_SetInstanceJar_FullMethodName         = "/mcpanel.DaemonService/SetInstanceJar"
+	DaemonService_ListJars_FullMethodName               = "/mcpanel.DaemonService/ListJars"
+	DaemonService_Backup_FullMethodName                 = "/mcpanel.DaemonService/Backup"
+	DaemonService_Restore_FullMethodName                = "/mcpanel.DaemonService/Restore"
+	DaemonService_ListBackups_FullMethodName            = "/mcpanel.DaemonService/ListBackups"
+	DaemonService_DeleteBackup_FullMethodName           = "/mcpanel.DaemonService/DeleteBackup"
+	DaemonService_ApplyTunnel_FullMethodName            = "/mcpanel.DaemonService/ApplyTunnel"
+	DaemonService_RemoveTunnel_FullMethodName           = "/mcpanel.DaemonService/RemoveTunnel"
+	DaemonService_ListTunnels_FullMethodName            = "/mcpanel.DaemonService/ListTunnels"
+	DaemonService_TestFrps_FullMethodName               = "/mcpanel.DaemonService/TestFrps"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -85,6 +87,9 @@ type DaemonServiceClient interface {
 	DeleteInstance(ctx context.Context, in *DeleteInstanceRequest, opts ...grpc.CallOption) (*OperationResponse, error)
 	GetInstanceStatus(ctx context.Context, in *InstanceRequest, opts ...grpc.CallOption) (*InstanceStatus, error)
 	GetInstanceRuntime(ctx context.Context, in *InstanceRequest, opts ...grpc.CallOption) (*InstanceRuntime, error)
+	// 容器化隔离：查询节点能力 / 开关某实例的容器化
+	GetContainerCapability(ctx context.Context, in *EmptyRequest, opts ...grpc.CallOption) (*ContainerCapability, error)
+	SetInstanceContainer(ctx context.Context, in *SetInstanceContainerRequest, opts ...grpc.CallOption) (*OperationResponse, error)
 	// 控制台：双向流（Panel 发命令，Daemon 回日志/输出）
 	Console(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ConsoleFrame, ConsoleFrame], error)
 	// 监控数据流：Daemon -> Panel 持续推送
@@ -246,6 +251,26 @@ func (c *daemonServiceClient) GetInstanceRuntime(ctx context.Context, in *Instan
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(InstanceRuntime)
 	err := c.cc.Invoke(ctx, DaemonService_GetInstanceRuntime_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) GetContainerCapability(ctx context.Context, in *EmptyRequest, opts ...grpc.CallOption) (*ContainerCapability, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ContainerCapability)
+	err := c.cc.Invoke(ctx, DaemonService_GetContainerCapability_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) SetInstanceContainer(ctx context.Context, in *SetInstanceContainerRequest, opts ...grpc.CallOption) (*OperationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OperationResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SetInstanceContainer_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -651,6 +676,9 @@ type DaemonServiceServer interface {
 	DeleteInstance(context.Context, *DeleteInstanceRequest) (*OperationResponse, error)
 	GetInstanceStatus(context.Context, *InstanceRequest) (*InstanceStatus, error)
 	GetInstanceRuntime(context.Context, *InstanceRequest) (*InstanceRuntime, error)
+	// 容器化隔离：查询节点能力 / 开关某实例的容器化
+	GetContainerCapability(context.Context, *EmptyRequest) (*ContainerCapability, error)
+	SetInstanceContainer(context.Context, *SetInstanceContainerRequest) (*OperationResponse, error)
 	// 控制台：双向流（Panel 发命令，Daemon 回日志/输出）
 	Console(grpc.BidiStreamingServer[ConsoleFrame, ConsoleFrame]) error
 	// 监控数据流：Daemon -> Panel 持续推送
@@ -747,6 +775,12 @@ func (UnimplementedDaemonServiceServer) GetInstanceStatus(context.Context, *Inst
 }
 func (UnimplementedDaemonServiceServer) GetInstanceRuntime(context.Context, *InstanceRequest) (*InstanceRuntime, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetInstanceRuntime not implemented")
+}
+func (UnimplementedDaemonServiceServer) GetContainerCapability(context.Context, *EmptyRequest) (*ContainerCapability, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetContainerCapability not implemented")
+}
+func (UnimplementedDaemonServiceServer) SetInstanceContainer(context.Context, *SetInstanceContainerRequest) (*OperationResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetInstanceContainer not implemented")
 }
 func (UnimplementedDaemonServiceServer) Console(grpc.BidiStreamingServer[ConsoleFrame, ConsoleFrame]) error {
 	return status.Errorf(codes.Unimplemented, "method Console not implemented")
@@ -1050,6 +1084,42 @@ func _DaemonService_GetInstanceRuntime_Handler(srv interface{}, ctx context.Cont
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).GetInstanceRuntime(ctx, req.(*InstanceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_GetContainerCapability_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EmptyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).GetContainerCapability(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_GetContainerCapability_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).GetContainerCapability(ctx, req.(*EmptyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_SetInstanceContainer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetInstanceContainerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SetInstanceContainer(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SetInstanceContainer_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SetInstanceContainer(ctx, req.(*SetInstanceContainerRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1698,6 +1768,14 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetInstanceRuntime",
 			Handler:    _DaemonService_GetInstanceRuntime_Handler,
+		},
+		{
+			MethodName: "GetContainerCapability",
+			Handler:    _DaemonService_GetContainerCapability_Handler,
+		},
+		{
+			MethodName: "SetInstanceContainer",
+			Handler:    _DaemonService_SetInstanceContainer_Handler,
 		},
 		{
 			MethodName: "ListFiles",

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   PlayerList, PlayerOverview, listPlayers, addPlayer, removePlayer, setWhitelist,
-  getPlayerOverview,
+  getPlayerOverview, kickPlayer, setOpLevel,
 } from '../api'
 import './PlayersTab.css'
 
@@ -32,10 +32,26 @@ function fmtDate(ts: number): string {
   return new Date(ts * 1000).toLocaleString('zh-CN', { hour12: false })
 }
 
+/**
+ * OP 等级的含义（原版定义）。
+ *
+ * 界面上必须把等级说清楚：只写 "1/2/3/4" 的话，没有人知道 2 级和 3 级差在哪，
+ * 于是要么全都给 4 级（等于给了管理服务器的权力），要么根本不敢动。
+ */
+const OP_LEVEL_HINT: Record<number, string> = {
+  1: '可绕过出生点保护',
+  2: '1 级 + 可用大部分单人指令与命令方块',
+  3: '2 级 + 可管理玩家（封禁 / 踢出 / 授权）',
+  4: '3 级 + 可管理服务器（stop / save 等），原版默认',
+}
+
 export default function PlayersTab({ instanceId, canWrite }: { instanceId: string; canWrite: boolean }) {
   const [kind, setKind] = useState<Kind>('all')
   const [data, setData] = useState<PlayerList | null>(null)
   const [overview, setOverview] = useState<PlayerOverview | null>(null)
+  // 总览里每个玩家的 OP 等级：总览接口只给出"是不是 OP"，等级要从 ops.json 另取一份。
+  // 想知道"他现在几级"才能改对 —— 否则选择框只能猜。
+  const [opLevels, setOpLevels] = useState<Record<string, number>>({})
   const [filter, setFilter] = useState('')
   const [input, setInput] = useState('')
   const [error, setError] = useState('')
@@ -50,6 +66,20 @@ export default function PlayersTab({ instanceId, canWrite }: { instanceId: strin
     try {
       if (isOverview) {
         setOverview(await getPlayerOverview(instanceId))
+        // 等级表只有有权改名单的人才需要（读名单文件本身是 collab 级别就够的）
+        if (canWrite) {
+          try {
+            const ops = await listPlayers(instanceId, 'ops')
+            const m: Record<string, number> = {}
+            for (const e of ops.entries || []) {
+              if (e.name) m[e.name.toLowerCase()] = e.level ?? 4
+            }
+            setOpLevels(m)
+          } catch {
+            // 拿不到等级不影响总览显示，选择框退回"无"即可
+            setOpLevels({})
+          }
+        }
       } else {
         setData(await listPlayers(instanceId, kind))
       }
@@ -89,6 +119,44 @@ export default function PlayersTab({ instanceId, canWrite }: { instanceId: strin
   }
 
   const current = KINDS.find((k) => k.key === kind)!
+
+  // ---- 总览里的一键操作 ----
+  //
+  // 为什么把操作放到**总览**表上：原来要封一个人得先切到「封禁玩家」页签、
+  // 再手打一遍名字。而人是在总览里看到的（"这人玩得最多"、"这人现在在线"），
+  // 看到问题的那一刻就该能处理，不该再让人搬运名字。
+  //
+  // 封禁要二次确认：它是这里唯一会**持续生效**的操作（白名单/OP 都能一键还原，
+  // 踢出只影响当下），误点一次对方就进不来了。
+
+  const levelOf = (p: { name?: string; op: boolean }) =>
+    p.name ? (opLevels[p.name.toLowerCase()] ?? (p.op ? 4 : 0)) : 0
+
+  const toggleWhitelist = (p: { name?: string; whitelisted: boolean }) => {
+    if (!p.name) return
+    run(() => (p.whitelisted
+      ? removePlayer(instanceId, 'whitelist', p.name!)
+      : addPlayer(instanceId, 'whitelist', p.name!)))
+  }
+
+  const toggleBan = (p: { name?: string; banned: boolean }) => {
+    if (!p.name) return
+    if (p.banned) {
+      run(() => removePlayer(instanceId, 'bans', p.name!))
+      return
+    }
+    if (!confirm(`确定封禁「${p.name}」？封禁后他将无法进入服务器（可随时解封）。`)) return
+    run(() => addPlayer(instanceId, 'bans', p.name!))
+  }
+
+  const changeOpLevel = (p: { name?: string }, lv: number) => {
+    if (!p.name) return
+    // 0 = 取消管理员：走名单移除（deop），而不是"设成 0 级"——
+    // 原版没有 0 级这个概念，留在 ops.json 里只会让名单越看越乱。
+    run(() => (lv === 0
+      ? removePlayer(instanceId, 'ops', p.name!)
+      : setOpLevel(instanceId, p.name!, lv)))
+  }
 
   // 总览列表的本地过滤：数据已经一次取全，再为搜索往返一次接口没有意义
   const shownPlayers = useMemo(() => {
@@ -177,36 +245,84 @@ export default function PlayersTab({ instanceId, canWrite }: { instanceId: strin
                 <th>身份</th>
                 <th>最后记录</th>
                 <th>UUID</th>
+                {canWrite && <th>操作</th>}
               </tr>
             </thead>
             <tbody>
-              {shownPlayers.map((p) => (
-                <tr key={(p.uuid || '') + p.name} className={p.online ? 'row-online' : ''}>
-                  <td>
-                    <strong>{p.name || '（未知名字）'}</strong>
-                    {!p.has_data && <span className="tag muted-tag" title="名单里有记录，但世界目录中没有该玩家的存档">无存档</span>}
-                  </td>
-                  <td>
-                    <span className={`status ${p.online ? 'status-running' : 'status-stopped'}`}>
-                      {p.online ? '在线' : '离线'}
-                    </span>
-                  </td>
-                  <td>{fmtDuration(p.play_seconds)}</td>
-                  <td>
-                    <div className="tag-list">
-                      {p.op && <span className="tag op">OP</span>}
-                      {p.whitelisted && <span className="tag wl">白名单</span>}
-                      {p.banned && <span className="tag ban">已封禁</span>}
-                      {!p.op && !p.whitelisted && !p.banned && <span className="muted">普通玩家</span>}
-                    </div>
-                  </td>
-                  <td>{fmtDate(p.last_seen)}</td>
-                  <td className="mono uuid">{p.uuid || '—'}</td>
-                </tr>
-              ))}
+              {shownPlayers.map((p) => {
+                // 没有名字的条目（名单里有记录但世界目录没存档）没法执行任何按名字
+                // 操作的动作，所以整列按钮都禁用而不是隐藏 —— 隐藏会让人以为"缺功能"。
+                const named = !!p.name
+                const lv = levelOf(p)
+                return (
+                  <tr key={(p.uuid || '') + p.name} className={p.online ? 'row-online' : ''}>
+                    <td>
+                      <strong>{p.name || '（未知名字）'}</strong>
+                      {!p.has_data && <span className="tag muted-tag" title="名单里有记录，但世界目录中没有该玩家的存档">无存档</span>}
+                    </td>
+                    <td>
+                      <span className={`status ${p.online ? 'status-running' : 'status-stopped'}`}>
+                        {p.online ? '在线' : '离线'}
+                      </span>
+                    </td>
+                    <td>{fmtDuration(p.play_seconds)}</td>
+                    <td>
+                      <div className="tag-list">
+                        {p.op && <span className="tag op">OP{lv ? ` ${lv}` : ''}</span>}
+                        {p.whitelisted && <span className="tag wl">白名单</span>}
+                        {p.banned && <span className="tag ban">已封禁</span>}
+                        {!p.op && !p.whitelisted && !p.banned && <span className="muted">普通玩家</span>}
+                      </div>
+                    </td>
+                    <td>{fmtDate(p.last_seen)}</td>
+                    <td className="mono uuid">{p.uuid || '—'}</td>
+                    {canWrite && (
+                      <td>
+                        <div className="player-ops">
+                          <button
+                            disabled={busy || !named || !p.online}
+                            title={p.online ? '把该玩家踢出服务器（可立即重新进入）' : '只有在线玩家才能踢出'}
+                            onClick={() => run(() => kickPlayer(instanceId, p.name!))}
+                          >
+                            踢出
+                          </button>
+                          <button
+                            disabled={busy || !named}
+                            title={p.whitelisted ? '从白名单中移除' : '加入白名单（仅白名单开启时才有意义）'}
+                            onClick={() => toggleWhitelist(p)}
+                          >
+                            {p.whitelisted ? '移出白名单' : '加白名单'}
+                          </button>
+                          <button
+                            className={p.banned ? '' : 'danger'}
+                            disabled={busy || !named}
+                            title={p.banned ? '解除封禁' : '禁止该玩家进入服务器'}
+                            onClick={() => toggleBan(p)}
+                          >
+                            {p.banned ? '解封' : '封禁'}
+                          </button>
+                          <label className="op-level" title="管理员（OP）等级：1 级最低，4 级可管理服务器">
+                            <span>OP</span>
+                            <select
+                              value={String(lv)}
+                              disabled={busy || !named}
+                              onChange={(e) => changeOpLevel(p, Number(e.target.value))}
+                            >
+                              <option value="0">无</option>
+                              {[1, 2, 3, 4].map((n) => (
+                                <option key={n} value={String(n)} title={OP_LEVEL_HINT[n]}>{n} 级</option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                )
+              })}
               {shownPlayers.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="empty">
+                  <td colSpan={canWrite ? 7 : 6} className="empty">
                     {loading
                       ? '加载中…'
                       : overview && overview.total === 0
@@ -217,6 +333,17 @@ export default function PlayersTab({ instanceId, canWrite }: { instanceId: strin
               )}
             </tbody>
           </table>
+
+          {canWrite && (
+            <div className="players-oplevel-note">
+              <strong>OP 等级</strong>（1 级最低，4 级可管理服务器）：
+              {Object.entries(OP_LEVEL_HINT).map(([k, v]) => (
+                <span key={k} className="op-hint-item"><b>{k} 级</b> {v}</span>
+              ))}
+              改完等级会写入 <span className="mono">ops.json</span>；运行中的服务器会自动读取名单文件的变化，
+              若游戏内仍是旧等级，执行 <span className="mono">/reload</span> 或重启实例即可。
+            </div>
+          )}
 
           <div className="players-note">
             说明：<strong>游戏时长</strong>取自世界统计文件（<span className="mono">world/stats/&lt;uuid&gt;.json</span>），

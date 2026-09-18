@@ -72,6 +72,9 @@ func (s *Server) RenameFile(ctx context.Context, req *pb.RenameFileRequest) (*pb
 	if err := os.Rename(src, dst); err != nil {
 		return &pb.OperationResponse{Success: false, Error: err.Error()}, nil
 	}
+	// 交给实例的运行用户（改名不改属主，但**移动**会跟着父目录变化，
+	// 而这一步同时兜住了"原本是 root 写的文件被改到别处"的情况）
+	s.handOver(req.InstanceId, dst)
 	s.log.Info("文件已重命名", "instance", req.InstanceId, "from", req.Path, "to", name)
 	return &pb.OperationResponse{Success: true, Message: "重命名成功"}, nil
 }
@@ -136,6 +139,9 @@ func (s *Server) CopyFile(ctx context.Context, req *pb.CopyFileRequest) (*pb.Ope
 	if runErr != nil {
 		return &pb.OperationResponse{Success: false, Error: runErr.Error()}, nil
 	}
+	// 复制/移动的产物都要交给实例用户：移动时源可能是 root 建的，
+	// 复制时目标整个是新的（可能是整棵子树）
+	s.handOver(req.InstanceId, dst)
 	s.log.Info("文件已"+action, "instance", req.InstanceId, "from", req.Src, "to", req.Dst)
 	return &pb.OperationResponse{Success: true, Message: action + "成功"}, nil
 }
@@ -402,6 +408,8 @@ func (s *Server) runJob(ctx context.Context, job *jobqueue.Job, report jobqueue.
 		if err := fileops.Compress(ctx, src, dst, job.Format, filter, toReport); err != nil {
 			return err
 		}
+		// 产物交给实例用户：备份/压缩包也是租户要自己下载、移动、删除的东西
+		s.handOver(job.InstanceID, dst)
 		info, err := os.Stat(dst)
 		if err == nil {
 			toReport(100, fmt.Sprintf("已生成 %s（%s）", filepath.Base(dst), humanSize(info.Size())), info.Size(), info.Size())
@@ -417,6 +425,9 @@ func (s *Server) runJob(ctx context.Context, job *jobqueue.Job, report jobqueue.
 			rel := path.Clean(path.Join(baseDir, name))
 			return !isProtectedPath(rel)
 		}
+		// 用 defer：解压到一半失败时，已经落盘的那半个目录树同样是 root 属主，
+		// 不交出去的话用户重试时会撞上"目录里建不了东西"。
+		defer s.handOver(job.InstanceID, dst)
 		if err := fileops.Extract(ctx, src, dst, job.Format, filter, toReport); err != nil {
 			return err
 		}
@@ -659,16 +670,16 @@ func (s *Server) GetPlayerOverview(ctx context.Context, req *pb.InstanceRequest)
 
 func toEntry(name, uuid string, play int64, wl, op, banned, hasData bool, lastSeen int64, source string, online map[string]bool) *pb.PlayerOverviewEntry {
 	return &pb.PlayerOverviewEntry{
-		Uuid:         uuid,
-		Name:         name,
-		PlaySeconds:  play,
-		Online:       online[strings.ToLower(name)],
-		Whitelisted:  wl,
-		Op:           op,
-		Banned:       banned,
-		HasData:      hasData,
-		LastSeen:     lastSeen,
-		Source:       source,
+		Uuid:        uuid,
+		Name:        name,
+		PlaySeconds: play,
+		Online:      online[strings.ToLower(name)],
+		Whitelisted: wl,
+		Op:          op,
+		Banned:      banned,
+		HasData:     hasData,
+		LastSeen:    lastSeen,
+		Source:      source,
 	}
 }
 

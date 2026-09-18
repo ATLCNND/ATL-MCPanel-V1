@@ -5,12 +5,15 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/grpclimits"
 	"github.com/ATLCNND/ATL-MCPanel/internal/pki"
@@ -35,6 +38,58 @@ func timeoutInterceptor(
 		defer cancel()
 	}
 	return invoker(ctx, method, req, reply, cc, opts...)
+}
+
+// scrubInterceptor 把节点返回的 gRPC 错误**换成不含部署细节的说法**。
+//
+// 为什么在拦截器里做，而不是逐个 handler 改：Daemon 的错误文本里带的是节点上的
+// 绝对路径（"stat /opt/atl-node/instances/beta03/etc/passwd: no such file"），
+// 而这些错误会被上百处 `writeErr(w, 500, err.Error())` 原样回给浏览器。
+// 逐个改既容易漏、也会随新接口不断回潮；把闸放在**客户端边界**上，
+// 一处生效、新接口自动被覆盖。
+//
+// 细节并没有丢：仍然记进面板日志（含原始错误），排查时按时间点去日志里找。
+// 对外只保留"哪一类操作失败了"，这足以让用户判断该不该重试，
+// 而不足以让他摸清节点的目录布局、部署路径与内部组件名。
+//
+// 只处理"节点返回了错误"这一类。参数校验、权限不足这类**本地**错误
+// （由 httpapi 自己产生）不经这里，它们本来就不含节点信息。
+func scrubInterceptor(
+	ctx context.Context, method string, req, reply interface{},
+	cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption,
+) error {
+	err := invoker(ctx, method, req, reply, cc, opts...)
+	if err == nil {
+		return nil
+	}
+	st, ok := status.FromError(err)
+	// 这几类是可操作的语义，不泄露任何节点内部信息，原样透出更好用
+	switch st.Code() {
+	case codes.NotFound, codes.PermissionDenied, codes.Unauthenticated,
+		codes.ResourceExhausted, codes.AlreadyExists, codes.FailedPrecondition,
+		codes.Unimplemented, codes.DeadlineExceeded:
+		return err
+	}
+	_ = ok
+	slog.Warn("节点调用失败（详情仅记录在服务端日志）",
+		"method", method, "code", st.Code().String(), "error", err.Error())
+	// 把原始错误挂在 context 里没用（调用方只看 error），因此这里返回一个
+	// 保留了"可判断性"的通用错误：调用方仍能看出是节点侧失败。
+	return status.Error(st.Code(), "节点执行失败："+nodeErrorSummary(st.Code()))
+}
+
+// nodeErrorSummary 给每类节点错误一句**不含内部细节**的人话。
+func nodeErrorSummary(c codes.Code) string {
+	switch c {
+	case codes.Internal, codes.Unknown:
+		return "节点内部错误（详情见面板日志）"
+	case codes.Unavailable:
+		return "节点不可达（Daemon 可能未运行或网络不通）"
+	case codes.Canceled:
+		return "操作已取消"
+	default:
+		return "请稍后重试，或查看面板日志"
+	}
 }
 
 // Manager 维护到各节点 Daemon 的 gRPC 客户端连接。
@@ -107,7 +162,7 @@ func (m *Manager) GetClient(nodeID int64) (pb.DaemonServiceClient, error) {
 
 	conn, err := grpc.NewClient(addr,
 		grpc.WithTransportCredentials(creds),
-		grpc.WithChainUnaryInterceptor(timeoutInterceptor),
+		grpc.WithChainUnaryInterceptor(timeoutInterceptor, scrubInterceptor),
 		// 与 Daemon 侧的 server 上限对齐：客户端默认只收 4 MB，
 		// 而下载文件、读取大响应都可能超过它。
 		grpc.WithDefaultCallOptions(

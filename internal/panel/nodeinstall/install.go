@@ -209,6 +209,16 @@ func (c *Client) Deploy(o Options) (*Result, error) {
 	res := &Result{Steps: []string{}}
 	addStep := func(s string) { res.Steps = append(res.Steps, s) }
 
+	// 0. 架构校验（放在最前面）
+	//
+	// 面板只能下发"自己同目录那一份" dsh-daemon，其架构在编译时固定。
+	// 不先比对的话，arm64 节点会被装上一个 amd64 二进制，直到启动才报
+	// Exec format error —— 那个错误离真正原因隔了好几层。
+	// 这里提前失败，并直接告诉用户该用哪个架构的包。
+	if err := c.checkArch(o.DaemonBinary); err != nil {
+		return nil, err
+	}
+
 	// 1. 创建目录结构
 	if _, err := c.Run(fmt.Sprintf("mkdir -p %s/bin %s/instances %s/certs %s/data", dir, dir, dir, dir)); err != nil {
 		return nil, fmt.Errorf("创建目录失败: %w", err)
