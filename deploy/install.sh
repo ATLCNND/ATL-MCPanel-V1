@@ -281,11 +281,27 @@ fi
 # 只是面板上的容器化开关会被拒绝（并给出原因）。
 if [ "$MODE" = "daemon" ]; then
   IMG_TAR=$(ls -1 "$SRC_DIR"/runtime/atl-mcpanel-runtime-*.tar.gz 2>/dev/null | head -1)
-  if [ -z "$IMG_TAR" ]; then
+
+  # 先看 docker 在不在。**安装脚本不替用户装 docker**：
+  #   · 它要加第三方仓库、拉上百 MB 的包、还常与 container-selinux 版本打架；
+  #     在别人的生产机上做这种事，失败了很难收拾，而且和"装面板"根本不是一件事；
+  #   · 真出问题时，一条发行版对应的命令比脚本里的一段自动逻辑好排查得多。
+  # 但**必须把话说清楚**：没有 docker 就没有容器化隔离，而面板上会有这个开关 ——
+  # 所以这里逐发行版给出可直接复制的命令，而不是含糊地说"未安装 docker"。
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "==> 未检测到 docker：容器化隔离不可用（实例将直接运行在节点上）"
+    echo "    需要它的话，按发行版执行："
+    echo "      CentOS 7 / RHEL 7:"
+    echo "        yum install -y yum-utils"
+    echo "        yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo"
+    echo "        yum install -y docker-ce docker-ce-cli containerd.io   # 注意：yum 3 不支持 --nobest"
+    echo "        systemctl enable --now docker"
+    echo "      Debian / Ubuntu:"
+    echo "        apt-get update && apt-get install -y docker.io && systemctl enable --now docker"
+    echo "    装完再执行一次本脚本即可自动导入下面这个镜像："
+    echo "      ${IMG_TAR:-（本包内未附带运行时镜像）}"
+  elif [ -z "$IMG_TAR" ]; then
     echo "==> 节点包内未包含运行时镜像（容器化隔离将不可用）"
-  elif ! command -v docker >/dev/null 2>&1; then
-    echo "==> 未安装 docker，跳过镜像导入"
-    echo "    需要容器化隔离时：装 docker-ce 后执行 docker load -i $IMG_TAR"
   else
     echo "==> 导入实例运行时基础镜像"
     if docker load -i "$IMG_TAR" 2>&1 | tail -2 | sed 's/^/    /'; then
