@@ -138,3 +138,16 @@ cp config.example.yaml config.yaml
 Bug、部署问题、文档纠错、使用反馈都很有用 —— 详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 安全漏洞请走 GitHub 的**私有漏洞报告**，不要在公开 Issue 里贴细节。
+
+## 许可与声明
+
+Required Notice: Copyright ATLCNND (https://github.com/ATLCNND/ATL-MCPanel-V1)
+
+本项目采用 **PolyForm Noncommercial License 1.0.0**：可以自由使用、修改、分发，
+但**不得用于商业用途**（商用需通过 Issue 联系取得授权）—— 条款见 [LICENSE](LICENSE)。
+
+按该许可的 Notices 条款，**任何拿到本项目副本的人也必须拿到上面那行
+Required Notice 与许可条款**，所以它同时写在 `LICENSE` 与本 README 里。
+
+分发物里的第三方开源组件（Go 模块、前端依赖、容器基础镜像中的 Debian 组件）
+及其完整许可文本，见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
