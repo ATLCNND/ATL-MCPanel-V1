@@ -30,6 +30,19 @@
   margin-bottom: 2px;
 }
 
+/* 会话失效提示（面板重启换了密钥 / 令牌到期后回到这里）。
+   用"提醒"色而不是错误色：这不是用户做错了什么，只是需要重新登录一次。 */
+.login-notice {
+  padding: 9px 12px;
+  border-radius: var(--r);
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  color: var(--text-1);
+  font-size: 12.5px;
+  line-height: 1.6;
+  text-align: center;
+}
+
 .login-box h1 {
   font-size: 26px;
   text-align: center;

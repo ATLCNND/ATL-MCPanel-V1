@@ -70,6 +70,15 @@ type ServerConfig struct {
 	ExternalURL string `yaml:"external_url"` // 外部访问地址（用于生成穿透等）
 	WebDir      string `yaml:"web_dir"`      // 前端静态资源目录（SPA），为空则不托管
 
+	// PanelName 面板**显示名称**：登录页、侧边栏品牌区、浏览器标题都用它。
+	//
+	// 为什么做成配置项：面板会被不同的人拿去用（自建、给客户部署），
+	// 而"这是谁的面板"应当能改，不该把我们的名字钉死在界面里。
+	// 默认 ATL-MCPanel；留空即用默认值（见 DefaultPanelName）。
+	//
+	// 注意：它只是显示名，**不参与任何鉴权或路径**，所以改它不需要动其它配置。
+	PanelName string `yaml:"panel_name"`
+
 	// HTTPS 配置
 	// 若设置 tls_listen：HTTPS 监听该地址，同时保留 listen 的 HTTP（双端口模式）
 	// 若仅设置 tls_cert/tls_key：listen 端口直接以 HTTPS 提供服务（单端口模式）
@@ -332,6 +341,9 @@ func (c *Config) applyDefaults() {
 	if c.Server.WebDir == "" {
 		c.Server.WebDir = "web/dist" // 前端构建产物目录（可由配置覆盖）
 	}
+	if c.Server.PanelName == "" {
+		c.Server.PanelName = DefaultPanelName
+	}
 	if c.Server.PanelFrpDir == "" {
 		c.Server.PanelFrpDir = "data/panel-frp" // 面板自身穿透工作目录
 	}
@@ -389,6 +401,9 @@ func (l *LogShareConfig) applyDefaults() {
 
 // MinJWTSecretLength JWT 密钥的最小长度。
 const MinJWTSecretLength = 32
+
+// DefaultPanelName 面板默认显示名（配置未指定时使用）。
+const DefaultPanelName = "ATL-MCPanel"
 
 // placeholderExact 完全匹配即视为占位密钥。
 var placeholderExact = map[string]bool{

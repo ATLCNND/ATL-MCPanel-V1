@@ -18,6 +18,15 @@
   top: 20px;
 }
 
+/* 品牌区（图标 + 面板名 + 版本号）。
+   实例页是 bare 模式、没有全局外壳侧边栏，所以名称与版本要在这里出现一次；
+   底部留一条分隔线，与下面的「返回实例列表」拉开层级。 */
+.detail-brand {
+  padding: 0 4px 10px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
 .back-link {
   display: block;
   width: 100%;

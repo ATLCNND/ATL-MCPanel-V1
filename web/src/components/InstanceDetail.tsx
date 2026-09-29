@@ -20,6 +20,7 @@ import {
 import AppShell, { NavKey, NAV_ITEMS } from './AppShell'
 import ThemeToggle from './ThemeToggle'
 import Avatar from './Avatar'
+import Brand from './Brand'
 import './InstanceDetail.css'
 
 type Tab = 'console' | 'loganalysis' | 'players' | 'ports' | 'jars' | 'start' | 'files' | 'config' | 'backups' | 'stats' | 'tasks'
@@ -407,6 +408,11 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
       <div className="detail-shell">
         {/* ========================= 左栏 ========================= */}
         <aside className="detail-nav">
+          {/* 品牌区：实例页是 bare 模式（没有全局外壳侧边栏），
+              所以名称与版本号必须在这里也出现一次，否则这一页"看不出是哪个面板、哪个版本" */}
+          <div className="detail-brand">
+            <Brand size={24} />
+          </div>
           <button className="back-link" onClick={onBack}>← 返回实例列表</button>
 
           <div className="side-card">

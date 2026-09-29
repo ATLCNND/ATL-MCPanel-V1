@@ -25,3 +25,9 @@ func String() string {
 func Short() string {
 	return Version
 }
+
+// GoVersion 构建所用的 Go 版本（面板的 /api/meta 会带给前端，
+// 报 bug 时"哪个 Go 编的"有时正是关键信息）。
+func GoVersion() string {
+	return runtime.Version()
+}

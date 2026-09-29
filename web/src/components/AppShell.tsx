@@ -1,7 +1,7 @@
 import { ReactNode } from 'react'
 import { User, roleLabel } from '../api'
 import Avatar from './Avatar'
-import BrandLogo from './BrandLogo'
+import Brand from './Brand'
 import ThemeToggle from './ThemeToggle'
 import './AppShell.css'
 
@@ -102,8 +102,8 @@ export default function AppShell({
     <div className="shell">
       <aside className="shell-nav">
         <div className="shell-logo">
-          <BrandLogo size={26} />
-          <span>ATL-MCPanel</span>
+          {/* 品牌区：图标 + 面板名 + 版本号（名称与版本来自 /api/meta，界面各处同源） */}
+          <Brand size={26} />
         </div>
 
         <nav className="shell-menu">

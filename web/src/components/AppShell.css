@@ -38,16 +38,13 @@
   display: flex;
   align-items: center;
   gap: 9px;
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--text-1);
   padding: 0 8px;
 }
 
-/* 品牌标记改用 <BrandLogo>（图片 + CSS 圆角），
-   原来的 .shell-logo-mark（字母 A 方块）已废弃。
-   注意窄屏规则里 .shell-logo span:last-child 仍然有效 ——
-   标记现在是 img，文字仍是最后一个 span。 */
+/* 品牌标记现在由 <Brand> 组件渲染（图标 + 名称 + 版本号，样式在 Brand.css）。
+   原来的 .shell-logo-mark（字母 A 方块）与写死的 <span>ATL-MCPanel</span> 都已废弃 ——
+   名称与版本号必须和登录页、实例页同源（来自 /api/meta），不能各写一份。
+   注意窄屏规则里 .shell-logo span:last-child 已不再适用（品牌文字在 .brand-text 里）。 */
 
 /* ---------------- 导航菜单 ---------------- */
 .shell-menu {
@@ -262,7 +259,7 @@
     width: 60px;
     padding: 16px 8px;
   }
-  .shell-logo span:last-child,
+  .shell-logo .brand-text,
   .shell-item span:not(.shell-item-icon):not(.shell-item-count),
   .shell-user-meta {
     display: none;

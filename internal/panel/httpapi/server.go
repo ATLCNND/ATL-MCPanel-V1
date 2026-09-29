@@ -29,6 +29,7 @@ type Options struct {
 	// 为空时退回当前工作目录下的 data/。
 	DataDir           string
 	WebDir            string            // 前端静态资源目录（空则不托管）
+	PanelName         string            // 面板显示名（登录页/侧边栏/浏览器标题；空则用默认值）
 	ListenAddr        string            // 面板 HTTP 监听地址（用于推导穿透的本地端口）
 	TLSListen         string            // 面板 HTTPS 监听地址（配置后穿透优先转发到此端口）
 	ExternalURL       string            // 面板外部访问地址
@@ -57,6 +58,8 @@ type Server struct {
 	nodes  *nodemgr.Manager
 	webDir string // 前端静态资源目录
 
+	// panelName 面板显示名（/api/meta 提供给前端；只用于展示，不参与鉴权）
+	panelName   string
 	listenAddr  string
 	tlsListen   string
 	externalURL string
@@ -162,6 +165,7 @@ func NewServer(d *sql.DB, a *auth.Service, n *nodemgr.Manager, opts Options) *Se
 		auth:        a,
 		nodes:       n,
 		webDir:      opts.WebDir,
+		panelName:   opts.PanelName,
 		listenAddr:  opts.ListenAddr,
 		tlsListen:   opts.TLSListen,
 		externalURL: opts.ExternalURL,
@@ -234,6 +238,8 @@ func (s *Server) currentURL() string {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
+	// 面板身份信息（名称/版本/图标）：**免登录** —— 登录页要用它显示品牌与版本号
+	mux.HandleFunc("GET /api/meta", s.handleMeta)
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
 
 	// 账号管理

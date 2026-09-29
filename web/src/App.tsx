@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
-import { getToken, clearToken, listAlerts, currentUser, getMyProfile, User, USER_EVENT } from './api'
+import {
+  getToken, clearToken, isTokenExpired, AUTH_EXPIRED_EVENT,
+  listAlerts, currentUser, getMyProfile, User, USER_EVENT,
+} from './api'
 import AppShell, { NavKey } from './components/AppShell'
 import Login from './components/Login'
 import Instances from './components/Instances'
@@ -14,6 +17,7 @@ import DashboardPage from './components/DashboardPage'
 import AccountPage from './components/AccountPage'
 import HelpPage from './components/HelpPage'
 import AlertsModal from './components/AlertsModal'
+import { useSessionWatchdog } from './components/usePanelMeta'
 
 /** 当前视图：全局页面，或某个实例的详情 */
 type View = NavKey | { id: string; name: string; status: string; level: string }
@@ -58,7 +62,15 @@ function AvatarReviewPage() {
 }
 
 export default function App() {
-  const [authed, setAuthed] = useState<boolean>(!!getToken())
+  // 有令牌才认为已登录 —— 但**过期的不算**。用户关掉浏览器很久再打开时，
+  // 本地可能还留着一个早就过期的令牌；直接当已登录会先渲染一次主界面，
+  // 然后被每个请求的 401 打回来（闪一下再跳登录页）。
+  const [authed, setAuthed] = useState<boolean>(() => {
+    const t = getToken()
+    return !!t && !isTokenExpired(t)
+  })
+  // 会话失效的原因（面板重启换了密钥、令牌到期…），带到登录页显示
+  const [expiredNotice, setExpiredNotice] = useState('')
   const [view, setView] = useState<View>('dashboard')
   const [user, setUser] = useState<User | null>(null)
   const [avatarUrl, setAvatarUrl] = useState('')
@@ -66,6 +78,35 @@ export default function App() {
   const [showAlerts, setShowAlerts] = useState(false)
 
   const isInstanceDetail = typeof view === 'object'
+
+  // 会话看门狗：本地按 JWT 的 exp 判断，到点就切回登录页（见 useSessionWatchdog）
+  useSessionWatchdog(authed)
+
+  // 任何 API 收到 401（令牌无效/过期）都会广播这个事件 —— 包括用户什么都没做、
+  // 只是服务端重启换掉了 JWT 密钥的情况。这里统一把界面切回登录页并说明原因，
+  // 而不是让每个页面各自弹一句"令牌无效"却还留在原地。
+  useEffect(() => {
+    const onExpired = (e: Event) => {
+      const reason = (e as CustomEvent).detail?.reason || '登录状态已失效，请重新登录'
+      setExpiredNotice(reason)
+      setAuthed(false)
+      setUser(null)
+      setView('dashboard')
+      setShowAlerts(false)
+    }
+    window.addEventListener(AUTH_EXPIRED_EVENT, onExpired)
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired)
+  }, [])
+
+  // 带着过期令牌进到登录页时把它清掉（否则下次刷新还会走一遍同样的判断）
+  useEffect(() => {
+    if (!authed && getToken()) {
+      clearToken()
+      setExpiredNotice((n) => n || '登录已过期，请重新登录')
+    }
+    // 只在挂载时判一次：之后是否已登录由上面的状态与事件驱动
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // 用户信息来自本地存储（登录时写入），读取是同步的
   const loadUser = useCallback(() => {
@@ -114,7 +155,9 @@ export default function App() {
   if (!authed) {
     return (
       <Login
+        notice={expiredNotice}
         onLogin={() => {
+          setExpiredNotice('')
           setAuthed(true)
           loadUser()
         }}
@@ -127,6 +170,8 @@ export default function App() {
     setAuthed(false)
     setUser(null)
     setView('dashboard')
+    // 主动登出不算"会话失效"，不显示那句提示（否则用户会以为是被踢了）
+    setExpiredNotice('')
   }
 
   const navigate = (key: NavKey) => setView(key)

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Terminal } from 'xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import 'xterm/css/xterm.css'
-import { consoleWsUrl } from '../api'
+import { consoleWsUrl, isTokenExpired, notifyAuthExpired } from '../api'
 import { onThemeChange } from '../styles/theme'
 import './ConsoleTab.css'
 
@@ -237,6 +237,14 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
       ws.onclose = () => {
         if (disposed) return
         setConnected(false)
+        // WebSocket 握手失败时浏览器**读不到响应体**（拿不到那句"令牌无效或已过期"），
+        // 所以这里按本地令牌是否过期来判断：过期就直接回登录页，
+        // 而不是每 3 秒重连一次、在终端里刷"[连接已断开]"——那看起来像面板坏了。
+        if (isTokenExpired()) {
+          notifyAuthExpired('登录已过期，请重新登录')
+          t.writeln('\x1b[91m[登录已过期，请重新登录]\x1b[0m')
+          return
+        }
         t.writeln('\x1b[90m[连接已断开，3 秒后重连…]\x1b[0m')
         retryTimer = setTimeout(connect, 3000)
       }

@@ -7,6 +7,10 @@ server:
   external_url: "http://127.0.0.1:8080"
   web_dir: "web/dist"       # 前端静态资源目录（npm run build 产物）；留空则不托管前端
 
+  # 面板显示名称：登录页、侧边栏品牌区、浏览器标题都用它（只影响显示，不影响鉴权）。
+  # 换品牌就改这一行；留空则用默认值 ATL-MCPanel。
+  panel_name: "ATL-MCPanel"
+
   # ---- HTTPS（可选，建议暴露公网前启用）----
   # 双端口模式：tls_listen 提供 HTTPS，listen 仍提供 HTTP
   # 单端口模式：只配置 tls_cert/tls_key，listen 端口直接跑 HTTPS

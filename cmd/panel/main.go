@@ -136,6 +136,7 @@ func main() {
 	api := httpapi.NewServer(d, authSvc, nodeMgr, httpapi.Options{
 		DataDir:     filepath.Dir(cfg.DB.DSN),
 		WebDir:      cfg.Server.WebDir,
+		PanelName:   cfg.Server.PanelName,
 		ListenAddr:  cfg.Server.Listen,
 		TLSListen:   cfg.Server.TLSListen,
 		ExternalURL: cfg.Server.ExternalURL,

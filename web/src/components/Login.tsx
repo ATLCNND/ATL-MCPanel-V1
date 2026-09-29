@@ -1,18 +1,20 @@
 import { useState } from 'react'
 import { login, setToken, setCurrentUser } from '../api'
-import BrandLogo from './BrandLogo'
+import Brand from './Brand'
 import './Login.css'
 
 /**
- * 面板版本号。
+ * 登录页。
  *
- * 与 web/package.json 的 version 保持一致 —— 这里手写常量而不是 import JSON，
- * 是因为把一个含注释的对象打进包里只为读一个字段不划算；
- * 升级版本时两处一起改（package.json 的 version 目前是 0.1.0）。
+ * 名称、图标、版本号一律来自 `/api/meta`（免登录接口）——
+ * 这里曾经写死过 `PANEL_VERSION = 'v0.1.0'`（那是 web/package.json 的版本，
+ * 与面板版本不是一回事），于是界面显示 v0.1.0、二进制却是 0.9.14。
+ * 现在只有一个来源：二进制里由 -ldflags 注入的那份。
+ *
+ * `notice` 用于"会话失效后回到这里"的场景（面板重启换了密钥、令牌到期）：
+ * 直接回到登录页而不说明原因，用户会以为是自己点错了。
  */
-const PANEL_VERSION = 'v0.1.0'
-
-export default function Login({ onLogin }: { onLogin: () => void }) {
+export default function Login({ onLogin, notice }: { onLogin: () => void; notice?: string }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -39,14 +41,14 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
   return (
     <div className="login-wrap">
       <form className="login-box" onSubmit={submit}>
+        {/* 品牌区（图标 + 名称 + 版本号）：上下排列，与侧边栏同源同数据 */}
         <div className="login-brand">
-          <BrandLogo size={64} src="/branding/logo.png" radiusRatio={0.24} />
+          <Brand size={64} layout="stack" />
         </div>
 
-        <h1>ATL-MCPanel</h1>
-        {/* 描述刻意不写死某个核心：面板是核心无关的
-            （Java / 基岩 / 各种服务端与脚本都走同一套实例管理） */}
         <p className="subtitle">多用户 Minecraft 实例管理面板</p>
+
+        {notice && <div className="login-notice">{notice}</div>}
 
         <input
           placeholder="用户名"
@@ -64,8 +66,6 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
         <button className="primary" type="submit" disabled={loading}>
           {loading ? '登录中...' : '登录'}
         </button>
-
-        <p className="ver">{PANEL_VERSION}</p>
       </form>
     </div>
   )

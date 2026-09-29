@@ -50,6 +50,7 @@ export interface Metrics {
 }
 
 const TOKEN_KEY = 'atlmcpanel_token'
+const USER_KEY = 'atlmcpanel_user'
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY)
@@ -61,9 +62,85 @@ export function setToken(token: string) {
 
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY)
+  // 登录态里的用户信息一起清掉：留着它会让"已经登出"的界面上仍显示上一个用户的名字
+  localStorage.removeItem(USER_KEY)
 }
 
-export async function apiFetch(path: string, options: RequestInit = {}): Promise<any> {
+// ---- 会话失效（401）的全局处理 ----
+//
+// 为什么必须有这一层：面板重启换了 JWT 密钥、令牌到期（默认 24 小时）、
+// 或者服务端数据目录被重建，都会让**已发出的令牌失效**。此前这种情况下的表现是：
+// 每个页面各自弹一句"令牌无效或已过期"，用户被留在主界面上、点了也没用，
+// 只能自己去猜"是不是要重新登录"。
+//
+// 现在统一处理：任何请求收到 401（登录/改密码这两个接口除外）就清掉本地令牌、
+// 广播一个事件，由 App 把界面切回登录页并说明原因。
+export const AUTH_EXPIRED_EVENT = 'atlmcpanel:auth-expired'
+
+/** 一次会话里只提示一次，避免并发请求各弹一遍 */
+let authExpiredNotified = false
+
+export function notifyAuthExpired(reason: string) {
+  if (authExpiredNotified) return
+  authExpiredNotified = true
+  clearToken()
+  window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT, { detail: { reason } }))
+}
+
+/** 登录成功后重置（否则第二次过期不会再提示） */
+export function resetAuthExpiredNotice() {
+  authExpiredNotified = false
+}
+
+/**
+ * 这两个接口的 401 与"会话失效"无关，是**凭据本身错**：
+ *  · 登录：用户名或密码错误；
+ *  · 改密码：旧密码错误。
+ * 若不加区分，输错密码会顺手把界面切走并提示"登录已过期" —— 用户会以为自己被踢了。
+ */
+function isCredentialEndpoint(path: string): boolean {
+  return path.startsWith('/api/auth/login') || path.startsWith('/api/auth/change-password')
+}
+
+/**
+ * 本地判断令牌是否已过期（只解 JWT 的 exp，不验签 —— 验签是服务端的事）。
+ *
+ * 为什么要本地判：用户把页面开着不动时没有任何请求，服务端也就没机会回 401，
+ * 界面会一直显示"已登录"。等下一次点击才跳登录页，体验上就是"点一下被踢出去"。
+ * 本地按 exp 判断可以准点把界面切回登录页。
+ *
+ * 解析失败（不是 JWT / 没有 exp）一律当"未过期"，交给服务端判定 ——
+ * 宁可多留一会儿，也不要因为解码失败把正常用户踢下线。
+ */
+export function isTokenExpired(token: string | null = getToken()): boolean {
+  if (!token) return false
+  const payload = decodeJWTPayload(token)
+  if (!payload || typeof payload.exp !== 'number') return false
+  return payload.exp * 1000 <= Date.now()
+}
+
+function decodeJWTPayload(token: string): any {
+  const part = token.split('.')[1]
+  if (!part) return null
+  try {
+    const b64 = part.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4)
+    const bin = atob(padded)
+    // 用户名可能是中文：必须先按 UTF-8 解码，否则 JSON.parse 会抛
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0))
+    return JSON.parse(new TextDecoder().decode(bytes))
+  } catch {
+    return null
+  }
+}
+
+/** apiFetch 的额外选项 */
+export interface ApiOptions extends RequestInit {
+  /** 遇到 401 时**不要**触发"会话失效"处理（给登录/改密码用） */
+  skipAuthExpired?: boolean
+}
+
+export async function apiFetch(path: string, options: ApiOptions = {}): Promise<any> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string>),
@@ -71,9 +148,14 @@ export async function apiFetch(path: string, options: RequestInit = {}): Promise
   const token = getToken()
   if (token) headers['Authorization'] = `Bearer ${token}`
 
-  const resp = await fetch(path, { ...options, headers })
+  const { skipAuthExpired, ...init } = options
+  const resp = await fetch(path, { ...init, headers })
   const data = await resp.json().catch(() => ({}))
   if (!resp.ok) {
+    if (resp.status === 401 && !skipAuthExpired && !isCredentialEndpoint(path)) {
+      // 服务端的话更准确（"未登录" / "令牌无效或已过期"），原样带给登录页
+      notifyAuthExpired(data.error || '登录状态已失效，请重新登录')
+    }
     throw new Error(data.error || `HTTP ${resp.status}`)
   }
   return data
@@ -85,7 +167,45 @@ export async function login(username: string, password: string) {
   return apiFetch('/api/auth/login', {
     method: 'POST',
     body: JSON.stringify({ username, password }),
+    // 密码错也是 401，但那不是"会话失效"：不能因此清令牌、跳登录页（我们本来就在登录页）
+    skipAuthExpired: true,
   })
+}
+
+// ---- 面板身份信息（名称 / 版本 / 图标）----
+
+export interface PanelMeta {
+  /** 面板显示名（config.yaml 的 server.panel_name，默认 ATL-MCPanel） */
+  name: string
+  /** 面板版本（来自二进制，构建时注入） */
+  version: string
+  commit: string
+  built_at: string
+  go_version: string
+  logo_url: string
+  favicon_url: string
+}
+
+/** 前端在拿到 /api/meta 之前的兜底值：宁可显示默认名，也不要空着 */
+export const FALLBACK_META: PanelMeta = {
+  name: 'ATL-MCPanel',
+  version: '',
+  commit: '',
+  built_at: '',
+  go_version: '',
+  logo_url: '/branding/logo-128.png',
+  favicon_url: '/branding/favicon-64.png',
+}
+
+/**
+ * 读面板身份信息（**免登录**：登录页要用它显示名称与版本号）。
+ *
+ * 版本号只有这一个来源：二进制里由 -ldflags 注入的那份。前端此前写死过
+ * `PANEL_VERSION = 'v0.1.0'`（那是 package.json 的版本），界面显示 0.1.0
+ * 而二进制是 0.9.14 —— 报 bug 时这个号码会把排查方向带偏。
+ */
+export async function getPanelMeta(): Promise<PanelMeta> {
+  return apiFetch('/api/meta', { skipAuthExpired: true })
 }
 
 export async function listInstances(): Promise<Instance[]> {
@@ -1325,6 +1445,9 @@ export function uploadFile(
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve({ path: data.path ?? path, size: data.size ?? file.size })
       } else {
+        // 上传走的是 XHR（为了进度条），绕开了 apiFetch —— 所以 401 要在这里单独接一下，
+        // 否则令牌失效时上传只会报一句"上传失败（HTTP 401）"，界面不会回到登录页。
+        if (xhr.status === 401) notifyAuthExpired(data.error || '登录状态已失效，请重新登录')
         reject(new Error(data.error || `上传失败（HTTP ${xhr.status}）`))
       }
     }
@@ -1589,6 +1712,8 @@ export async function changePassword(oldPassword: string, newPassword: string, t
   return apiFetch('/api/auth/change-password', {
     method: 'POST',
     body: JSON.stringify({ old_password: oldPassword, new_password: newPassword, target_user: targetUser }),
+    // 旧密码错也是 401 —— 但那是"这次输入不对"，不是会话失效
+    skipAuthExpired: true,
   })
 }
 
@@ -1613,7 +1738,7 @@ export interface User {
 }
 
 export function currentUser(): User | null {
-  const u = localStorage.getItem('atlmcpanel_user')
+  const u = localStorage.getItem(USER_KEY)
   if (!u) return null
   try {
     return JSON.parse(u)
@@ -1634,7 +1759,8 @@ export function currentUser(): User | null {
 export const USER_EVENT = 'atlmcpanel:user-changed'
 
 export function setCurrentUser(id: number | undefined, username: string, role: string) {
-  localStorage.setItem('atlmcpanel_user', JSON.stringify({ id, username, role }))
+  localStorage.setItem(USER_KEY, JSON.stringify({ id, username, role }))
+  resetAuthExpiredNotice()   // 新会话：把"已提示过过期"的标记重置
   window.dispatchEvent(new Event(USER_EVENT))
 }
 
