@@ -315,6 +315,39 @@ if [ "$MODE" = "daemon" ]; then
       echo "    ⚠️ 镜像导入失败（容器化隔离暂不可用，不影响 native 模式运行）" >&2
     fi
   fi
+
+  # ---------------------------------------------------------------------------
+  # 6b. 节点：容器防火墙规则（**容器化可用的前提**，不是可选加固）
+  # ---------------------------------------------------------------------------
+  #
+  # 容器访问宿主上的服务走 INPUT；少了这条规则，实例就能连到宿主绑 0.0.0.0 的
+  # 服务（实测能连上 Daemon 的 gRPC 端口），"容器隔离"就只剩一半。
+  #
+  # 为什么做成 systemd 单元而不是在这里直接 iptables -I：
+  #   · 直接加只在**执行本脚本这一刻**生效，服务器一重启就没了 ——
+  #     而现象是"装完是好的，跑一阵子（重启后）隔离悄悄失效"，几乎不可能被发现；
+  #   · 规则必须落在 docker 之后（docker 会重建自己的链），单元里用 After=docker.service 表达。
+  # 脚本本身是幂等的（先 -C 检查），重复安装不会堆叠规则。
+  if command -v iptables >/dev/null 2>&1; then
+    FW_SRC="$SRC_DIR/deploy/systemd/atl-container-firewall.service"
+    if [ -f "$FW_SRC" ]; then
+      echo "==> 安装容器隔离防火墙规则（容器不得访问宿主服务）"
+      install -m644 "$FW_SRC" /etc/systemd/system/atl-container-firewall.service
+      systemctl daemon-reload
+      systemctl enable atl-container-firewall >/dev/null 2>&1 || true
+      systemctl restart atl-container-firewall >/dev/null 2>&1 || true
+      if systemctl is-active --quiet atl-container-firewall; then
+        # 复核：直接把规则打出来，而不是只说"已生效" —— 一眼能看出到底有没有落上
+        echo "    规则已生效："
+        iptables -S INPUT 2>/dev/null | grep -E '\-i (br-\+|docker0)' | sed 's/^/      /'
+      else
+        echo "    ⚠️ 规则单元未启动，请手动检查：systemctl status atl-container-firewall" >&2
+      fi
+    fi
+  else
+    echo "提示：未找到 iptables，跳过容器隔离防火墙规则"
+    echo "      装了 docker 与 iptables 之后再跑一次本脚本即可补上（否则容器能访问宿主服务）"
+  fi
 fi
 
 # ---------------------------------------------------------------------------

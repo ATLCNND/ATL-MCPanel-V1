@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -180,16 +181,37 @@ func (s *Server) handleLogShareAnalyse(w http.ResponseWriter, r *http.Request) {
 		content, filtered = stripPlayerChat(content)
 	}
 
-	// 4. 附加一份 latest.log 作为上下文：官方明确建议多文件上传
-	//（崩溃报告只说"崩了什么"，latest.log 才知道"崩之前发生了什么"）。
-	// 选中的就是 latest.log 时不再重复附加。
+	// 4. 附加上下文文件：对方**明确建议**多文件上传 ——
+	// "游戏崩溃往往源于 JVM 参数、渲染器驱动、动态链接库或设备环境"，
+	// 所以除了用户选中的那份，再带上：
+	//   · logs/latest.log（崩溃报告只说崩了什么，latest.log 才知道崩之前发生了什么）
+	//   · 最近 2 份轮转日志（logs/*.log.gz 解不开就不带；它们能反映"是不是持续在崩"）
+	//   · 崩溃报告（用户选的就是它时跳过）
+	// 单份与总量都受 MaxUploadBytes 约束（readInstanceFileCapped 负责截断）。
 	files := []logshare.UploadFile{}
-	if !strings.HasSuffix(strings.ToLower(req.Path), "latest.log") {
-		if extra, _, err := s.readInstanceFileCapped(cli, instanceID, "/logs/latest.log", s.logShareCfg.MaxUploadBytes); err == nil && strings.TrimSpace(extra) != "" {
-			if req.FilterChat {
-				extra, _ = stripPlayerChat(extra)
+	addFile := func(rel, name string) {
+		if len(files) >= 4 { // 上限 4 份：再多对分析帮助有限，却把上传体积顶满
+			return
+		}
+		extra, _, err := s.readInstanceFileCapped(cli, instanceID, rel, s.logShareCfg.MaxUploadBytes)
+		if err != nil || strings.TrimSpace(extra) == "" {
+			return
+		}
+		if req.FilterChat {
+			extra, _ = stripPlayerChat(extra)
+		}
+		files = append(files, logshare.UploadFile{Name: name, Content: extra})
+	}
+	sel := strings.ToLower(req.Path)
+	if !strings.HasSuffix(sel, "latest.log") {
+		addFile("/logs/latest.log", "latest.log")
+	}
+	if !strings.Contains(sel, "crash-reports") {
+		// 最近一份崩溃报告（列表接口已按时间倒序，这里只取最新的那一份）
+		if list, err := s.listCrashReports(cli, instanceID, 1); err == nil {
+			for _, rel := range list {
+				addFile(rel, path.Base(rel))
 			}
-			files = append(files, logshare.UploadFile{Name: "latest.log", Content: extra})
 		}
 	}
 
@@ -207,7 +229,10 @@ func (s *Server) handleLogShareAnalyse(w http.ResponseWriter, r *http.Request) {
 
 	// 6. 落库（含 token —— 没有它以后删不掉）
 	lines := strings.Count(content, "\n") + 1
-	expires := time.Now().Add(15 * 24 * time.Hour) // 对方默认保留 15 天；拿到元信息后会用真实值覆盖
+	// 保留期以对方的**元信息**为准；拿不到时用 GetLimits 的实测值兜底，
+	// 再不行才用一个保守常量。写死天数会变成假话：
+	// 对方 2026-09-18 是 15 天，2026-09-29 已经改成 7 天（实测）。
+	expires := time.Now().Add(time.Duration(s.logShareRetentionSeconds(ctx)) * time.Second)
 	if m, err := s.logShare.GetMeta(ctx, res.ID); err == nil && m.Expires > 0 {
 		expires = time.Unix(m.Expires, 0)
 		lines = m.Lines
@@ -258,6 +283,68 @@ func indexByte(s string, b byte) int {
 		}
 	}
 	return -1
+}
+
+// logShareRetentionDefault 保留期兜底值（秒）。
+//
+// 仅在**两次**探测都失败时使用（元信息 + /limits）。取值来自 2026-09-29 的实测
+// （storageTime=604800，7 天）—— 对方把保留期从 15 天改成 7 天，所以别再写 15。
+const logShareRetentionDefault = 7 * 24 * 3600
+
+// logShareRetentionSeconds 取对方的保留期（带 10 分钟缓存）。
+//
+// 每次上传都问一次 /limits 没必要（它是慢变的运维参数），但完全不问又会写死假话。
+func (s *Server) logShareRetentionSeconds(ctx context.Context) int64 {
+	s.logShareLimMu.Lock()
+	if s.logShareLimVal > 0 && time.Since(s.logShareLimAt) < 10*time.Minute {
+		v := s.logShareLimVal
+		s.logShareLimMu.Unlock()
+		return v
+	}
+	s.logShareLimMu.Unlock()
+
+	l, err := s.logShare.GetLimits(ctx)
+	if err != nil || l.StorageTime <= 0 {
+		return logShareRetentionDefault
+	}
+	s.logShareLimMu.Lock()
+	s.logShareLimVal = l.StorageTime
+	s.logShareLimAt = time.Now()
+	s.logShareLimMu.Unlock()
+	return l.StorageTime
+}
+
+// listCrashReports 列出最近的崩溃报告（实例内相对路径，最新的在前）。
+//
+// 抽出来是因为两处都要用：给用户看的文件列表、以及上传时自动附带"最近一次崩溃"。
+// 返回的是**相对路径**（/crash-reports/xxx.txt），与其它文件接口口径一致。
+func (s *Server) listCrashReports(cli pb.DaemonServiceClient, instanceID string, limit int) ([]string, error) {
+	resp, err := cli.ListFiles(context.Background(), &pb.ListFilesRequest{
+		InstanceId: instanceID, Path: "/crash-reports",
+	})
+	if err != nil || !resp.Success {
+		return nil, err
+	}
+	type item struct {
+		rel   string
+		mtime int64
+	}
+	var items []item
+	for _, f := range resp.Files {
+		if f.IsDir || !strings.HasSuffix(strings.ToLower(f.Name), ".txt") {
+			continue
+		}
+		items = append(items, item{rel: f.Path, mtime: f.ModTime})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].mtime > items[j].mtime })
+	var out []string
+	for _, it := range items {
+		out = append(out, it.rel)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 // handleLogShareAI GET /api/instances/{id}/logshare/ai/{logshare_id}

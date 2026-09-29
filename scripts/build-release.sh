@@ -115,6 +115,9 @@ make_pkg() {
     cp -r web/dist "$out/web-dist"
   else
     cp "$srcbin/dsh-daemon" "$out/bin/"
+    # 容器隔离防火墙规则随节点包分发：它是**容器化可用的前提**（容器能访问宿主
+    # 服务就等于没隔离），且必须由 systemd 在 docker 之后落地，不能只写在文档里。
+    cp deploy/systemd/atl-container-firewall.service "$out/deploy/systemd/" 2>/dev/null || true
 
     # 实例运行时基础镜像（容器化隔离用）随**节点包**分发。
     #

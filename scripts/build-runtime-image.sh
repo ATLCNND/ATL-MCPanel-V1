@@ -38,7 +38,12 @@ ARCH="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
 # 因此 install.sh 里还有一道**逐 JDK 自检**：容器里跑不起来哪个 JDK，
 # 就明说哪个 JDK 不能用容器模式，而不是让实例起不来。
 SUITE="trixie"
-MIRROR="http://mirrors.aliyun.com/debian"
+# 默认镜像源用**官方** deb.debian.org，而不是 aliyun。
+#
+# 实测（2026-09-29）：阿里云源在本机只跑到 ~35 KB/s，debootstrap 要几分钟到十几分钟，
+# 而且中途超时会留下半成品 rootfs（现象是"镜像建好了但缺包"）。官方源同环境稳定得多。
+# 国内机器如果官方源慢，用 --mirror 显式指定更合适 —— 这种事不该由脚本偷偷替用户决定。
+MIRROR="http://deb.debian.org/debian"
 KEEP_ROOTFS=""
 
 while [ $# -gt 0 ]; do

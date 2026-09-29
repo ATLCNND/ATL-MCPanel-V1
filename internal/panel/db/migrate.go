@@ -534,6 +534,26 @@ var migrations = []migration{
 			)`,
 		},
 	},
+	{
+		Version: 21,
+		Name:    "panel_settings",
+		Statements: []string{
+			// 面板级运行时开关（键值对）。
+			//
+			// 为什么需要它，而不是改 config.yaml：像"第三方日志分析开关"这种
+			// **管理员在界面上随手一按就该生效**的项，让他去改配置文件再重启服务，
+			// 结果就是"这个开关没人用、功能只好一直开着" —— 而它涉及把日志发给第三方，
+			// 默认状态与切换成本都很敏感。
+			//
+			// 取值优先级：这里的记录 > config.yaml 的默认值。
+			// 这样"老配置仍然生效"（没记录时按配置走），而界面上改过之后以界面为准。
+			`CREATE TABLE IF NOT EXISTS panel_settings (
+				key TEXT PRIMARY KEY,
+				value TEXT NOT NULL DEFAULT '',
+				updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			)`,
+		},
+	},
 }
 
 // migrate 应用尚未执行的迁移。

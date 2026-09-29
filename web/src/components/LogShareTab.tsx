@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   LogShareFile, LogShareRecord,
   listLogShareFiles, analyseLog, deleteLogShare, streamLogShareAI,
+  getLogShareSettings, setLogShareEnabled,
 } from '../api'
 import MiniMarkdown from './MiniMarkdown'
 import './LogShareTab.css'
@@ -60,6 +61,11 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
   const [msg, setMsg] = useState('')
   const [loading, setLoading] = useState(false)
   const [disabled, setDisabled] = useState('')
+  // 运行时开关：canManage 为真（总管理员）时可以在本页直接开关这个功能。
+  // retentionDays 由对方 /limits 实测得到（保留期会变：曾经 15 天，现为 7 天），
+  // 所以界面上的天数不再写死。
+  const [settings, setSettings] = useState({ canManage: false, retentionDays: 7 })
+  const [toggling, setToggling] = useState(false)
 
   // 上传确认弹窗
   const [confirmOpen, setConfirmOpen] = useState(false)
@@ -78,6 +84,11 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
   const load = async () => {
     setLoading(true)
     setError('')
+    // 先读设置：它决定"未启用时要不要显示开关"，与文件列表无关，失败也不影响列表
+    try {
+      const st = await getLogShareSettings()
+      setSettings({ canManage: !!st.can_manage, retentionDays: st.retention_days || 7 })
+    } catch { /* 读不到就按"不能管理"处理，不影响下面的列表加载 */ }
     try {
       const r = await listLogShareFiles(instanceId)
       setFiles(Array.isArray(r.files) ? r.files : [])
@@ -112,6 +123,27 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
   }, [instanceId])
 
   const pickedFile = useMemo(() => files.find((f) => f.path === picked), [files, picked])
+
+  // toggleFeature 总管理员一键开关第三方日志分析（写入面板设置，立即生效）。
+  const toggleFeature = async (next: boolean) => {
+    const tip = next
+      ? '开启后，任何有权限的用户都能把**实例日志**上传到第三方（LogShare.CN）做 AI 分析。\n\n' +
+        '上传前仍会强制弹窗告知并需要手动同意对方条款；「过滤玩家聊天行」默认开启。\n\n' +
+        '对方会自动打码 IP，但**不会**过滤玩家名与聊天内容（那一项由我们的过滤兜住）。\n\n确认开启吗？'
+      : '关闭后，面板上的「日志分析」入口将不可用（接口返回 503）。\n\n' +
+        '已经上传到对方的云端副本**不会**因此删除，仍可在本页删除或等对方到期自动清理。\n\n确认关闭吗？'
+    if (!window.confirm(tip.replace(/\*\*/g, ''))) return
+    setToggling(true); setError(''); setMsg('')
+    try {
+      const r = await setLogShareEnabled(next)
+      setMsg(r.message || '设置已保存')
+      await load()
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setToggling(false)
+    }
+  }
 
   /** 打开确认弹窗（每次都要求重新勾选：不预勾选、不记住） */
   const openConfirm = () => {
@@ -201,8 +233,31 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
           <p>{disabled}</p>
           <p className="muted">
             这是<b>第三方免费服务</b>（LogShare.CN）。因为它会把实例日志上传到外部，
-            面板默认关闭；需要管理员在配置里显式打开 <span className="mono">logshare.enabled</span>。
+            面板默认关闭。
           </p>
+
+          {/* 总管理员可以直接在这里开关 —— 而不是去改配置文件再重启服务。
+              这类"把租户数据发出去"的开关必须能随时一键关掉，否则现实中就是一直开着。 */}
+          {settings.canManage ? (
+            <div className="ls-enable-box">
+              <p>
+                <b>你是总管理员</b>：可以在这里开启或关闭整个面板的第三方日志分析。
+              </p>
+              <p className="muted">
+                开启后用户在实例的「日志分析」页可上传日志获取 AI 分析；
+                每次上传仍会强制弹窗告知并需手动同意对方的《服务协议》与《隐私政策》，
+                「过滤玩家聊天行」默认开启（对方只自动打码 IP，不过滤玩家名与聊天内容）。
+              </p>
+              <button className="primary" disabled={toggling}
+                onClick={() => toggleFeature(true)}>
+                {toggling ? '处理中…' : '启用第三方日志分析'}
+              </button>
+              {error && <div className="ls-error">{error}</div>}
+              {msg && <div className="ls-msg">{msg}</div>}
+            </div>
+          ) : (
+            <p className="muted">如需启用，请联系总管理员。</p>
+          )}
         </div>
       </div>
     )
@@ -226,6 +281,18 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
           访问 logshare.cn ↗
         </a>
       </div>
+
+      {/* 总管理员：功能开着时给一个关闭入口 —— 这类"把租户数据发出去"的开关，
+          出事时要能几秒内关掉，而不是去翻配置文件。 */}
+      {settings.canManage && (
+        <div className="ls-admin-bar">
+          <span className="muted">第三方日志分析当前<b>已启用</b>（对本面板所有实例生效）</span>
+          <div className="spacer" />
+          <button className="danger" disabled={toggling} onClick={() => toggleFeature(false)}>
+            {toggling ? '处理中…' : '关闭此功能'}
+          </button>
+        </div>
+      )}
 
       <div className="ls-grid">
         {/* ---- 左：文件选择 ---- */}
@@ -360,7 +427,8 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
 
               <p><b>上传到哪里：</b>第三方服务 <span className="mono">api.logshare.cn</span>
                 ，返回的链接形如 <span className="mono">https://logshare.cn/&lt;id&gt;</span>
-                ，<b>默认保留 15 天</b>后自动删除（也可以随时在本页手动删除云端副本）。</p>
+                ，<b>默认保留 {settings.retentionDays} 天</b>后自动删除（也可以随时在本页手动删除云端副本）。
+              保留期由对方决定，我们会按它的实际声明显示（实测从 15 天改成了 7 天）。</p>
 
               <p className="ls-warn">
                 <b>关于隐私：</b>对方会自动给 IP 打码，但<b>玩家名与聊天内容不会被过滤</b>。

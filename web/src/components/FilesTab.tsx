@@ -3,7 +3,7 @@ import {
   FileItem, FileJob,
   listFiles, readFile, writeFile, deleteFile, mkdir,
   renameFile, copyFile, searchFiles, downloadUrl, fetchFileBlob,
-  listJobs, createJob, cancelJob, uploadFile,
+  listJobs, createJob, cancelJob, uploadFile, checkUpload,
 } from '../api'
 import './FilesTab.css'
 
@@ -195,6 +195,12 @@ export default function FilesTab({ instanceId, canWrite }: { instanceId: string;
       }
       setUploads((q) => q.map((it, idx) => (idx === i ? { ...it, status: 'uploading' } : it)))
       try {
+        // 先预检再发送：配额不足/空间不足时，服务端会在收到数据的过程中拒绝并关连接，
+        // 客户端只会看到 connection reset —— 传大文件时这个问题尤其明显。
+        const pre = await checkUpload(instanceId, f.size)
+        if (!pre.ok) {
+          throw new Error(pre.error || '上传前检查未通过')
+        }
         await uploadFile(instanceId, target, f, exists, (loaded) => {
           setUploads((q) => q.map((it, idx) => (idx === i ? { ...it, loaded } : it)))
         })

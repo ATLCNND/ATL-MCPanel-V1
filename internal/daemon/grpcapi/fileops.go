@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/fileops"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/jobqueue"
@@ -296,6 +297,46 @@ func (s *Server) DownloadFile(req *pb.DownloadFileRequest, stream pb.DaemonServi
 // 所以实际受限于磁盘与时长，而不是单条消息 —— 上限只在"声明了 total"时用于预检。
 const uploadHardLimit = 256 << 20
 
+// uploadFreeMargin 上传前要求磁盘至少留出的余量。
+//
+// 为什么要留：把磁盘写到 100% 不是"这一次上传成功"的问题，而是**整台机器**
+// 的问题 —— 服务端存不了档、日志写不进去、甚至 systemd 与数据库都会出故障。
+// 留 1GB 意味着"上传最多把磁盘用到只剩 1GB"，之后的上传会被明确拒绝，
+// 而不是把一个正在跑的实例拖进不可写状态。
+const uploadFreeMargin = 1 << 30
+
+// freeBytes 返回该目录所在文件系统的可用字节数。
+func freeBytes(path string) (int64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, err
+	}
+	// Bavail 是"非特权用户可用"的块数，比 Bfree 更保守（留出 root 保留区）
+	return int64(st.Bavail) * int64(st.Bsize), nil
+}
+
+// enoughSpace 是否够写下 need 字节（并保住 uploadFreeMargin 余量）。
+func enoughSpace(free, need int64) bool {
+	return free-need >= uploadFreeMargin
+}
+
+// uploadTruncated 判断这次上传是不是**没发完**。
+//
+// 为什么这个判断必须存在，而且必须在这里（服务端）：
+// 流式接收里"客户端提前半步关闭流"与"正常发完"在服务端**都是 io.EOF**，
+// 只看 Recv 的返回值区分不出来。少了这道校验，客户端中断（用户取消、上传工具
+// 被 Ctrl-C、网络抖动）会把截断的内容 commit 到目标路径 —— 而目标路径多半是
+// 插件 jar，服务端会把它当完整插件加载。那比"上传失败"严重得多，事后还看不出是半截的。
+//
+// declared <= 0 表示客户端没声明长度（分块传输），此时无法判断，按"发完"处理：
+// 这是我们自己的界面之外的路径，宁可让它成功，也不要误伤。
+func uploadTruncated(declared, written int64) bool {
+	if declared <= 0 {
+		return false
+	}
+	return written != declared
+}
+
 // UploadFile 流式接收上传文件（Panel → Daemon）。
 //
 // 与 DownloadFile 对称：分片传输，避免整份文件先进内存。
@@ -340,6 +381,22 @@ func (s *Server) UploadFile(stream pb.DaemonService_UploadFileServer) error {
 	if first.Total > uploadHardLimit {
 		return fmt.Errorf("文件过大：%d 字节，上限 %d 字节", first.Total, uploadHardLimit)
 	}
+	// ---- 节点剩余空间预检 ----
+	//
+	// 面板侧会按实例的磁盘**配额**拦一次，但那有两个空档：配额为 0（默认）时完全不拦，
+	// 以及"多个实例同时上传、每个都没超自己的配额，却把节点磁盘写满"。
+	// 这里是保护**整台机器**的最后一道：磁盘满了，所有实例都会出问题
+	//（服务端存不了档、日志写不下去），比一次上传失败严重得多。
+	if first.Total > 0 {
+		if free, err := freeBytes(dir); err == nil {
+			if !enoughSpace(free, first.Total) {
+				return fmt.Errorf("节点磁盘剩余空间不足：本次需要 %s，当前可用 %s（已预留 %s 余量）",
+					humanSize(first.Total), humanSize(free), humanSize(uploadFreeMargin))
+			}
+		}
+		// 读不到就不拦（例如某些文件系统 Statfs 失败）：不能因为一次探测失败
+		// 就把上传功能整体挡住，写入过程中的 ENOSPC 仍会正常报错。
+	}
 	// 父目录按需创建（上传到 plugins/ 这类子目录时常见）
 	if parent := filepath.Dir(target); parent != dir {
 		if err := os.MkdirAll(parent, 0o755); err != nil {
@@ -381,6 +438,20 @@ func (s *Server) UploadFile(stream pb.DaemonService_UploadFileServer) error {
 		if err != nil {
 			return err
 		}
+	}
+
+	// ---- 长度自检：只收了一半就断，绝不能把半截文件改名上去 ----
+	//
+	// 为什么必须有这一条：流式接收里"客户端提前半步关闭流"与"正常发完"在服务端
+	// **都是 io.EOF**，光看 Recv 的返回值区分不出来。少了这道校验，客户端中断
+	//（用户取消、上传工具被 Ctrl-C、网络抖动）会把一个截断的文件 commit 到目标路径 ——
+	// 而目标路径多半是插件 jar 或配置，服务端会把它当完整文件加载，
+	// 这比"上传失败"严重得多，且事后完全看不出是半截的。
+	// 面板会带上 Content-Length（first.Total），所以正常路径一定能校验；
+	// Total 为 0（分块传输、大小未知）时无法校验，保持原来的行为。
+	if uploadTruncated(first.Total, written) {
+		return fmt.Errorf("上传中断：只收到 %s，声明 %s，已放弃本次上传（未改动目标文件）",
+			humanSize(written), humanSize(first.Total))
 	}
 
 	if err := tmp.Sync(); err != nil { // 先落盘再改名，避免"改名成功但内容还在页缓存里"

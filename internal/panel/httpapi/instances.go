@@ -22,7 +22,10 @@ import (
 // `container` 没有被转发，于是"创建时勾选容器化"的实例**跑在容器里、元数据却是
 // container=false**，监控采集随之走 native 分支（读到 docker CLI 的 CPU/内存）。
 // 漏一个字段不会有任何报错，只有下游行为诡异。抽出来之后可以用单测逐个字段锁住。
-func buildCreateInstanceRequest(req createInstanceReq, coreType string) *pb.CreateInstanceRequest {
+//
+// containerDefault 是"请求体没表态时"的取值（现为节点有容器能力则默认开启），
+// 由调用方查节点能力后传入 —— 纯函数不碰网络，才能被单测穷举。
+func buildCreateInstanceRequest(req createInstanceReq, coreType string, containerDefault bool) *pb.CreateInstanceRequest {
 	return &pb.CreateInstanceRequest{
 		InstanceId:   req.InstanceID,
 		Name:         req.Name,
@@ -37,8 +40,46 @@ func buildCreateInstanceRequest(req createInstanceReq, coreType string) *pb.Crea
 		CpuQuota:     req.CPUQuota,
 		BackupDir:    req.BackupDir,
 		MemLimit:     req.MemLimit,
-		Container:    req.Container,
+		Container:    resolveContainer(req.Container, containerDefault),
 	}
+}
+
+// resolveContainer 决定这次创建到底要不要容器化。
+//
+// 三态语义（Container 是 *bool 而非 bool 的原因）：
+//
+//	nil   → 请求体没提这件事：跟随节点默认（有容器能力就容器化，即"默认开启"）
+//	true  → 明确要容器化（节点不支持时由 Daemon 拒绝，不在这里假装成功）
+//	false → 明确要原生进程（保留给"我就不要容器"的存量用法与排障场景）
+//
+// 不能用 bool 的零值来表达"默认开启"：那样要么把默认写死在结构体里
+// （旧客户端不传字段就被静默改了启动方式，正是上一段注释里的事故形态），
+// 要么无法区分"用户主动关了"和"用户没说"。
+func resolveContainer(explicit *bool, nodeDefault bool) bool {
+	if explicit != nil {
+		return *explicit
+	}
+	return nodeDefault
+}
+
+// nodeContainerDefault 查节点是否具备容器化能力，作为"请求体没表态"时的默认值。
+//
+// 失败一律返回 false：容器化启用后实例的路径语义会变（容器内是 /data）、
+// 启动方式也变，**必须**以节点实测能力为准；查不到就当不支持，让实例照旧以
+// 原生进程跑起来（可用的降级 > 猜出来的隔离）。想强制容器化的调用方显式传
+// container=true，那时由 Daemon 报错，错误也指向明确的原因。
+func (s *Server) nodeContainerDefault(nodeID int64) bool {
+	cli, err := s.nodes.GetClient(nodeID)
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cap, err := cli.GetContainerCapability(ctx, &pb.EmptyRequest{})
+	if err != nil || cap == nil {
+		return false
+	}
+	return cap.Available
 }
 
 type createInstanceReq struct {
@@ -53,14 +94,14 @@ type createInstanceReq struct {
 	MinMem       string `json:"min_mem"`
 	JarURL       string `json:"jar_url"`       // jar 路径（Daemon 本地绝对路径）
 	StartCommand string `json:"start_command"` // 自定义启动命令模板
-	// Container 创建时即容器化（需节点已装 docker 且已导入基础镜像）。
+	// Container 创建时即容器化。**三态**：不传 = 跟随节点默认（有容器能力则容器化）。
 	//
 	// 这个字段先前**没有被转发**给 Daemon：body 里带 container=true 会被静默丢弃，
 	// 而 Daemon 是按"运行时可用即容器化"执行的（它只看实例上有没有绑定容器运行时）——
 	// 于是出现最坏的一种错配：**实例确实跑在容器里，元数据却写着 container=false**，
 	// 监控采集因此走 native 分支（读到的是 docker CLI 的 RSS/CPU，表现为 cpu=0、mem 十几 MB）。
 	// 元数据是唯一权威，它必须与事实一致，所以这个字段要如实转发。
-	Container    bool   `json:"container"`
+	Container    *bool  `json:"container"`
 	CPUQuota     int32  `json:"cpu_quota"`     // CPU 配额百分比（100 = 1 核；0 = 不限制）
 	BackupDir    string `json:"backup_dir"`    // 备份存放目录（空则用节点配置的 backup_root）
 	MemLimit     string `json:"mem_limit"`     // cgroup 内存上限（如 "4G"；空 = 不限制）
@@ -166,13 +207,19 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 调 Daemon 创建实例
+	// 调 Daemon 创建实例。
+	//
+	// 先查节点容器能力再组装请求：请求体没表态时以节点实测能力为默认
+	//（容器化现在是默认方式，原生进程是可选项）。这一步是纯只读查询，
+	// 失败只影响默认值，不影响创建本身。
 	cli, err := s.nodes.GetClient(req.NodeID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	resp, err := cli.CreateInstance(context.Background(), buildCreateInstanceRequest(req, coreType))
+	containerDefault := s.nodeContainerDefault(req.NodeID)
+	resp, err := cli.CreateInstance(context.Background(),
+		buildCreateInstanceRequest(req, coreType, containerDefault))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

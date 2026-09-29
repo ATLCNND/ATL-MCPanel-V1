@@ -53,7 +53,13 @@ done
 if [ -z "$VERSION" ]; then
   VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
 fi
-COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+# COMMIT 允许用环境变量覆盖。
+#
+# 为什么需要：我们的发布/部署流程是"Windows 上开发 → 同步源码到构建机 → 在构建机上
+# 打包"，构建机上的 git 元数据**是旧的**（源码被覆盖，.git 没跟着走）。于是二进制
+# 里的版本串会报出一个早已作废的 commit，看日志/`-version` 时很容易误判"部署的是哪一版"。
+# 显式传入真实 commit 比让构建机去猜要诚实。
+COMMIT="${BUILD_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 BUILD_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
 # 目标平台：默认本机；--all 出两个

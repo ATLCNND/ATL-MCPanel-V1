@@ -3,7 +3,7 @@ import {
   Instance, MyNode, NodeResource, JavaRuntime, MyPortLine,
   listInstances, listMyNodes, listNodeResources, listNodeJava, listMyPorts,
   createInstance, instanceAction, currentUser, levelAtLeast, roleLabel, isNodeUser,
-  instanceIconUrl,
+  instanceIconUrl, getNodeContainerCapability,
 } from '../api'
 import AssignmentsModal from './AssignmentsModal'
 import AlertsModal from './AlertsModal'
@@ -78,7 +78,16 @@ export default function Instances({ onOpen }: {
     mem_limit: '',
     disk_limit_mb: '',
     disk_autostop: false,
+    // 建实例时即可选择容器化（仅管理员可见/可改）。
+    //
+    // 容器化现在是**默认方式**：勾选状态由所选节点的实测能力决定（见下面的
+    // 节点能力查询），节点支持就默认勾上。用户仍可取消勾选 —— 排障或跑
+    // 不接受容器路径语义（容器内实例目录是 /data）的包时会需要原生进程。
+    container: true,
   })
+  // 所选节点的容器化能力：null = 还没查到（此时不谎报"支持"）。
+  // 表单里只显示事实（docker 在不在、镜像在不在），不靠猜。
+  const [ctrCap, setCtrCap] = useState<{ available: boolean; reason: string } | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -141,6 +150,25 @@ export default function Instances({ onOpen }: {
     return () => { alive = false }
   }, [form.node_id])
 
+  // 节点具备容器化能力时，创建表单默认走容器化（容器化是默认方式）。
+  //
+  // 只有总管理员能查这个接口（要连节点，属运维信息），所以非管理员不请求 ——
+  // 他们看不到开关，字段会整个不提交，由服务端按节点默认值决定。
+  useEffect(() => {
+    if (user?.role !== 'admin' || !form.node_id) { setCtrCap(null); return }
+    let alive = true
+    getNodeContainerCapability(Number(form.node_id))
+      .then((c) => {
+        if (!alive) return
+        setCtrCap({ available: !!c.available, reason: c.reason || '' })
+        // 查不到能力的节点（没装 docker / 没导镜像）不要默认勾上：
+        // 勾了会在启动时才发现跑不起来。
+        setForm((f) => ({ ...f, container: !!c.available }))
+      })
+      .catch(() => { if (alive) setCtrCap({ available: false, reason: '查询节点容器化能力失败' }) })
+    return () => { alive = false }
+  }, [form.node_id, user?.role])
+
   // 告警计数已由 App 层统一轮询（显示在侧边栏），此处不再重复请求
 
   const doAction = async (id: string, action: 'start' | 'stop' | 'restart' | 'delete') => {
@@ -202,6 +230,15 @@ export default function Instances({ onOpen }: {
         mem_limit: form.mem_limit.trim(),
         disk_limit_mb: Number(form.disk_limit_mb) || 0,
         disk_autostop: form.disk_autostop,
+        // 容器化：**容器化是默认方式**。
+        //
+        // 管理员提交他自己的勾选结果（勾选框的初始值来自节点实测能力）；
+        // 非管理员不提交这个字段 —— 服务端按节点默认值决定（支持则容器化），
+        // 这样"默认容器化"对所有用户一致，而开关仍只掌握在管理员手里。
+        //
+        // 这个字段曾经**没有被后端转发**，勾了也白勾（实例跑在容器里而元数据
+        // 是 false），所以两边都得钉住。
+        ...(user?.role === 'admin' ? { container: form.container } : {}),
         // 按线路申请的公网端口数；数量为 0 的线路不提交
         tunnels: Object.entries(portWant)
           .map(([fid, count]) => ({ frps_id: Number(fid), count }))
@@ -431,6 +468,38 @@ export default function Instances({ onOpen }: {
                   只在「宁可不跑也不能写满整盘」时才开。
                 </div>
               </div>
+
+              {/* 容器化：仅总管理员可见（可改）。
+                  与「启动」页那个开关是同一件事，只是建实例时就能选，省得建完再回去开。
+                  **默认勾上**（节点实测支持才勾），因为容器化已经是默认运行方式：
+                  独立网络、只读根文件系统、丢弃全部权限。取消勾选即回到原生进程。 */}
+              {user?.role === 'admin' && (
+                <div className="cf-field cf-span2">
+                  <label className="cf-check">
+                    <input
+                      type="checkbox"
+                      checked={form.container}
+                      disabled={ctrCap !== null && !ctrCap.available}
+                      onChange={(e) => setForm({ ...form, container: e.target.checked })}
+                    />
+                    以容器方式运行（容器化隔离，推荐）
+                  </label>
+                  <div className="cf-hint">
+                    开启后实例跑在独立容器里：独立网络（连不到节点上的其它服务与别的实例）、
+                    只读根文件系统、丢弃全部 Linux 权限，端口只发布到本机回环。
+                    <br />
+                    容器内看到的实例目录是 <code>/data</code>，启动脚本里请用该路径。
+                    建好之后也能在「启动」页随时开关（仅管理员）。
+                    <br />
+                    {ctrCap === null
+                      ? <>正在检查该节点的容器化能力…</>
+                      : ctrCap.available
+                        ? <><b>该节点支持容器化</b>，已默认勾选。</>
+                        : <><b>该节点暂不支持容器化</b>（{ctrCap.reason || '未安装 docker 或未导入基础镜像'}），
+                            此次将以原生进程创建。</>}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 

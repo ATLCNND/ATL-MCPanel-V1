@@ -111,6 +111,18 @@ export interface CreateInstancePayload {
   disk_limit_mb?: number
   /** 超限时是否自动停止实例 */
   disk_autostop?: boolean
+  /**
+   * 创建时是否以容器方式运行（容器化隔离）。
+   *
+   * **三态**，别用 false 来表达"不表态"：
+   *  - 不传该字段（undefined，JSON 里直接没有这个 key）→ 跟随节点默认值，
+   *    现在即"节点装了 docker 且导入了镜像就容器化"，也就是**默认方式**；
+   *  - 显式 true  → 必须容器化（节点不支持时后端报错，不静默降级）；
+   *  - 显式 false → 必须原生进程（排障、或包不接受容器内的 /data 路径语义）。
+   *
+   * 非总管理员不提交此字段：开关只掌握在管理员手里，用户侧一律走节点默认值。
+   */
+  container?: boolean
   /** 创建时按线路申请的穿透端口数（多端口模组/插件用） */
   tunnels?: { frps_id: number; count: number }[]
 }
@@ -934,6 +946,53 @@ export async function listLogShareHistory(instanceId: string): Promise<{ enabled
   return apiFetch(`/api/instances/${instanceId}/logshare`)
 }
 
+export interface LogShareSettings {
+  enabled: boolean
+  /** 当前登录者是不是总管理员（只有他能开关这个功能） */
+  can_manage: boolean
+  /** 对方的实际保留期（实测自 LogShare /limits，会变，所以不写死） */
+  retention_days: number
+  site_url: string
+}
+
+/** 读取第三方日志分析的运行时开关与对方的保留期 */
+export async function getLogShareSettings(): Promise<LogShareSettings> {
+  return apiFetch('/api/logshare/settings')
+}
+
+/**
+ * 总管理员开关第三方日志分析。
+ *
+ * 这类"把租户日志发到外部"的开关必须能一键关掉：所以走接口 + 立即生效，
+ * 而不是让人去改 config.yaml 再重启服务（现实中那等于"没人关"）。
+ * 服务端会校验角色，前端藏不住也绕不过；开关动作会写进审计日志。
+ */
+export async function setLogShareEnabled(enabled: boolean): Promise<{ message: string; enabled: boolean }> {
+  return apiFetch('/api/logshare/settings', {
+    method: 'PUT',
+    body: JSON.stringify({ enabled }),
+  })
+}
+
+export interface NodeContainerCapability {
+  available: boolean
+  docker_present: boolean
+  image_present: boolean
+  docker_version: string
+  image: string
+  reason: string
+}
+
+/**
+ * 节点是否具备容器化能力（装了 docker 且已导入基础镜像）。
+ *
+ * 建实例表单靠它决定"容器化"复选框的默认值与可用性 —— 否则用户勾了，
+ * 直到启动时才在节点上发现跑不起来。
+ */
+export async function getNodeContainerCapability(nodeId: number): Promise<NodeContainerCapability> {
+  return apiFetch(`/api/nodes/${nodeId}/container`)
+}
+
 /**
  * 上传日志并请求分析。
  *
@@ -1213,6 +1272,22 @@ export async function listFiles(instanceId: string, path: string): Promise<{ pat
 
 export async function readFile(instanceId: string, path: string): Promise<{ content: string; size: number }> {
   return apiFetch(`/api/instances/${instanceId}/file?path=${encodeURIComponent(path)}`)
+}
+
+/**
+ * checkUpload 上传前预检：单文件上限 / 实例磁盘配额 / 节点剩余空间。
+ *
+ * 为什么界面上传前要先问一次：如果直接发大文件、服务端在中途拒绝并关连接，
+ * 客户端还在往外写数据，得到的是 **connection reset** —— 用户看到"网络被重置"，
+ * 而不是"磁盘配额不足：配额 2 GB，已用 1.9 GB"。实测如此（20MB 请求被拒时
+ * wget 与 python 都拿到 RST 而非响应体）。
+ */
+export async function checkUpload(
+  instanceId: string,
+  size: number,
+): Promise<{ ok: boolean; error?: string }> {
+  const q = new URLSearchParams({ size: String(Math.max(0, Math.floor(size))) })
+  return apiFetch(`/api/instances/${instanceId}/upload-check?${q.toString()}`)
 }
 
 /**

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/config"
@@ -78,10 +79,19 @@ type Server struct {
 	daemonGRPCListen  string               // 节点 Daemon gRPC 监听
 	sched             *scheduler.Scheduler // 后台调度器（定时备份 + 告警）
 
-	// logShare 第三方日志分析客户端（配置未启用时为 nil）。
+	// logShare 第三方日志分析客户端。
+	//
+	// 客户端**总是**构造（它只是个 http.Client 包装，构造时不联网），
+	// 是否对外可见由 LogShareEnabled() 决定 —— 因为开关现在是**运行时**的
+	// （管理员在界面上按一下就该生效，而不是改配置文件再重启）。
 	logShare    *logshare.Client
 	logShareCfg config.LogShareConfig
 	logShareVer string // 上报给对方的 source（atl-mcpanel/<版本>）
+
+	// logShareLim 对方保留期等的缓存（见 logShareRetentionSeconds）
+	logShareLimMu  sync.Mutex
+	logShareLimVal int64
+	logShareLimAt  time.Time
 
 	// aiRuns 正在后台跑的 AI 分析：分析不绑在浏览器连接上，
 	// 用户切页/关页后仍会跑完并落库（见 logshare.go 的 aiRunHub）。
@@ -90,10 +100,43 @@ type Server struct {
 
 // LogShareEnabled 第三方日志分析是否启用。
 //
+// 取值优先级：**面板设置里的运行时开关 > config.yaml 的默认值**。
+//
 // 默认**关闭**（config.LogShareConfig 的说明）：多租户面板不该默认把租户的
 // 日志（含玩家名与聊天内容）送到第三方。管理员显式打开后前端才显示入口。
+//
+// 为什么要有运行时开关：这个功能涉及"把租户日志发给第三方"，管理员需要能随时
+// 一键关掉（对方服务变更、合规要求、事故处置）。若只能改配置文件+重启服务，
+// 现实中就会变成"没人去关、一直开着"。
 func (s *Server) LogShareEnabled() bool {
-	return s.logShare != nil && s.logShareCfg.EnabledOr(false)
+	if s.logShare == nil {
+		return false
+	}
+	if v, ok := s.settingGet(settingLogShareEnabled); ok {
+		return v == "true"
+	}
+	return s.logShareCfg.EnabledOr(false)
+}
+
+// settingLogShareEnabled 面板设置里"第三方日志分析"这个键。
+const settingLogShareEnabled = "logshare_enabled"
+
+// settingGet 读面板设置（不存在时 ok=false，调用方回退到配置默认值）。
+func (s *Server) settingGet(key string) (string, bool) {
+	var v string
+	if err := s.db.QueryRow(`SELECT value FROM panel_settings WHERE key = ?`, key).Scan(&v); err != nil {
+		return "", false
+	}
+	return v, true
+}
+
+// settingSet 写面板设置（upsert）。
+func (s *Server) settingSet(key, value string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO panel_settings (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+		key, value)
+	return err
 }
 
 // protectedLocalPorts 面板自己占用的端口（穿透目标不许指向它们）。
@@ -142,13 +185,19 @@ func NewServer(d *sql.DB, a *auth.Service, n *nodemgr.Manager, opts Options) *Se
 		logShareCfg:       opts.LogShare,
 		logShareVer:       "atl-mcpanel/" + version.Short(),
 	}
-	// 日志分析客户端：只有显式启用时才创建（nil 表示功能关闭）
-	if opts.LogShare.EnabledOr(false) {
-		s.logShare = logshare.New(opts.LogShare.Endpoint,
-			time.Duration(opts.LogShare.TimeoutSeconds)*time.Second)
+	// 日志分析客户端：**总是**创建（只是个 http.Client 包装，构造时不联网）。
+	//
+	// 是否对外可见由 LogShareEnabled() 决定 —— 因为开关是运行时的（管理员可在界面上
+	// 一键开关），若像以前那样"配置里关着就不构造客户端"，界面上的开关就没法生效。
+	s.logShare = logshare.New(opts.LogShare.Endpoint,
+		time.Duration(opts.LogShare.TimeoutSeconds)*time.Second)
+	if s.LogShareEnabled() {
 		log.Info("第三方日志分析已启用（LogShare.CN）",
 			"endpoint", opts.LogShare.Endpoint,
 			"max_upload_mb", opts.LogShare.MaxUploadBytes>>20)
+	} else {
+		log.Info("第三方日志分析未启用（可在面板「日志分析」页由总管理员开启）",
+			"endpoint", opts.LogShare.Endpoint)
 	}
 	// 启动时恢复面板自身穿透
 	s.initPanelTunnel()
@@ -286,6 +335,17 @@ func (s *Server) Handler() http.Handler {
 	// 流式上传（拖放上传）：body 就是文件原始字节，目标路径走 ?path= 参数。
 	// 不用 multipart：多一层解析就多一次完整缓冲，而我们要支持几百 MB 的模组包。
 	mux.HandleFunc("POST /api/instances/{id}/upload", s.requireAuth(s.handleUploadFile))
+	// 上传前预检：让界面在**开始发送前**就知道会不会被拒。
+	// 少了它，大文件被拒时客户端还在发数据，用户看到的是 connection reset
+	// 而不是"磁盘配额不足：…"（实测如此）。
+	mux.HandleFunc("GET /api/instances/{id}/upload-check", s.requireAuth(s.handleUploadCheck))
+
+	// 面板设置（运行时开关）。日志分析的开关**只能由总管理员**改：
+	// 它决定"租户日志是否会被发到第三方"，是平台级隐私决策，不是实例设置。
+	mux.HandleFunc("GET /api/logshare/settings", s.requireAuth(s.handleGetLogShareSettings))
+	mux.HandleFunc("PUT /api/logshare/settings", s.requireAdmin(s.handleSetLogShareSettings))
+	// 节点是否具备容器化能力（建实例表单据此决定默认值/可用性）
+	mux.HandleFunc("GET /api/nodes/{id}/container", s.requireAdmin(s.handleNodeContainerCapability))
 	mux.HandleFunc("GET /api/instances/{id}/file", s.requireAuth(s.handleReadFile))
 	mux.HandleFunc("POST /api/instances/{id}/file", s.requireAuth(s.handleWriteFile))
 	mux.HandleFunc("DELETE /api/instances/{id}/file", s.requireAuth(s.handleDeleteFile))

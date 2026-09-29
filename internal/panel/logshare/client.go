@@ -164,6 +164,36 @@ func (c *Client) Insights(ctx context.Context, id string) (json.RawMessage, erro
 	return json.RawMessage(data), nil
 }
 
+// Limits 对方声明的限制（保留期、单次上限、行数上限）。
+//
+// 为什么值得单独取一次：**保留期由对方决定、而且会变** —— 2026-09-18 实测是
+// 15 天（storageTime 1296000），2026-09-29 再看已是 **7 天**（604800）。
+// 界面上要告诉用户"云端副本什么时候自己消失"，写死天数迟早变成假话。
+type Limits struct {
+	StorageTime int64 `json:"storageTime"` // 保留秒数
+	MaxLength   int64 `json:"maxLength"`   // 单次上传字节上限
+	MaxLines    int64 `json:"maxLines"`    // 行数上限
+}
+
+// GetLimits 读取对方的服务限制。失败时返回错误，由调用方决定回退值。
+func (c *Client) GetLimits(ctx context.Context) (*Limits, error) {
+	data, code, err := c.get(ctx, "/limits")
+	if err != nil {
+		return nil, err
+	}
+	if code != http.StatusOK {
+		return nil, fmt.Errorf("读取服务限制失败（HTTP %d）", code)
+	}
+	var l Limits
+	if err := json.Unmarshal(data, &l); err != nil {
+		return nil, err
+	}
+	if l.StorageTime <= 0 {
+		return nil, errors.New("服务限制里没有 storageTime")
+	}
+	return &l, nil
+}
+
 // Delete 删除云端副本。**必须带 token**（上传时返回的那个）。
 func (c *Client) Delete(ctx context.Context, id, token string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.base+"/log/"+id, nil)

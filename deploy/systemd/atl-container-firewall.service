@@ -1,0 +1,27 @@
+[Unit]
+Description=ATL-MCPanel 容器隔离防火墙规则（容器不得访问宿主服务）
+Documentation=https://github.com/ATLCNND/ATL-MCPanel
+# 必须在 docker 之后：docker 启动时会重建自己的链，规则要落在它之后。
+#
+# 但这条规则是按**接口名**匹配的（docker0 是默认网桥，br-+ 覆盖每个实例独占的
+# 自定义 bridge），所以它与"网桥此刻是否存在"无关 —— docker 起得晚、或后来
+# 才创建实例网络，规则一样生效。这也是它比"在 docker 事件钩子里加规则"更稳的原因。
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# 幂等：先 -C 检查，存在就跳过；重复执行/重复安装不会把规则堆叠起来。
+#
+# 为什么必须有这两条规则（不是可选加固）：
+#   容器访问宿主服务走 INPUT（容器 → 宿主），宿主访问容器（发布端口）走 FORWARD。
+#   因此 DROP 掉来自容器网桥的 INPUT，只掐掉"容器连宿主上的服务"，端口发布与
+#   容器出网都不受影响。少了它，实例就能连到宿主上绑 0.0.0.0 的服务
+#   （实测能连上 Daemon 的 gRPC 端口），容器隔离等于白做。
+ExecStart=/bin/bash -c 'for i in br-+ docker0; do iptables -C INPUT -i "$i" -j DROP 2>/dev/null || iptables -I INPUT -i "$i" -j DROP; done'
+# 停止时**不删**规则：它们是安全控制，服务停了也不该把口子放开。
+ExecStop=/bin/true
+
+[Install]
+WantedBy=multi-user.target
