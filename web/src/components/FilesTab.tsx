@@ -3,7 +3,7 @@ import {
   FileItem, FileJob,
   listFiles, readFile, writeFile, deleteFile, mkdir,
   renameFile, copyFile, searchFiles, downloadUrl, fetchFileBlob,
-  listJobs, createJob, cancelJob,
+  listJobs, createJob, cancelJob, uploadFile,
 } from '../api'
 import './FilesTab.css'
 
@@ -58,6 +58,19 @@ function parentOf(p: string): string {
   const parts = p.split('/').filter(Boolean)
   parts.pop()
   return '/' + parts.join('/')
+}
+
+// UploadItem 上传队列里的一项。
+//
+// 队列是**顺序**执行的（不是全并发）：拖动上传常见的是"一次丢进来十几个文件"，
+// 全并发会把面板与节点的带宽摊薄，反而每个都慢、进度条全都不动，
+// 看起来像卡死；顺序传则至少有一个在稳步前进，失败也能立刻定位到是哪个文件。
+type UploadItem = {
+  name: string
+  size: number
+  loaded: number
+  status: 'pending' | 'uploading' | 'done' | 'failed' | 'skipped'
+  error?: string
 }
 
 /**
@@ -131,8 +144,91 @@ export default function FilesTab({ instanceId, canWrite }: { instanceId: string;
   const [editPath, setEditPath] = useState<string | null>(null)
   const [editContent, setEditContent] = useState('')
 
+  // ---- 上传（拖放 + 按钮）----
+  //
+  // 为什么单独一个队列状态而不是复用 busy：上传是**多个文件逐项**进行的，
+  // 界面要能显示"第几个、传到多少"，失败也要逐项报告（与批量删除的报告口径一致）。
+  // 只用一个 busy 的话，用户看到的是一句"上传中…"，卡住也不知道卡在哪个文件上。
+  const [dragging, setDragging] = useState(false)
+  const [uploads, setUploads] = useState<UploadItem[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  // dragenter/dragleave 会在子元素之间反复触发，用计数器判断"真的离开"了
+  const dragDepth = useRef(0)
+
   const jobsRef = useRef<FileJob[]>([])
   jobsRef.current = jobs
+
+  // ---- 上传 ----
+
+  // uploadFiles 顺序上传一批文件到**当前目录**。
+  //
+  // 几个刻意的取舍：
+  //  · 同名文件**逐个确认**，而不是一律覆盖或一律跳过：拖放上传最容易犯的错
+  //    就是把旧文件覆盖掉，而"覆盖插件 jar"这种事不该由程序替用户决定；
+  //  · 失败**逐项记录**（不中断后续文件）：十个文件里挂了一个，剩下九个没必要重来；
+  //  · 结束后统一刷新列表一次（每个文件刷一次会让界面闪烁，也没必要）。
+  const uploadFiles = async (list: File[]) => {
+    if (!list.length) return
+    if (!canWrite) {
+      setError('需要 owner 及以上权限才能上传文件')
+      return
+    }
+    setError('')
+    setMsg('')
+    const queue: UploadItem[] = list.map((f) => ({
+      name: f.name, size: f.size, loaded: 0, status: 'pending',
+    }))
+    setUploads(queue)
+
+    const done: string[] = []
+    const failed: string[] = []
+    const skipped: string[] = []
+
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i]
+      const target = joinPath(path, f.name)
+      const exists = files.some((x) => x.name === f.name && !x.is_dir)
+      if (exists && !window.confirm(`「${f.name}」已存在（${formatSize(f.size)}），要覆盖它吗？`)) {
+        skipped.push(f.name)
+        setUploads((q) => q.map((it, idx) => (idx === i ? { ...it, status: 'skipped', error: '已跳过（同名文件已存在）' } : it)))
+        continue
+      }
+      setUploads((q) => q.map((it, idx) => (idx === i ? { ...it, status: 'uploading' } : it)))
+      try {
+        await uploadFile(instanceId, target, f, exists, (loaded) => {
+          setUploads((q) => q.map((it, idx) => (idx === i ? { ...it, loaded } : it)))
+        })
+        done.push(f.name)
+        setUploads((q) => q.map((it, idx) => (idx === i ? { ...it, status: 'done', loaded: f.size } : it)))
+      } catch (e: any) {
+        failed.push(`${f.name}（${e.message}）`)
+        setUploads((q) => q.map((it, idx) => (idx === i ? { ...it, status: 'failed', error: e.message } : it)))
+      }
+    }
+
+    await refresh(path)
+
+    // 汇总报告：成功也报（否则用户不确定到底传上去没有）
+    const parts: string[] = []
+    if (done.length) parts.push(`成功 ${done.length} 个`)
+    if (skipped.length) parts.push(`跳过 ${skipped.length} 个`)
+    if (failed.length) parts.push(`失败 ${failed.length} 个`)
+    const head = `上传完成：${parts.join('，')}`
+    if (failed.length) {
+      setError(head + '。失败明细：' + failed.join('；'))
+    } else {
+      setMsg(head + (done.length ? '：' + done.join('、') : ''))
+    }
+    // 队列展示留住，让用户能看清每个文件的结果；点了「知道了」再收起
+  }
+
+  const onDropFiles = (e: React.DragEvent) => {
+    e.preventDefault()
+    dragDepth.current = 0
+    setDragging(false)
+    const list = Array.from(e.dataTransfer?.files ?? [])
+    if (list.length) void uploadFiles(list)
+  }
 
   const refresh = async (p: string) => {
     setLoading(true)
@@ -552,12 +648,72 @@ export default function FilesTab({ instanceId, canWrite }: { instanceId: string;
   }
 
   return (
-    <div className="files-tab">
+    <div
+      className={'files-tab' + (dragging ? ' files-dragging' : '')}
+      // ---- 拖动上传 ----
+      // 必须 preventDefault：不阻止的话浏览器会**直接打开**拖进来的文件
+      //（整个页面被替换成那个文件的内容，用户以为面板崩了）。
+      // dragDepth 计数是为了对付 dragenter/dragleave 在子元素之间反复触发 ——
+      // 只看 dragleave 会让高亮闪烁，鼠标还在区域内就灭了。
+      onDragEnter={(e) => {
+        if (!canWrite) return
+        if (!Array.from(e.dataTransfer?.types ?? []).includes('Files')) return
+        e.preventDefault()
+        dragDepth.current++
+        setDragging(true)
+      }}
+      onDragOver={(e) => {
+        if (!canWrite) return
+        if (!Array.from(e.dataTransfer?.types ?? []).includes('Files')) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'copy'
+      }}
+      onDragLeave={() => {
+        dragDepth.current = Math.max(0, dragDepth.current - 1)
+        if (dragDepth.current === 0) setDragging(false)
+      }}
+      onDrop={onDropFiles}
+    >
+      {/* 拖动时的整区提示：只在拖**文件**时出现，拖文本/链接不会误触发 */}
+      {dragging && (
+        <div className="files-drop-hint">
+          <div className="drop-inner">
+            <div className="drop-title">松手即上传到 <span className="mono">{path}</span></div>
+            <div className="drop-sub">同名文件会逐个询问是否覆盖 · 上传中可看进度</div>
+          </div>
+        </div>
+      )}
+
       {/* ---- 路径栏 ---- */}
       <div className="files-toolbar">
         <button onClick={goUp} disabled={path === '/' || path === ''} title="返回上级目录">↑</button>
         <span className="path-display mono" title={path}>{path}</span>
         <button onClick={() => refresh(path)} disabled={loading}>{loading ? '…' : '刷新'}</button>
+        {canWrite && (
+          <>
+            {/* 按钮与拖放两条路都要有：触屏/远程桌面里拖放不总是可用 */}
+            <button
+              className="upload-btn"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={busy}
+              title="选择文件上传（也可以直接把文件拖进这个区域）"
+            >
+              上传
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const list = Array.from(e.target.files ?? [])
+                // 先清空 value：否则连续选同一个文件不会再触发 onChange
+                e.target.value = ''
+                if (list.length) void uploadFiles(list)
+              }}
+            />
+          </>
+        )}
 
         <div className="spacer" />
 
@@ -579,6 +735,41 @@ export default function FilesTab({ instanceId, canWrite }: { instanceId: string;
           <button className={view === 'grid' ? 'active' : ''} onClick={() => setView('grid')} title="网格视图">▦</button>
         </div>
       </div>
+
+      {/* ---- 上传队列：逐项进度与结果，失败也留在里面（方便照着重试）---- */}
+      {uploads.length > 0 && (
+        <div className="upload-queue">
+          <div className="uq-head">
+            <strong>上传队列</strong>
+            <span className="muted">
+              {uploads.filter((u) => u.status === 'done').length}/{uploads.length} 已完成
+            </span>
+            <div className="spacer" />
+            <button
+              onClick={() => setUploads([])}
+              disabled={uploads.some((u) => u.status === 'uploading' || u.status === 'pending')}
+            >
+              收起
+            </button>
+          </div>
+          {uploads.map((u, i) => (
+            <div key={i} className={'uq-item uq-' + u.status}>
+              <span className="uq-name mono" title={u.name}>{u.name}</span>
+              <span className="uq-size muted">{formatSize(u.size)}</span>
+              {u.status === 'uploading' && (
+                <span className="uq-bar"><i style={{ width: Math.round((u.loaded / Math.max(1, u.size)) * 100) + '%' }} /></span>
+              )}
+              <span className="uq-state">
+                {u.status === 'pending' && '等待'}
+                {u.status === 'uploading' && Math.round((u.loaded / Math.max(1, u.size)) * 100) + '%'}
+                {u.status === 'done' && '✅ 完成'}
+                {u.status === 'skipped' && '⏭ 跳过'}
+                {u.status === 'failed' && '❌ ' + (u.error || '失败')}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* ---- 批量操作条：有勾选时才出现，避免平时占地方 ---- */}
       {checkedFiles.length > 0 && (

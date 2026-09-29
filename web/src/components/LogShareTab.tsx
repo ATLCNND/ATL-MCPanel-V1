@@ -3,6 +3,7 @@ import {
   LogShareFile, LogShareRecord,
   listLogShareFiles, analyseLog, deleteLogShare, streamLogShareAI,
 } from '../api'
+import MiniMarkdown from './MiniMarkdown'
 import './LogShareTab.css'
 
 /**
@@ -329,7 +330,15 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
 
           {streamErr && <div className="ls-error">分析失败：{streamErr}</div>}
           {!answer && !analysing && !streamErr && <div className="ls-empty">（没有内容）</div>}
-          {answer && <pre className="ls-answer">{answer}</pre>}
+          {answer && (
+            // AI 返回的是 Markdown（标题/列表/粗体/行内代码/链接），用 <pre> 会把这些
+            // 符号原样显示出来，读起来很费劲。复用帮助文档那套 MiniMarkdown ——
+            // 它是纯 React 构造、不走 innerHTML，所以**第三方返回的文本**也注入不了标签
+            // （这条比"渲染好看"更重要：内容来自外部服务）。
+            <div className="ls-answer md-body">
+              <MiniMarkdown text={answer} />
+            </div>
+          )}
           {analysing && !answer && <div className="ls-empty">正在等待对方的分析结果…</div>}
         </div>
       )}

@@ -16,6 +16,31 @@ import (
 
 // ---- 实例 CRUD ----
 
+// buildCreateInstanceRequest 把 HTTP 请求组装成发给 Daemon 的 gRPC 请求。
+//
+// 为什么单独抽成一个**纯函数**：这个组装过程出过一次真实的漏字段事故 ——
+// `container` 没有被转发，于是"创建时勾选容器化"的实例**跑在容器里、元数据却是
+// container=false**，监控采集随之走 native 分支（读到 docker CLI 的 CPU/内存）。
+// 漏一个字段不会有任何报错，只有下游行为诡异。抽出来之后可以用单测逐个字段锁住。
+func buildCreateInstanceRequest(req createInstanceReq, coreType string) *pb.CreateInstanceRequest {
+	return &pb.CreateInstanceRequest{
+		InstanceId:   req.InstanceID,
+		Name:         req.Name,
+		McType:       coreType,
+		CoreType:     coreType,
+		JavaVersion:  req.JavaVersion,
+		Port:         req.Port,
+		MaxMem:       req.MaxMem,
+		MinMem:       req.MinMem,
+		JarUrl:       req.JarURL,
+		StartCommand: req.StartCommand,
+		CpuQuota:     req.CPUQuota,
+		BackupDir:    req.BackupDir,
+		MemLimit:     req.MemLimit,
+		Container:    req.Container,
+	}
+}
+
 type createInstanceReq struct {
 	NodeID       int64  `json:"node_id"`
 	InstanceID   string `json:"instance_id"`
@@ -28,6 +53,14 @@ type createInstanceReq struct {
 	MinMem       string `json:"min_mem"`
 	JarURL       string `json:"jar_url"`       // jar 路径（Daemon 本地绝对路径）
 	StartCommand string `json:"start_command"` // 自定义启动命令模板
+	// Container 创建时即容器化（需节点已装 docker 且已导入基础镜像）。
+	//
+	// 这个字段先前**没有被转发**给 Daemon：body 里带 container=true 会被静默丢弃，
+	// 而 Daemon 是按"运行时可用即容器化"执行的（它只看实例上有没有绑定容器运行时）——
+	// 于是出现最坏的一种错配：**实例确实跑在容器里，元数据却写着 container=false**，
+	// 监控采集因此走 native 分支（读到的是 docker CLI 的 RSS/CPU，表现为 cpu=0、mem 十几 MB）。
+	// 元数据是唯一权威，它必须与事实一致，所以这个字段要如实转发。
+	Container    bool   `json:"container"`
 	CPUQuota     int32  `json:"cpu_quota"`     // CPU 配额百分比（100 = 1 核；0 = 不限制）
 	BackupDir    string `json:"backup_dir"`    // 备份存放目录（空则用节点配置的 backup_root）
 	MemLimit     string `json:"mem_limit"`     // cgroup 内存上限（如 "4G"；空 = 不限制）
@@ -139,21 +172,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	resp, err := cli.CreateInstance(context.Background(), &pb.CreateInstanceRequest{
-		InstanceId:   req.InstanceID,
-		Name:         req.Name,
-		McType:       coreType,
-		CoreType:     coreType,
-		JavaVersion:  req.JavaVersion,
-		Port:         req.Port,
-		MaxMem:       req.MaxMem,
-		MinMem:       req.MinMem,
-		JarUrl:       req.JarURL,
-		StartCommand: req.StartCommand,
-		CpuQuota:     req.CPUQuota,
-		BackupDir:    req.BackupDir,
-		MemLimit:     req.MemLimit,
-	})
+	resp, err := cli.CreateInstance(context.Background(), buildCreateInstanceRequest(req, coreType))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

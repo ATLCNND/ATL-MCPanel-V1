@@ -105,7 +105,13 @@ EOF
 chmod 0644 "$ROOTFS/etc/profile.d/atl-locale.sh"
 
 echo "==> 3/4 docker import（--numeric-owner 保住 rootfs 的属主）"
+# --platform 必须显式给：`docker import` 缺省按 **daemon 自身架构** 写镜像元数据，
+# 于是交叉构建（在 amd64 上做 arm64 镜像）会得到一个文件系统是 aarch64、
+# 元数据却写着 amd64 的镜像。amd64 时代看不出来（daemon 正好也是 amd64），
+# 只在跨架构时暴露 —— 实测 `docker run --platform linux/arm64 <该镜像>` 会认为
+# 本地没有 arm64 镜像，转而去 Docker Hub 拉取而失败（而我们的节点往往拉不动 registry）。
 tar --numeric-owner -C "$ROOTFS" -c . | docker import \
+  --platform "linux/${ARCH}" \
   --change 'ENV LANG=C.UTF-8' \
   --change 'ENV LC_ALL=C.UTF-8' \
   --change 'ENV HOME=/data' \
@@ -116,7 +122,20 @@ tar --numeric-owner -C "$ROOTFS" -c . | docker import \
 
 # 常用别名：daemon 默认按名字找 `atl-mcpanel-runtime:latest`，
 # 这样升级面板版本不必同步改 daemon 配置。
-docker tag "$IMAGE" atl-mcpanel-runtime:latest
+#
+# **只在目标架构 == 宿主架构时才打这个别名**。跨架构构建（在 amd64 上做 arm64 镜像）
+# 若也去抢 `latest`，会发生很隐蔽的故障：本地实例起容器时拿到的是 arm64 用户态镜像，
+# 而 JDK 是从宿主按 amd64 挂进去的 —— x86-64 的动态加载器在 arm64 镜像里不存在，
+# 于是 `exec java` 报 ENOENT，bash 只说一句
+#   "java: cannot execute: required file not found"
+# 看起来像"偶发启动失败"，实际是标签被抢。实测踩过（两个任务并行时真发生了）。
+HOST_ARCH="$(dpkg --print-architecture 2>/dev/null || echo unknown)"
+if [ "$ARCH" = "$HOST_ARCH" ]; then
+  docker tag "$IMAGE" atl-mcpanel-runtime:latest
+else
+  echo "    提示：目标架构 ${ARCH} ≠ 宿主 ${HOST_ARCH}，**不动** atl-mcpanel-runtime:latest 别名"
+  echo "          （本地容器实例仍应使用宿主架构的镜像；跨架构那份请按完整 tag 显式引用）"
+fi
 
 echo "==> 4/4 自检 + 导出"
 set +e
@@ -125,6 +144,18 @@ rc=$?
 set -e
 echo "$out" | sed 's/^/    /'
 [ $rc -eq 0 ] || { echo "❌ 镜像自检失败（rc=$rc）" >&2; exit 1; }
+
+# 架构断言：`docker import` 缺省按 **daemon 自身架构** 写元数据，交叉构建时会把
+# arm64 镜像标成 amd64（文件系统却是 aarch64）。这种错误自己不会报，只会在
+# 跨架构使用时以"本地没有该架构镜像 → 去 registry 拉取 → 失败"的形式出现，
+# 极难归因。所以在这里断言一次。
+GOT_ARCH=$(docker image inspect "$IMAGE" --format '{{.Architecture}}')
+if [ "$GOT_ARCH" != "$ARCH" ]; then
+  echo "❌ 镜像架构标注错误：期望 ${ARCH}，实际 ${GOT_ARCH}" >&2
+  echo "   （检查 docker import 是否带了 --platform linux/${ARCH}）" >&2
+  exit 1
+fi
+echo "    架构断言通过：${GOT_ARCH}"
 
 mkdir -p dist
 docker save "$IMAGE" | gzip -9 > "$OUT"

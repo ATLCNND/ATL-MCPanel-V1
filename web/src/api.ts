@@ -1215,6 +1215,50 @@ export async function readFile(instanceId: string, path: string): Promise<{ cont
   return apiFetch(`/api/instances/${instanceId}/file?path=${encodeURIComponent(path)}`)
 }
 
+/**
+ * uploadFile 上传一个文件到实例目录（流式，支持进度）。
+ *
+ * 为什么用 XHR 而不是 fetch：**fetch 至今没有上传进度回调**（只有下载能用
+ * ReadableStream 读进度）。拖放上传一个大模组包时，界面上必须有百分比，
+ * 否则用户不知道是在传还是卡住了。XHR 的 upload.onprogress 正好给这个。
+ *
+ * 为什么 body 直接是文件（不是 multipart）：服务端是流式转发的，
+ * multipart 会要求它先解析再转发，多一次完整缓冲。
+ */
+export function uploadFile(
+  instanceId: string,
+  path: string,
+  file: File,
+  overwrite: boolean,
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<{ path: string; size: number }> {
+  return new Promise((resolve, reject) => {
+    const q = new URLSearchParams({ path })
+    if (overwrite) q.set('overwrite', '1')
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `/api/instances/${instanceId}/upload?${q.toString()}`)
+    const token = getToken()
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream')
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress?.(e.loaded, e.total)
+    }
+    xhr.onload = () => {
+      let data: any = {}
+      try { data = JSON.parse(xhr.responseText) } catch { /* 非 JSON 响应走下面的兜底 */ }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve({ path: data.path ?? path, size: data.size ?? file.size })
+      } else {
+        reject(new Error(data.error || `上传失败（HTTP ${xhr.status}）`))
+      }
+    }
+    xhr.onerror = () => reject(new Error('上传失败：网络错误（连接中断？）'))
+    xhr.onabort = () => reject(new Error('已取消'))
+    xhr.send(file)
+  })
+}
+
 export async function writeFile(instanceId: string, path: string, content: string) {
   return apiFetch(`/api/instances/${instanceId}/file`, {
     method: 'POST',

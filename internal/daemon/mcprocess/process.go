@@ -798,6 +798,16 @@ func (i *Instance) Containerized() bool {
 	return i.containerized
 }
 
+// Runtime 返回该实例的容器运行时（未启用容器化或节点上没有 docker 时为 nil）。
+//
+// 供监控采集用：容器模式下**不能**用 PID 定位实例负载（那是 docker CLI 的
+// PID），必须拿运行时去查/读容器自己的 cgroup。
+func (i *Instance) Runtime() *container.Runtime {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.Container
+}
+
 // tail 相关的节奏参数。
 const (
 	// tailPollInterval 读到文件末尾后的等待间隔。

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"sort"
@@ -234,6 +235,31 @@ func (s *Server) handleLogShareAnalyse(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// execLogged 执行 SQL 并**把错误记下来**。
+//
+// 为什么需要它（这是一个真实缺陷留下的教训）：LogShare 的结论落库原先写的是
+// `_, _ = s.db.Exec(...)` —— 错误被丢掉，于是当流的解析出问题、`answer` 恒为空串时，
+// 表现为"分析跑完了但历史里没有结论"，**没有任何一条日志**指向真因，排查绕了很久。
+// 凡是"失败也不该中断主流程"的写库，都要走这里：忽略可以，但必须留痕。
+func (s *Server) execLogged(query string, args ...interface{}) {
+	if _, err := s.db.Exec(query, args...); err != nil {
+		line := query
+		if i := indexByte(line, '\n'); i >= 0 {
+			line = line[:i]
+		}
+		log.Printf("[db] 写入失败（已忽略，不影响主流程）：%v | SQL: %s", err, line)
+	}
+}
+
+func indexByte(s string, b byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == b {
+			return i
+		}
+	}
+	return -1
+}
+
 // handleLogShareAI GET /api/instances/{id}/logshare/ai/{logshare_id}
 //
 // SSE 代理：把对方的 AI 分析流原样转给浏览器。
@@ -331,17 +357,32 @@ func (r *aiRun) accept(ev logshare.AIEvent) {
 		return
 	}
 	r.appendLocked(ev)
-	if ev.Event != "status" {
-		return
-	}
+	// 注意：**不能**按 `ev.Event != "status"` 提前返回 —— OpenAI 风格那批
+	// 正文事件的 event 名是空的，一过滤就把正文全丢了。
+	// 对方的流有**两种**字段形态，必须都认：
+	//   ① {"type":"content","delta":"…"}            —— event: status
+	//   ② {"choices":[{"delta":{"content":"…"}}]}   —— **event 名为空**
+	// 只认第一种的话 answer 会一直是空串，而落库那句是 `if answer != ""`，
+	// 于是**静默不落库**：分析明明跑完了（流里有 done），历史里却没有结论。
+	// 实测就是这么踩的：211 个 status 事件里，真正带正文的是空 event 名的那批。
 	var m struct {
-		Type  string `json:"type"`
-		Delta string `json:"delta"`
+		Type    string `json:"type"`
+		Delta   string `json:"delta"`
+		Choices []struct {
+			Delta struct {
+				Content string `json:"content"`
+			} `json:"delta"`
+		} `json:"choices"`
 	}
-	if json.Unmarshal([]byte(ev.Data), &m) != nil || m.Type != "content" || m.Delta == "" {
+	if json.Unmarshal([]byte(ev.Data), &m) != nil {
 		return
 	}
-	r.answer.WriteString(m.Delta)
+	switch {
+	case m.Type == "content" && m.Delta != "":
+		r.answer.WriteString(m.Delta)
+	case len(m.Choices) > 0 && m.Choices[0].Delta.Content != "":
+		r.answer.WriteString(m.Choices[0].Delta.Content)
+	}
 }
 
 func (r *aiRun) subscribe() ([]logshare.AIEvent, chan logshare.AIEvent, func()) {
@@ -457,7 +498,7 @@ func (s *Server) runAIRun(run *aiRun, instanceID, logID, key string) {
 		}
 		answer := run.finish()
 		if strings.TrimSpace(answer) != "" {
-			_, _ = s.db.Exec(`
+			s.execLogged(`
 				INSERT INTO logshare_analyses (instance_id, logshare_id, content) VALUES (?, ?, ?)
 				ON CONFLICT(instance_id, logshare_id) DO UPDATE SET content = excluded.content,
 					created_at = CURRENT_TIMESTAMP`,

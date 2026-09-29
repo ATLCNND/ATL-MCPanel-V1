@@ -48,6 +48,9 @@ service DaemonService {
   rpc CopyFile(CopyFileRequest) returns (OperationResponse);       // 复制/移动（move=true 为移动，支持目录递归）
   rpc SearchFiles(SearchFilesRequest) returns (ListFilesResponse); // 按名称递归搜索
   rpc DownloadFile(DownloadFileRequest) returns (stream FileChunk); // 流式下载（不受 1MB 文本限制）
+  // 流式上传（Panel → Daemon）：拖放上传任意二进制文件，不受 1MB 文本上限。
+  // 客户端流：第一条消息带 instance_id/path，之后只带 data。
+  rpc UploadFile(stream UploadChunk) returns (UploadResult);
   // 实例图标：节点按约定在实例目录里找 server-icon.png / icon.png 并流式回传。
   // 文件名约定放在 Daemon 侧 —— 面板不该知道节点上的文件名，
   // 也不用为此换成"面板猜文件名、失败了再猜另一个"的两次往返。
@@ -541,6 +544,31 @@ message DownloadFileRequest {
 message FileChunk {
   bytes data = 1;
   int64 total = 2;   // 文件总大小（每个分片都带，便于前端显示进度）
+}
+
+// UploadChunk 上传数据分片（Panel → Daemon），与 FileChunk 对称。
+//
+// 为什么要流式：面板要支持"拖一个几百 MB 的模组包进去"。原先只有
+// WriteFile（文本、1MB 上限）与 UploadJar（只管 jar、一次性送完），
+// 两者都不适合任意二进制文件 —— 一次性送完意味着整份文件要先进面板内存。
+//
+// 第一条消息必须带 instance_id 与 path，后续分片只带 data（省带宽）。
+message UploadChunk {
+  string instance_id = 1;
+  string path = 2;        // 实例内相对路径（如 plugins/xxx.jar）；目录不存在会自动创建
+  bytes data = 3;
+  int64 total = 4;        // 文件总大小（0 = 未知）；用于上限校验与进度
+  bool overwrite = 5;     // 允许覆盖已存在文件；false 且文件已存在时直接失败
+}
+
+// UploadResult 上传结果。
+// 不用 OperationResponse：这里要额外回"实际写了多少字节"，
+// 便于面板核对"客户端发出去的字节数 == Daemon 落盘的字节数"。
+message UploadResult {
+  bool success = 1;
+  string error = 2;
+  string path = 3;        // 落盘后的实例内相对路径
+  int64 size = 4;         // 实际写入字节数
 }
 
 // ============================================================

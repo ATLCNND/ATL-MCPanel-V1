@@ -283,6 +283,9 @@ func (s *Server) Handler() http.Handler {
 	// 文件管理
 	mux.HandleFunc("GET /api/instances/{id}/files", s.requireAuth(s.handleListFiles))
 	mux.HandleFunc("GET /api/instances/{id}/files/search", s.requireAuth(s.handleSearchFiles))
+	// 流式上传（拖放上传）：body 就是文件原始字节，目标路径走 ?path= 参数。
+	// 不用 multipart：多一层解析就多一次完整缓冲，而我们要支持几百 MB 的模组包。
+	mux.HandleFunc("POST /api/instances/{id}/upload", s.requireAuth(s.handleUploadFile))
 	mux.HandleFunc("GET /api/instances/{id}/file", s.requireAuth(s.handleReadFile))
 	mux.HandleFunc("POST /api/instances/{id}/file", s.requireAuth(s.handleWriteFile))
 	mux.HandleFunc("DELETE /api/instances/{id}/file", s.requireAuth(s.handleDeleteFile))

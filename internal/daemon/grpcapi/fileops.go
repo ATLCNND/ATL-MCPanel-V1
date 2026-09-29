@@ -287,6 +287,135 @@ func (s *Server) DownloadFile(req *pb.DownloadFileRequest, stream pb.DaemonServi
 	}
 }
 
+// ---- 上传（流式接收）----
+
+// uploadHardLimit 单个文件的应用层上限。
+//
+// 取与 grpclimits.MaxUploadBytes 一致的口径（256MB）：上传要经面板转发，
+// 而面板与 Daemon 的 gRPC 消息上限也是按这个量级设的。**但这里是流式**，
+// 所以实际受限于磁盘与时长，而不是单条消息 —— 上限只在"声明了 total"时用于预检。
+const uploadHardLimit = 256 << 20
+
+// UploadFile 流式接收上传文件（Panel → Daemon）。
+//
+// 与 DownloadFile 对称：分片传输，避免整份文件先进内存。
+//
+// 三条硬约束（这是"用户可控文件名 + 服务端路径"的接口，历史上出过问题的正是这一类）：
+//  1. **路径穿越必须挡住**：用 resolvePath 统一解析（它做过 ../ 与软链接校验），
+//     并且再拒绝受保护路径（instance.json / 平台状态文件）；
+//  2. **先写临时文件再改名**：直接写目标路径的话，写到一半失败会留下一个
+//     半截文件 —— 如果那是插件 jar，服务端可能把它当完整插件加载（比报错更糟）；
+//  3. **落盘后交还属主**：与其它文件操作一致（实例进程要以自己的身份读写）。
+func (s *Server) UploadFile(stream pb.DaemonService_UploadFileServer) error {
+	// 第一条消息必须带 instance_id + path
+	first, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+	instanceID, relPath := first.InstanceId, first.Path
+	if instanceID == "" || relPath == "" {
+		return errors.New("首个分片必须包含 instance_id 与 path")
+	}
+
+	dir, err := s.instanceDir(instanceID)
+	if err != nil {
+		return err
+	}
+	if isProtectedPath(relPath) {
+		return errors.New(errProtected)
+	}
+	target, err := resolvePath(dir, relPath)
+	if err != nil {
+		return err
+	}
+	// 目标必须是文件：已有同名目录时直接说清楚，别让 os.Create 报个含糊的错
+	if info, err := os.Stat(target); err == nil {
+		if info.IsDir() {
+			return errors.New("目标已存在且是目录，无法作为文件上传")
+		}
+		if !first.Overwrite {
+			return errors.New("目标文件已存在（如需覆盖请显式允许）")
+		}
+	}
+	if first.Total > uploadHardLimit {
+		return fmt.Errorf("文件过大：%d 字节，上限 %d 字节", first.Total, uploadHardLimit)
+	}
+	// 父目录按需创建（上传到 plugins/ 这类子目录时常见）
+	if parent := filepath.Dir(target); parent != dir {
+		if err := os.MkdirAll(parent, 0o755); err != nil {
+			return fmt.Errorf("创建目标目录失败: %w", err)
+		}
+	}
+
+	// 临时文件放在同目录：跨文件系统的 rename 不是原子操作，会退化成复制
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".upload-*")
+	if err != nil {
+		return fmt.Errorf("创建临时文件失败: %w", err)
+	}
+	tmpName := tmp.Name()
+	// 失败路径统一清掉临时文件（成功时改名后它已不存在，Remove 会返回 not exist，忽略）
+	defer func() {
+		tmp.Close()        // 成功路径上已 Close 过，重复 Close 返回错误，忽略
+		os.Remove(tmpName) // 成功改名后此路径已不存在
+	}()
+
+	var written int64
+	chunk := first
+	for {
+		if err := stream.Context().Err(); err != nil {
+			return err // 客户端取消：不留半截文件
+		}
+		if n := len(chunk.Data); n > 0 {
+			written += int64(n)
+			if written > uploadHardLimit {
+				return fmt.Errorf("文件超过上限 %d 字节，已中止", uploadHardLimit)
+			}
+			if _, err := tmp.Write(chunk.Data); err != nil {
+				return fmt.Errorf("写入失败: %w", err)
+			}
+		}
+		chunk, err = stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	if err := tmp.Sync(); err != nil { // 先落盘再改名，避免"改名成功但内容还在页缓存里"
+		return fmt.Errorf("落盘失败: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("关闭临时文件失败: %w", err)
+	}
+	// 属主/权限：文件是 root 的 Daemon 写的，实例进程要能读它（插件 jar 就得能读）
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		return fmt.Errorf("设置权限失败: %w", err)
+	}
+	if err := os.Rename(tmpName, target); err != nil {
+		return fmt.Errorf("改名到目标路径失败: %w", err)
+	}
+	s.handOver(instanceID, target) // 交给实例专用用户，和写入/解压等路径保持一致
+
+	// 日志里记**净化后的**相对路径，而不是客户端传来的原文。
+	//
+	// 客户端传 `../evil.txt` 时 resolvePath 会把它锚定回实例目录（落成 evil.txt），
+	// 但若照原样打日志，出来的是"文件已上传 path=../evil.txt" ——
+	// 事后看日志的人会以为穿越成功了，实际并没有。日志必须反映**发生过什么**，
+	// 而不是收到过什么。
+	shown := relPath
+	if rel, err := filepath.Rel(dir, target); err == nil {
+		shown = filepath.ToSlash(rel)
+	}
+	s.log.Info("文件已上传", "instance", instanceID, "path", shown, "size", written)
+	return stream.SendAndClose(&pb.UploadResult{
+		Success: true,
+		Path:    shown,
+		Size:    written,
+	})
+}
+
 // ---- 排队任务 ----
 
 // SubmitJob 提交一个压缩 / 解压任务。

@@ -26,6 +26,7 @@ package container
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -71,6 +72,17 @@ func Detect(image string) *Runtime {
 
 // Bin 返回 docker 可执行文件路径（供测试与提示信息）。
 func (r *Runtime) Bin() string { return r.bin }
+
+// NewWithBin 用给定的 docker 可执行文件路径与镜像构造运行时。
+//
+// 供测试使用：单测要构造"运行时已解析出容器 ID"这类场景，但不该依赖本机
+// 真的装了 docker（Detect 会做 LookPath）。生产路径仍然只用 Detect。
+func NewWithBin(bin, image string) *Runtime {
+	if image == "" {
+		image = DefaultImage
+	}
+	return &Runtime{bin: bin, image: image}
+}
 
 // Image 返回使用的镜像 tag。
 func (r *Runtime) Image() string { return r.image }
@@ -205,6 +217,147 @@ func (r *Runtime) Version(ctx context.Context) string {
 		return ""
 	}
 	return strings.TrimSpace(out)
+}
+
+// ---- 运行统计（监控回退路径）----
+
+// Usage 一次容器运行统计（docker stats 的子集）。
+type Usage struct {
+	// CPUPct 容器 CPU 使用率（百分比，100 = 用满 1 核）。docker 自己按
+	// "两次采样差值 / 时间" 算好，所以这里直接用，不再做二次换算。
+	CPUPct float64
+	// MemBytes 内存用量（docker stats 的 MemoryUsage，= cgroup 的 working set）。
+	MemBytes uint64
+}
+
+// statsJSON 对应 `docker stats --no-stream --format '{{json .}}'` 的输出。
+type statsJSON struct {
+	CPUPerc     string `json:"CPUPerc"`
+	MemUsage    string `json:"MemUsage"`
+	MemPerc     string `json:"MemPerc"`
+	BlockIO     string `json:"BlockIO"`
+	NetIO       string `json:"NetIO"`
+	PIDs        string `json:"PIDs"`
+	ContainerID string `json:"ID"`
+	Name        string `json:"Name"`
+}
+
+// Stats 用 `docker stats --no-stream` 取一次容器用量。
+//
+// **这是回退路径**：正常情况下监控读容器自己的 cgroup（不起进程、无额外开销）。
+// 只有在 cgroup 读不到时（cgroup driver 形态与预期不符、容器刚重建、
+// 老节点上 cgroup 层级没挂对）才用它 —— 每次调用会起一个 docker CLI，
+// 采样间隔只有 2~5 秒，不能作为常态路径。
+func (r *Runtime) Stats(ctx context.Context, instanceID string) (Usage, error) {
+	out, err := r.run(ctx, "stats", "--no-stream", "--format", "{{json .}}", NameOf(instanceID))
+	if err != nil {
+		return Usage{}, err
+	}
+	return parseDockerStats(out)
+}
+
+// parseDockerStats 解析 docker stats 的 JSON 输出。
+//
+// 只解析固定格式的数字：docker 输出是 `22.31%` / `970.1MiB / 1.5GiB`
+// 这类人类可读字符串（随 --format 模板与版本略有差异），所以这里对
+// "解析不了"一律返回错误 —— 宁可让上层把指标留空（界面显示为空），
+// 也不能猜一个数出来：监控里最忌讳的就是悄悄显示一个错的数。
+func parseDockerStats(out string) (Usage, error) {
+	line := strings.TrimSpace(out)
+	if line == "" {
+		return Usage{}, errors.New("docker stats 无输出")
+	}
+	// 多行时取最后一行非空（正常情况下只有一行）
+	if i := strings.LastIndex(line, "\n"); i >= 0 {
+		line = strings.TrimSpace(line[i+1:])
+	}
+	var js statsJSON
+	if err := json.Unmarshal([]byte(line), &js); err != nil {
+		return Usage{}, fmt.Errorf("解析 docker stats 输出失败: %w", err)
+	}
+
+	var u Usage
+	pct, err := parsePercent(js.CPUPerc)
+	if err != nil {
+		return Usage{}, fmt.Errorf("解析 CPU 百分比失败（%q）: %w", js.CPUPerc, err)
+	}
+	u.CPUPct = pct
+
+	used, err := parseByteSize(firstSizeField(js.MemUsage))
+	if err != nil {
+		return Usage{}, fmt.Errorf("解析内存用量失败（%q）: %w", js.MemUsage, err)
+	}
+	u.MemBytes = used
+	return u, nil
+}
+
+// firstSizeField 取 "970.1MiB / 1.5GiB" 里的第一段。
+func firstSizeField(s string) string {
+	if i := strings.Index(s, "/"); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
+// parsePercent 解析 "22.31%"。
+func parsePercent(s string) (float64, error) {
+	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s), "%"))
+	if s == "" {
+		return 0, errors.New("空值")
+	}
+	return strconv.ParseFloat(s, 64)
+}
+
+// parseByteSize 解析 docker 的字节单位串，如 "970.1MiB"、"1.5GiB"、"0B"。
+//
+// 单位用的是 **1024 进制**（MiB/GiB），但 docker 也可能输出 SI 单位
+// （MB/GB，1000 进制）—— 两者都支持，混淆会让数值差 4.8%，对内存展示
+// 来说属于"看起来对但不对"，所以按各自进制解析。
+func parseByteSize(s string) (uint64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, errors.New("空值")
+	}
+	// 拆出数字与单位
+	idx := 0
+	for idx < len(s) && (s[idx] == '.' || (s[idx] >= '0' && s[idx] <= '9')) {
+		idx++
+	}
+	numStr, unit := s[:idx], strings.TrimSpace(s[idx:])
+	if numStr == "" {
+		return 0, fmt.Errorf("不是可解析的字节数: %q", s)
+	}
+	num, err := strconv.ParseFloat(numStr, 64)
+	if err != nil {
+		return 0, err
+	}
+	mult := float64(1)
+	switch strings.ToLower(unit) {
+	case "", "b":
+		mult = 1
+	case "kib", "k":
+		mult = 1024
+	case "mib", "m":
+		mult = 1024 * 1024
+	case "gib", "g":
+		mult = 1024 * 1024 * 1024
+	case "tib", "t":
+		mult = 1024 * 1024 * 1024 * 1024
+	case "kb":
+		mult = 1000
+	case "mb":
+		mult = 1000 * 1000
+	case "gb":
+		mult = 1000 * 1000 * 1000
+	case "tb":
+		mult = 1000 * 1000 * 1000 * 1000
+	default:
+		return 0, fmt.Errorf("未知单位: %q", unit)
+	}
+	if num < 0 {
+		return 0, fmt.Errorf("负值: %q", s)
+	}
+	return uint64(num * mult), nil
 }
 
 // ---- 启动参数 ----

@@ -42,6 +42,7 @@ const (
 	DaemonService_CopyFile_FullMethodName               = "/mcpanel.DaemonService/CopyFile"
 	DaemonService_SearchFiles_FullMethodName            = "/mcpanel.DaemonService/SearchFiles"
 	DaemonService_DownloadFile_FullMethodName           = "/mcpanel.DaemonService/DownloadFile"
+	DaemonService_UploadFile_FullMethodName             = "/mcpanel.DaemonService/UploadFile"
 	DaemonService_GetInstanceIcon_FullMethodName        = "/mcpanel.DaemonService/GetInstanceIcon"
 	DaemonService_GetMetrics_FullMethodName             = "/mcpanel.DaemonService/GetMetrics"
 	DaemonService_SubmitJob_FullMethodName              = "/mcpanel.DaemonService/SubmitJob"
@@ -104,6 +105,9 @@ type DaemonServiceClient interface {
 	CopyFile(ctx context.Context, in *CopyFileRequest, opts ...grpc.CallOption) (*OperationResponse, error)
 	SearchFiles(ctx context.Context, in *SearchFilesRequest, opts ...grpc.CallOption) (*ListFilesResponse, error)
 	DownloadFile(ctx context.Context, in *DownloadFileRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[FileChunk], error)
+	// 流式上传（Panel → Daemon）：拖放上传任意二进制文件，不受 1MB 文本上限。
+	// 客户端流：第一条消息带 instance_id/path，之后只带 data。
+	UploadFile(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[UploadChunk, UploadResult], error)
 	// 实例图标：节点按约定在实例目录里找 server-icon.png / icon.png 并流式回传。
 	// 文件名约定放在 Daemon 侧 —— 面板不该知道节点上的文件名，
 	// 也不用为此换成"面板猜文件名、失败了再猜另一个"的两次往返。
@@ -408,9 +412,22 @@ func (c *daemonServiceClient) DownloadFile(ctx context.Context, in *DownloadFile
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type DaemonService_DownloadFileClient = grpc.ServerStreamingClient[FileChunk]
 
+func (c *daemonServiceClient) UploadFile(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[UploadChunk, UploadResult], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &DaemonService_ServiceDesc.Streams[3], DaemonService_UploadFile_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[UploadChunk, UploadResult]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type DaemonService_UploadFileClient = grpc.ClientStreamingClient[UploadChunk, UploadResult]
+
 func (c *daemonServiceClient) GetInstanceIcon(ctx context.Context, in *InstanceRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[FileChunk], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &DaemonService_ServiceDesc.Streams[3], DaemonService_GetInstanceIcon_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &DaemonService_ServiceDesc.Streams[4], DaemonService_GetInstanceIcon_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -693,6 +710,9 @@ type DaemonServiceServer interface {
 	CopyFile(context.Context, *CopyFileRequest) (*OperationResponse, error)
 	SearchFiles(context.Context, *SearchFilesRequest) (*ListFilesResponse, error)
 	DownloadFile(*DownloadFileRequest, grpc.ServerStreamingServer[FileChunk]) error
+	// 流式上传（Panel → Daemon）：拖放上传任意二进制文件，不受 1MB 文本上限。
+	// 客户端流：第一条消息带 instance_id/path，之后只带 data。
+	UploadFile(grpc.ClientStreamingServer[UploadChunk, UploadResult]) error
 	// 实例图标：节点按约定在实例目录里找 server-icon.png / icon.png 并流式回传。
 	// 文件名约定放在 Daemon 侧 —— 面板不该知道节点上的文件名，
 	// 也不用为此换成"面板猜文件名、失败了再猜另一个"的两次往返。
@@ -814,6 +834,9 @@ func (UnimplementedDaemonServiceServer) SearchFiles(context.Context, *SearchFile
 }
 func (UnimplementedDaemonServiceServer) DownloadFile(*DownloadFileRequest, grpc.ServerStreamingServer[FileChunk]) error {
 	return status.Errorf(codes.Unimplemented, "method DownloadFile not implemented")
+}
+func (UnimplementedDaemonServiceServer) UploadFile(grpc.ClientStreamingServer[UploadChunk, UploadResult]) error {
+	return status.Errorf(codes.Unimplemented, "method UploadFile not implemented")
 }
 func (UnimplementedDaemonServiceServer) GetInstanceIcon(*InstanceRequest, grpc.ServerStreamingServer[FileChunk]) error {
 	return status.Errorf(codes.Unimplemented, "method GetInstanceIcon not implemented")
@@ -1296,6 +1319,13 @@ func _DaemonService_DownloadFile_Handler(srv interface{}, stream grpc.ServerStre
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type DaemonService_DownloadFileServer = grpc.ServerStreamingServer[FileChunk]
+
+func _DaemonService_UploadFile_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(DaemonServiceServer).UploadFile(&grpc.GenericServerStream[UploadChunk, UploadResult]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type DaemonService_UploadFileServer = grpc.ClientStreamingServer[UploadChunk, UploadResult]
 
 func _DaemonService_GetInstanceIcon_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(InstanceRequest)
@@ -1918,6 +1948,11 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 			StreamName:    "DownloadFile",
 			Handler:       _DaemonService_DownloadFile_Handler,
 			ServerStreams: true,
+		},
+		{
+			StreamName:    "UploadFile",
+			Handler:       _DaemonService_UploadFile_Handler,
+			ClientStreams: true,
 		},
 		{
 			StreamName:    "GetInstanceIcon",

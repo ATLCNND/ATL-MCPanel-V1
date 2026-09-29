@@ -2,6 +2,118 @@
    文件管理
    ============================================================================ */
 
+/* ---- 上传：拖动提示 / 上传按钮 / 队列 ---- */
+
+/* 拖动时整区高亮。用覆盖层而不是改列表样式：列表内容随时在变，
+   改它会让"哪块能放"这个信号跟着变。 */
+.files-tab.files-dragging {
+  position: relative;
+}
+
+.files-drop-hint {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  background: rgba(0, 0, 0, 0.45);
+  border: 2px dashed var(--accent-solid);
+  border-radius: var(--r);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none; /* 关键：不能挡住 drop 事件 */
+}
+
+.files-drop-hint .drop-inner {
+  text-align: center;
+  padding: 18px 26px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+
+.files-drop-hint .drop-title {
+  font-size: 14px;
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+
+.files-drop-hint .drop-sub {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.upload-btn {
+  white-space: nowrap;
+}
+
+.upload-queue {
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.uq-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.uq-head .spacer {
+  flex: 1;
+}
+
+.uq-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  padding: 3px 0;
+  border-top: 1px solid var(--border);
+}
+
+.uq-item .uq-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uq-item .uq-size {
+  width: 76px;
+  text-align: right;
+}
+
+.uq-item .uq-bar {
+  width: 120px;
+  height: 6px;
+  background: var(--bg-base);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.uq-item .uq-bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent-solid);
+  transition: width 0.15s linear;
+}
+
+.uq-item .uq-state {
+  width: 160px;
+  text-align: right;
+}
+
+.uq-done .uq-state { color: var(--success); }
+.uq-failed .uq-state { color: var(--danger); }
+.uq-skipped .uq-state,
+.uq-pending .uq-state { color: var(--text-3); }
+
 .files-tab {
   flex: 1;
   display: flex;
