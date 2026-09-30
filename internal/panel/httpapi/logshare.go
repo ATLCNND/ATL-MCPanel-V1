@@ -472,6 +472,26 @@ func (r *aiRun) accept(ev logshare.AIEvent) {
 	}
 }
 
+// acceptText 收下一条**已经是纯文本**的正文事件（自配平台那条链路用）。
+//
+// 为什么不复用 accept：accept 解析的是 LogShare 的两种 JSON 形态
+// （`{"type":"content","delta":…}` 与 `{"choices":[{"delta":{"content":…}}]}`），
+// 而自配平台那条链路在解析 SSE 时**已经把正文解出来了**，再喂给 accept 就是
+// "把一个 JSON 字符串当对象解析" —— 解析必然失败，于是：
+// 前端能看到完整的流式结论，而 `run.answer` 一直是空的 → **结论永远不落库**。
+// 这个 bug 的表现很隐蔽（用户看得到结果，只是历史里没有），所以单列一个方法。
+func (r *aiRun) acceptText(ev logshare.AIEvent, text string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return
+	}
+	r.appendLocked(ev)
+	if ev.Event == "content" {
+		r.answer.WriteString(text)
+	}
+}
+
 func (r *aiRun) subscribe() ([]logshare.AIEvent, chan logshare.AIEvent, func()) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

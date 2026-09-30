@@ -17,6 +17,7 @@ import DashboardPage from './components/DashboardPage'
 import AccountPage from './components/AccountPage'
 import HelpPage from './components/HelpPage'
 import AlertsModal from './components/AlertsModal'
+import AnalysisProviders from './components/AnalysisProviders'
 import { useSessionWatchdog } from './components/usePanelMeta'
 
 /** 当前视图：全局页面，或某个实例的详情 */
@@ -38,6 +39,7 @@ const PAGE_META: Record<NavKey, { title: string; subtitle: string }> = {
   users: { title: '用户管理', subtitle: '账号、角色，以及节点用户的节点授权' },
   avatars: { title: '头像审核', subtitle: '审核用户上传的头像（通过后才会对外显示）' },
   audit: { title: '审计日志', subtitle: '查看所有管理操作记录' },
+  providers: { title: '分析平台', subtitle: '日志交给谁分析、用什么凭据，以及调用限额' },
   account: { title: '账户', subtitle: '我的资源、权限与账号设置' },
   help: { title: '公告与帮助', subtitle: '管理员公告，以及面板使用说明' },
 }
@@ -228,6 +230,8 @@ export default function App() {
         return <AvatarReviewPage />
       case 'audit':
         return <AuditPage />
+      case 'providers':
+        return <AnalysisProviders role={user?.role} />
       case 'account':
         return <AccountPage onLogout={handleLogout} />
       case 'help':

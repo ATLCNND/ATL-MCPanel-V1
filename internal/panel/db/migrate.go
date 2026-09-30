@@ -554,6 +554,49 @@ var migrations = []migration{
 			)`,
 		},
 	},
+	{
+		Version: 22,
+		Name:    "analysis_providers",
+		Statements: []string{
+			// 日志分析的"提供方"：把原来写死的 LogShare 变成可插拔的一层。
+			//
+			// 为什么需要这张表（2026-09-30 定的 D1）：
+			//   1. LogShare 是公益合作的首选，但它会维护、会限流、会改接口 ——
+			//      把"分析"绑死在它一家上，对方一停我们就整条链路不可用；
+			//   2. 用户/管理员应该能接**自己的**平台（免费额度、自建网关、商业 API），
+			//      用自己的额度、自己的隐私边界；
+			//   3. mclo.gs 这类"不是 AI、但能把日志变成可分享链接"的服务也要能挂在同一条链上。
+			//
+			// owner_id：0 = 全局（总管理员建的，所有人可用）；>0 = 某个用户的私有配置。
+			// D1 的决定是"管理员 + 节点用户可以各配自己的"，普通用户只能用全局的。
+			`CREATE TABLE IF NOT EXISTS analysis_providers (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				name TEXT NOT NULL,
+				kind TEXT NOT NULL DEFAULT 'openai',      -- logshare / mclogs / openai / builtin-rules
+				base_url TEXT NOT NULL DEFAULT '',
+				model TEXT NOT NULL DEFAULT '',
+				api_key_enc BLOB,                          -- AES-GCM 密文；明文永不落库、永不回显
+				key_hint TEXT NOT NULL DEFAULT '',          -- 仅末 4 位，供界面显示 ****abcd
+				max_bytes INTEGER NOT NULL DEFAULT 0,
+				timeout_sec INTEGER NOT NULL DEFAULT 300,
+				prompt TEXT NOT NULL DEFAULT '',
+				owner_id INTEGER NOT NULL DEFAULT 0,
+				enabled INTEGER NOT NULL DEFAULT 1,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_analysis_providers_owner ON analysis_providers(owner_id, enabled)`,
+
+			// 上传记录表补三列：现在这条链上不止 LogShare 一家了。
+			//   provider_id / provider_kind —— 这份记录是哪家产生的（历史列表要显示、删除要路由对家）；
+			//   raw_url —— mclo.gs 的原文直链（求助文本里要用）；
+			//   errors —— mclo.gs 会数 ERROR 行，这是它唯一的"诊断信号"。
+			`ALTER TABLE logshare_uploads ADD COLUMN provider_id INTEGER NOT NULL DEFAULT 0`,
+			`ALTER TABLE logshare_uploads ADD COLUMN provider_kind TEXT NOT NULL DEFAULT 'logshare'`,
+			`ALTER TABLE logshare_uploads ADD COLUMN raw_url TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE logshare_uploads ADD COLUMN errors INTEGER NOT NULL DEFAULT 0`,
+		},
+	},
 }
 
 // migrate 应用尚未执行的迁移。

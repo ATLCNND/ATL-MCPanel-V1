@@ -53,7 +53,7 @@ const TABS_EXTRA: { key: Tab; label: string; icon: string }[] = [
  * 加了「账户」「公告与帮助」之后没同步，导致在实例页里进不去这两个页面。
  * 唯一的不同是中间插一个「告警」：那一项在实例页走弹窗，而不是页面。
  */
-const GLOBAL_NAV: { key: NavKey | 'alerts'; label: string; icon: string; adminOnly?: boolean }[] =
+const GLOBAL_NAV: { key: NavKey | 'alerts'; label: string; icon: string; adminOnly?: boolean; providerAdmin?: boolean }[] =
   NAV_ITEMS.flatMap((it) =>
     it.key === 'tunnels'
       ? [it, { key: 'alerts' as const, label: '告警', icon: '◈', adminOnly: true }]
@@ -254,7 +254,10 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
   // 这两个 key 是"从实例页最可能想去的地方"：回总览、回实例列表、看节点监控。
   const NAV_ALWAYS = ['dashboard', 'instances', 'monitor']
   const [navExpanded, setNavExpanded] = useState(false)
-  const navItems = GLOBAL_NAV.filter((g) => !g.adminOnly || isAdminUser)
+  const navItems = GLOBAL_NAV.filter((g) =>
+    (!g.adminOnly || isAdminUser) &&
+    // 「分析平台」是管理员/节点用户的全局设置页，普通用户看不到（与后端权限一致）
+    (!g.providerAdmin || isAdminUser || isNodeUser(user?.role)))
   const visibleNav = navExpanded ? navItems : navItems.filter((g) => NAV_ALWAYS.includes(g.key))
 
   // reloadInst 重新拉取本实例的记录（到期时间等字段改完要立刻反映到界面）

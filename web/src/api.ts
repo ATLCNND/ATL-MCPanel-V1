@@ -1023,7 +1023,205 @@ export async function setWhitelist(instanceId: string, enabled: boolean): Promis
   })
 }
 
-// ---- 第三方日志分析（LogShare.CN） ----
+// ---- 日志分析的可插拔化：提供方 / 设置 / 统一分析入口 ----
+//
+// 原来的 `/logshare/*` 接口保留（老版本前端与兼容性），新的界面走这一组：
+// 链上现在有四类提供方（LogShare / mclo.gs / 用户自配平台 / V2 的内置规则），
+// 而用户看到的应该是同一件事。
+
+/** 提供方类型 */
+export type AnalysisKind = 'logshare' | 'mclogs' | 'openai' | 'builtin-rules'
+
+export interface AnalysisProvider {
+  ID?: number
+  id: number
+  name: string
+  kind: AnalysisKind
+  base_url: string
+  model: string
+  key_hint?: string
+  max_bytes?: number
+  timeout_sec?: number
+  prompt?: string
+  owner_id?: number
+  enabled: boolean
+  /** 面板给的一句话说明（谁提供、做什么） */
+  describe?: string
+}
+
+export interface AnalysisChainEntry {
+  id: number
+  kind: AnalysisKind
+  name: string
+  reason: string
+}
+
+export interface AnalysisProvidersResp {
+  builtin: AnalysisProvider[]
+  custom: AnalysisProvider[]
+  chain: AnalysisChainEntry[]
+  can_manage: boolean
+  logshare_on: boolean
+}
+
+export interface AnalysisSettings {
+  order: string[]
+  allow_private: boolean
+  rate_per_min: number
+  rate_per_day: number
+  can_manage: boolean
+  logshare_on: boolean
+  rate_default_min: number
+  rate_default_day: number
+}
+
+export async function listAnalysisProviders(): Promise<AnalysisProvidersResp> {
+  return apiFetch('/api/analysis/providers')
+}
+
+export async function createAnalysisProvider(payload: Partial<AnalysisProvider> & { api_key?: string; global?: boolean }) {
+  return apiFetch('/api/analysis/providers', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export async function updateAnalysisProvider(id: number, payload: Partial<AnalysisProvider> & { api_key?: string }) {
+  return apiFetch(`/api/analysis/providers/${id}`, { method: 'PUT', body: JSON.stringify(payload) })
+}
+
+export async function deleteAnalysisProvider(id: number) {
+  return apiFetch(`/api/analysis/providers/${id}`, { method: 'DELETE' })
+}
+
+/** 连通性自检：返回 {ok, error?, took_ms?, message?}（失败也是 200，看 ok 字段） */
+export async function testAnalysisProvider(id: number): Promise<{ ok: boolean; error?: string; took_ms?: number; message?: string }> {
+  return apiFetch(`/api/analysis/providers/${id}/test`, { method: 'POST' })
+}
+
+export async function getAnalysisSettings(): Promise<AnalysisSettings> {
+  return apiFetch('/api/analysis/settings')
+}
+
+export async function setAnalysisSettings(payload: Partial<Pick<AnalysisSettings, 'order' | 'allow_private' | 'rate_per_min' | 'rate_per_day'>>) {
+  return apiFetch('/api/analysis/settings', { method: 'PUT', body: JSON.stringify(payload) })
+}
+
+export interface AnalyseOpts {
+  path: string
+  filterChat: boolean
+  agree: boolean
+  providerId?: number
+  /** 可选：把"现象"也带上（用于生成求助文本） */
+  phenomenon?: string
+}
+
+export interface AnalyseResult {
+  record_id: number
+  provider_kind: AnalysisKind
+  provider?: { id: number; kind: AnalysisKind; name: string; is_ai: boolean; describe: string }
+  url?: string
+  raw_url?: string
+  size?: number
+  lines?: number
+  errors?: number
+  filtered_lines?: number
+  truncated?: number
+  attached?: number
+  expires_at?: string
+  ai_available: boolean
+  /** mclo.gs 的求助文本（面板已把环境信息填好，一键复制即可） */
+  help_text?: string
+  /** mclo.gs 的说明（这不是 AI 分析） */
+  notice?: string
+  /** 发生过回退时：每一家的失败原因 */
+  fallbacks?: { provider: string; kind: string; error: string; reason: string }[]
+  fallback_note?: string
+}
+
+export async function analyseInstance(instanceId: string, opts: AnalyseOpts): Promise<AnalyseResult> {
+  return apiFetch(`/api/instances/${instanceId}/analyse`, {
+    method: 'POST',
+    body: JSON.stringify({
+      path: opts.path,
+      filter_chat: opts.filterChat,
+      agree: opts.agree,
+      provider_id: opts.providerId || 0,
+      phenomenon: opts.phenomenon || '',
+    }),
+  })
+}
+
+export interface AnalysisRecord {
+  id: number
+  instance_id: string
+  logshare_id: string
+  url: string
+  raw_url: string
+  source_path: string
+  size: number
+  lines: number
+  errors: number
+  filtered_lines: number
+  truncated: boolean
+  created_at: string
+  expires_at: string
+  deleted: boolean
+  provider_kind: AnalysisKind
+  provider_id: number
+  analysis: string
+  cache_key: string
+}
+
+export async function listAnalysisHistory(instanceId: string): Promise<{ history: AnalysisRecord[]; limits: { per_min: number; per_day: number } }> {
+  return apiFetch(`/api/instances/${instanceId}/analysis`)
+}
+
+export async function deleteAnalysisRecord(recordId: number) {
+  return apiFetch(`/api/analysis/${recordId}`, { method: 'DELETE' })
+}
+
+/**
+ * 统一的 AI 分析流（SSE）。
+ *
+ * 与原来那条 `streamLogShareAI` 的关系：那条按"对方的日志 id"取流；
+ * 这条按**面板的记录 id**，于是自配平台（没有远端 id）也能走同一套渲染。
+ */
+export async function streamAnalysisAI(
+  recordId: number,
+  onEvent: (ev: { event: string; data: string }) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const headers: Record<string, string> = { Accept: 'text/event-stream' }
+  const token = getToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const resp = await fetch(`/api/analysis/ai/${recordId}`, { headers, signal })
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({} as any))
+    throw new Error(data.error || `HTTP ${resp.status}`)
+  }
+  if (!resp.body) throw new Error('响应没有可读流')
+
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    let idx: number
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const raw = buf.slice(0, idx)
+      buf = buf.slice(idx + 2)
+      let event = 'message'
+      const dataLines: string[] = []
+      for (const line of raw.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim()
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''))
+      }
+      onEvent({ event, data: dataLines.join('\n') })
+    }
+  }
+}
+
+// ---- 第三方日志分析（LogShare.CN）----
 
 export interface LogShareFile {
   path: string

@@ -6,7 +6,7 @@ import ThemeToggle from './ThemeToggle'
 import './AppShell.css'
 
 /** 全局导航项 */
-export type NavKey = 'dashboard' | 'instances' | 'monitor' | 'nodes' | 'tunnels' | 'audit' | 'users' | 'avatars' | 'account' | 'help'
+export type NavKey = 'dashboard' | 'instances' | 'monitor' | 'nodes' | 'tunnels' | 'audit' | 'users' | 'avatars' | 'providers' | 'account' | 'help'
 
 /**
  * 全局导航项的**唯一定义处**。
@@ -19,7 +19,7 @@ export type NavKey = 'dashboard' | 'instances' | 'monitor' | 'nodes' | 'tunnels'
  * 实例页那份会在此基础上插一个「告警」（那一项在实例页走弹窗而不是页面），
  * 见 InstanceDetail 的 GLOBAL_NAV。
  */
-export const NAV_ITEMS: { key: NavKey; label: string; icon: string; adminOnly?: boolean }[] = [
+export const NAV_ITEMS: { key: NavKey; label: string; icon: string; adminOnly?: boolean; providerAdmin?: boolean }[] = [
   { key: 'dashboard', label: '总览', icon: '▦' },
   { key: 'instances', label: '实例管理', icon: '▤' },
   { key: 'monitor', label: '节点监控', icon: '◔' },
@@ -31,12 +31,20 @@ export const NAV_ITEMS: { key: NavKey; label: string; icon: string; adminOnly?: 
   { key: 'users', label: '用户管理', icon: '☷', adminOnly: true },
   { key: 'avatars', label: '头像审核', icon: '◍', adminOnly: true },
   { key: 'audit', label: '审计日志', icon: '≡', adminOnly: true },
+  // 分析平台：配置日志分析的提供方（管理员与节点用户可配自己的）。
+  // 放在总导航而不是实例页里 —— 它是"我信任哪些平台"的全局设置，与某个实例无关。
+  { key: 'providers', label: '分析平台', icon: '⌘', providerAdmin: true },
   // 账户：所有角色都有。原来是弹窗，改成页面后能看到自己的实例、端口配额、磁盘与权限清单。
   { key: 'account', label: '账户', icon: '☺' },
   // 公告与帮助：公告是管理员对全体用户说话的地方，帮助是"面板怎么用"。
   // 两者同页 —— 用户想看"怎么用"时不用先猜是哪个入口。
   { key: 'help', label: '公告与帮助', icon: '※' },
 ]
+
+/** 是否能看到「分析平台」页：总管理员或节点用户（与后端 canManageProviders 一致） */
+export function canManageProviders(role?: string): boolean {
+  return role === 'admin' || role === 'nodeuser' || role === 'nodeadmin'
+}
 
 export interface NavBadge {
   /** 需要管理员权限才显示 */
@@ -91,8 +99,10 @@ export default function AppShell({
   children: ReactNode
 }) {
   const isAdmin = user?.role === 'admin'
+  const canProviders = canManageProviders(user?.role)
 
-  const items = NAV_ITEMS
+  // 两类可见性：adminOnly（总管理员）/ providerAdmin（管理员或节点用户）
+  const items = NAV_ITEMS.filter((it) => (!it.adminOnly || isAdmin) && (!it.providerAdmin || canProviders))
 
   if (bare) {
     return <div className="shell-bare">{children}</div>
@@ -107,18 +117,16 @@ export default function AppShell({
         </div>
 
         <nav className="shell-menu">
-          {items
-            .filter((it) => !it.adminOnly || isAdmin)
-            .map((it) => (
-              <button
-                key={it.key}
-                className={`shell-item ${active === it.key ? 'active' : ''}`}
-                onClick={() => onNavigate(it.key)}
-              >
-                <span className="shell-item-icon">{it.icon}</span>
-                <span>{it.label}</span>
-              </button>
-            ))}
+          {items.map((it) => (
+            <button
+              key={it.key}
+              className={`shell-item ${active === it.key ? 'active' : ''}`}
+              onClick={() => onNavigate(it.key)}
+            >
+              <span className="shell-item-icon">{it.icon}</span>
+              <span>{it.label}</span>
+            </button>
+          ))}
 
           {isAdmin && onOpenAlerts && (
             <button className="shell-item" onClick={onOpenAlerts}>

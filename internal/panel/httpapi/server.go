@@ -15,6 +15,7 @@ import (
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/portguard"
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/version"
 	"github.com/ATLCNND/ATL-MCPanel/internal/frp"
+	"github.com/ATLCNND/ATL-MCPanel/internal/panel/analysis"
 	"github.com/ATLCNND/ATL-MCPanel/internal/panel/auth"
 	"github.com/ATLCNND/ATL-MCPanel/internal/panel/dbbackup"
 	"github.com/ATLCNND/ATL-MCPanel/internal/panel/logshare"
@@ -99,18 +100,21 @@ type Server struct {
 	// aiRuns 正在后台跑的 AI 分析：分析不绑在浏览器连接上，
 	// 用户切页/关页后仍会跑完并落库（见 logshare.go 的 aiRunHub）。
 	aiRuns aiRunHub
+
+	// secretBox 分析平台 API Key 的加密存储（AES-GCM，明文不落库、不回显）。
+	// 见 internal/panel/analysis/secret.go 与 docs/ANALYSIS-PLUGGABLE.md 3.3。
+	secretBox *analysis.SecretBox
+	// rateLimiter 按用户的对外调用限额（D1b）：保护用户的 key 与公益额度。
+	rateLimiter *analysis.RateLimiter
 }
 
-// LogShareEnabled 第三方日志分析是否启用。
+// LogShareEnabled 日志分析（首选提供方 LogShare）是否启用。
 //
 // 取值优先级：**面板设置里的运行时开关 > config.yaml 的默认值**。
 //
-// 默认**关闭**（config.LogShareConfig 的说明）：多租户面板不该默认把租户的
-// 日志（含玩家名与聊天内容）送到第三方。管理员显式打开后前端才显示入口。
-//
-// 为什么要有运行时开关：这个功能涉及"把租户日志发给第三方"，管理员需要能随时
-// 一键关掉（对方服务变更、合规要求、事故处置）。若只能改配置文件+重启服务，
-// 现实中就会变成"没人去关、一直开着"。
+// 默认**开启**（D3：LogShare 是公益合作的首选提供方）。代价与三道闸见
+// config.LogShareConfig 的注释：每次上传仍需用户手动同意、聊天行默认过滤、
+// 管理员可在界面上立即关闭整个功能。
 func (s *Server) LogShareEnabled() bool {
 	if s.logShare == nil {
 		return false
@@ -118,7 +122,7 @@ func (s *Server) LogShareEnabled() bool {
 	if v, ok := s.settingGet(settingLogShareEnabled); ok {
 		return v == "true"
 	}
-	return s.logShareCfg.EnabledOr(false)
+	return s.logShareCfg.EnabledOr(true)
 }
 
 // settingLogShareEnabled 面板设置里"第三方日志分析"这个键。
@@ -160,6 +164,13 @@ func NewServer(d *sql.DB, a *auth.Service, n *nodemgr.Manager, opts Options) *Se
 	if log == nil {
 		log = logger.New("info")
 	}
+	// 分析平台密钥仓储：文件缺失时自动生成（见 OpenSecretBox 的注释）。
+	// 生成失败**不让面板起不来** —— 那是"用户自配平台"这一个功能不可用，
+	// 不值得把整个面板拖下水；后续用到密钥时会再次报错并说明原因。
+	secretBox, err := analysis.OpenSecretBox(analysisSecretPath(opts.DataDir))
+	if err != nil {
+		log.Warn("分析平台密钥不可用，自配分析平台将无法保存 API Key", "err", err)
+	}
 	s := &Server{
 		db:          d,
 		auth:        a,
@@ -188,6 +199,15 @@ func NewServer(d *sql.DB, a *auth.Service, n *nodemgr.Manager, opts Options) *Se
 		daemonGRPCListen:  opts.DaemonGRPCListen,
 		logShareCfg:       opts.LogShare,
 		logShareVer:       "atl-mcpanel/" + version.Short(),
+
+		// 分析平台：密钥仓储与限流器。**总是**创建 —— 密钥文件缺失时自动生成，
+		// 限流限额从面板设置里读（见 analysisSettings）。
+		secretBox:   secretBox,
+		rateLimiter: analysis.NewRateLimiter(0, 0),
+	}
+	// 设置里改过限额就以设置为准（默认值见 analysis.DefaultPerMinute/Day）
+	if st := s.analysisSettings(); st.RatePerMin > 0 {
+		s.rateLimiter.SetLimits(st.RatePerMin, st.RatePerDay)
 	}
 	// 日志分析客户端：**总是**创建（只是个 http.Client 包装，构造时不联网）。
 	//
@@ -241,6 +261,22 @@ func (s *Server) Handler() http.Handler {
 	// 面板身份信息（名称/版本/图标）：**免登录** —— 登录页要用它显示品牌与版本号
 	mux.HandleFunc("GET /api/meta", s.handleMeta)
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
+
+	// ---- 日志分析的可插拔化（提供方 / 密钥 / 限额）----
+	// 提供方：管理员与节点用户可以配置自己的；普通用户只看得到管理员配的全局项
+	mux.HandleFunc("GET /api/analysis/providers", s.requireAuth(s.handleListAnalysisProviders))
+	mux.HandleFunc("POST /api/analysis/providers", s.requireAuth(s.handleCreateAnalysisProvider))
+	mux.HandleFunc("PUT /api/analysis/providers/{id}", s.requireAuth(s.handleUpdateAnalysisProvider))
+	mux.HandleFunc("DELETE /api/analysis/providers/{id}", s.requireAuth(s.handleDeleteAnalysisProvider))
+	mux.HandleFunc("POST /api/analysis/providers/{id}/test", s.requireAuth(s.handleTestAnalysisProvider))
+	// 分析设置（顺序 / 内网开关 / 速率限制）：仅总管理员
+	mux.HandleFunc("GET /api/analysis/settings", s.requireAuth(s.handleGetAnalysisSettings))
+	mux.HandleFunc("PUT /api/analysis/settings", s.requireAdmin(s.handleSetAnalysisSettings))
+	// 统一的"发起分析"入口（按提供方链依次尝试）
+	mux.HandleFunc("POST /api/instances/{id}/analyse", s.requireAuth(s.handleInstanceAnalyse))
+	mux.HandleFunc("GET /api/instances/{id}/analysis", s.requireAuth(s.handleInstanceAnalysisHistory))
+	mux.HandleFunc("GET /api/analysis/ai/{record_id}", s.requireAuth(s.handleAnalysisAI))
+	mux.HandleFunc("DELETE /api/analysis/{record_id}", s.requireAuth(s.handleDeleteAnalysisRecord))
 
 	// 账号管理
 	// 注册由管理员控制，但「首个用户」需允许匿名自助创建为管理员 → 使用可选鉴权

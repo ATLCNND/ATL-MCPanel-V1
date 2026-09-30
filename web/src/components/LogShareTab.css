@@ -385,6 +385,163 @@
   font-size: 12.5px;
 }
 
+/* ---------------- 分析（提供方链 / 求助） ---------------- */
+
+/* 提供方选择与「现象」输入：都属于"这次要用什么方式分析" */
+.ls-pick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.ls-pick select {
+  font-family: inherit;
+  font-size: 12.5px;
+  padding: 3px 6px;
+}
+
+.ls-phenomenon {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.ls-phenomenon input {
+  font-family: inherit;
+  font-size: 12.5px;
+}
+
+/* 提供方标签（结果标题、历史条目上用） */
+.ls-prov-tag {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: var(--r-full);
+  background: var(--bg-subtle);
+  color: var(--text-3);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+/* 回退提示：换了提供方必须说清楚，不能静默换一家 */
+.ls-fallback {
+  margin-bottom: 10px;
+  padding: 9px 11px;
+  border-radius: var(--r);
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  color: var(--text-1);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.ls-fallback details {
+  margin-top: 5px;
+}
+
+.ls-fallback summary {
+  cursor: pointer;
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+
+.ls-fallback ul {
+  margin: 5px 0 0;
+  padding-left: 20px;
+  color: var(--text-2);
+}
+
+/* ---- mclo.gs 结果：链接 + 求助 ---- */
+.ls-help {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ls-help-lead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-1);
+}
+
+.ls-help-lead button {
+  font-size: 11.5px;
+  padding: 3px 9px;
+}
+
+.ls-help-errors {
+  font-size: 12px;
+  color: var(--warning);
+}
+
+.ls-help-box {
+  padding: 11px 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-subtle);
+}
+
+.ls-help-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+
+.ls-help-box .muted {
+  font-size: 11.5px;
+  line-height: 1.7;
+  margin: 0 0 8px;
+}
+
+/* 求助文本：等宽、可选中、限高 —— 用户要能一眼看完再复制 */
+.ls-help-text {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto;
+  user-select: all;
+}
+
+/* ---- 用户须知（首次使用 mclo.gs 时的必读清单）---- */
+.ls-notice-list {
+  margin: 4px 0 10px;
+  padding-left: 20px;
+  font-size: 12.5px;
+  line-height: 1.85;
+  color: var(--text-2);
+}
+
+.ls-notice-list li {
+  margin-bottom: 7px;
+}
+
+.ls-notice-list a {
+  color: var(--accent);
+}
+
 /* ---------------- 未启用 ---------------- */
 .ls-disabled {
   max-width: 640px;

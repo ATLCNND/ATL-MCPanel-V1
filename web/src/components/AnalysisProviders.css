@@ -1,0 +1,304 @@
+/* ============================================================================
+   「分析平台」页：提供方列表、链顺序、自检结果与管理员设置。
+   与 LogShareTab 一样属于"第三方能力"的界面，所以配色中性、强调归因。
+   ========================================================================== */
+
+.ap-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ap-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 12px 14px;
+}
+
+.ap-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+  margin-bottom: 10px;
+}
+
+.ap-card-title .spacer {
+  flex: 1;
+}
+
+.ap-card-sub {
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text-3);
+}
+
+/* ---------------- 链顺序 ---------------- */
+.ap-chain {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ap-chain-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  font-size: 12.5px;
+  background: var(--bg-base);
+}
+
+.ap-chain-idx {
+  flex: 0 0 20px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-full);
+}
+
+.ap-chain-name {
+  color: var(--text-1);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.ap-chain-reason {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-3);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------- 提供方条目 ---------------- */
+.ap-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ap-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+}
+
+.ap-item-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.ap-item-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+  flex-wrap: wrap;
+}
+
+.ap-item-desc {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.6;
+}
+
+.ap-item-note {
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.ap-item-ops {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+}
+
+.ap-item-ops button {
+  font-size: 11.5px;
+  padding: 4px 10px;
+}
+
+.ap-kind {
+  font-size: 10.5px;
+  font-weight: 500;
+  padding: 1px 7px;
+  border-radius: var(--r-full);
+  background: var(--bg-subtle);
+  color: var(--text-3);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.ap-kind.kind-logshare {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: var(--accent-solid);
+}
+
+.ap-kind.kind-mclogs {
+  background: var(--warning-bg);
+  color: var(--warning);
+  border-color: var(--warning-border);
+}
+
+.ap-global {
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: var(--r-full);
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.ap-off {
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: var(--r-full);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.ap-test-ok {
+  margin-top: 5px;
+  font-size: 12px;
+  color: var(--success);
+}
+
+.ap-test-fail {
+  margin-top: 5px;
+  font-size: 12px;
+  color: var(--danger);
+  word-break: break-word;
+}
+
+.ap-empty {
+  font-size: 12.5px;
+  color: var(--text-3);
+  padding: 8px 2px;
+  line-height: 1.7;
+}
+
+.ap-hint {
+  margin-top: 10px;
+  padding: 9px 11px;
+  border-radius: var(--r);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--text-2);
+}
+
+.ap-hint code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  background: var(--bg-base);
+  padding: 0 4px;
+  border-radius: 4px;
+}
+
+/* ---------------- 设置与表单 ---------------- */
+.ap-form-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.ap-form-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.ap-form-row input[type='number'],
+.ap-form-row input[type='text'] {
+  width: 110px;
+}
+
+.ap-check {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 7px !important;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.ap-ops {
+  margin-top: 10px;
+}
+
+.ap-form {
+  width: min(560px, 94vw);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.ap-form-head {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.ap-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.ap-form label em {
+  font-style: normal;
+  font-size: 11.5px;
+  color: var(--text-3);
+  line-height: 1.6;
+}
+
+.ap-form input,
+.ap-form textarea {
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.ap-form input[type='password'] {
+  font-family: var(--mono);
+}
+
+.ap-form-ops {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.ap-footnote {
+  font-size: 12px;
+}
