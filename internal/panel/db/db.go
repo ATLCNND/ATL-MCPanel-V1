@@ -60,9 +60,23 @@ func Open(driver, dsn string) (*sql.DB, error) {
 	}
 
 	if driver == "sqlite3" {
-		// SQLite 单写入者模型：限制连接数避免写冲突，配合 WAL 保证读不阻塞。
-		d.SetMaxOpenConns(4)
-		d.SetMaxIdleConns(4)
+		// SQLite 单写入者模型：连接数要够，但也不能无限（写会互相等）。
+		//
+		// ⚠️ 原来是 4 —— 2026-10-01 内测出过一次**面板整体卡死**：
+		// 某个 handler 在遍历 rows 期间又发起一次查询（占着连接要连接），
+		// 4 个连接几下就被占满成"外层结果集"，于是谁都拿不到第二个连接、
+		// 谁也不释放手里的那个，**互相等死**，此后所有需要数据库的接口
+		// （包括登录）永久挂起。
+		//
+		// 那一处的嵌套已经修掉（见 httpapi/instances.go），但池子本身也不该
+		// 小到"4 个并发慢查询就能把面板锁死"：WAL 下读者之间不互斥，
+		// 给到 16 是"够普通多用户面板用、又不会让写锁争抢变得难看"的折中。
+		// 超时与可观测性另外两道防线：
+		//   · 请求侧对数据库调用带 context 超时（拿不到连接要快速失败，不能挂死）；
+		//   · `GET /api/debug/dbpool`（仅管理员）直接返回 db.Stats()，一眼看出池满没满。
+		d.SetMaxOpenConns(16)
+		d.SetMaxIdleConns(8)
+		d.SetConnMaxIdleTime(5 * time.Minute)
 		d.SetConnMaxLifetime(time.Hour)
 	}
 

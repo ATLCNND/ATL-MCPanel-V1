@@ -439,6 +439,12 @@ type instanceView struct {
 	MemLimit     string `json:"mem_limit"`     // cgroup 内存上限（空 = 不限制）
 	DiskLimitMB  int64  `json:"disk_limit_mb"` // 磁盘软配额（MB，0 = 不限制）
 	DiskAutostop bool   `json:"disk_autostop"` // 超限自动停机
+
+	// 扫描阶段的中间值：**先读进内存、关掉 rows 之后**再算派生字段。
+	// 不能让"算派生字段"发生在遍历结果集期间 —— 那会占着连接再要连接，
+	// 连接池一小就死锁（2026-10-01 内测的真实事故，见 handleListInstances）。
+	diskAutostop int
+	expires      sql.NullTime
 	// 创建时按线路申请的穿透端口数：[{frps_id, count}]
 	//
 	// 放在创建时而不是之后补：多端口的需求来自模组/插件（BlueMap、Geyser 等），
@@ -507,25 +513,75 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 			&expires, &v.ExpiryDays, &v.ExpiryAutostop); err != nil {
 			continue
 		}
-		applyInstanceExtras(s, userID, role, v, diskAutostop, expires)
+		v.diskAutostop = diskAutostop
+		v.expires = expires
 		list = append(list, v)
 	}
+	// ⚠️ 先把 rows 关掉再算派生字段。
+	//
+	// 2026-10-01 内测的**面板整体卡死**就是这里来的：applyInstanceExtras 会查
+	// `instance_assignments`（拿用户对每个实例的权限级别），而这一步原来在
+	// **遍历 rows 的过程中**执行 —— 也就是"占着一个连接、再要一个连接"。
+	// 连接池只有 4 个：并发的列表请求很快就能把 4 个连接全占成"外层 rows"，
+	// 于是谁都要不到第二个连接、谁也不释放手里的那个，**互相等死**，
+	// 面板此后所有需要数据库的接口（包括登录）永久挂起。管理员碰不到是因为
+	// instanceLevel 对 admin 直接短路返回（不查库），普通用户/节点用户必中。
 	rows.Close()
+
+	// 权限级别改成**一次查询批量取**（原来是每个实例查一次，10 个实例就是 10 次往返）
+	levels := s.instanceLevels(userID, role)
+	for _, v := range list {
+		applyInstanceExtras(s, userID, role, v, levels)
+	}
 
 	s.reconcileInstanceStatus(r.Context(), list)
 	writeJSON(w, http.StatusOK, list)
 }
 
 // applyInstanceExtras 补齐扫描后的派生字段（避免两处分支各写一遍）。
-func applyInstanceExtras(s *Server, userID int64, role string, v *instanceView, diskAutostop int, expires sql.NullTime) {
-	v.DiskAutostop = diskAutostop == 1
-	v.Level, _ = s.instanceLevel(userID, role, v.InstanceID)
-	// 节点用户对自己管的实例至少是 owner（否则连控制台都进不去，
-	// 而"能创建"却"不能用"显然说不通）
-	if isNodeUserRole(role) && v.Level == "" && s.canManageNode(userID, role, v.NodeID) {
+//
+// levels 是**批量取好的**权限级别（见 instanceLevels），这里只做赋值 ——
+// 绝对不要在这里查库：调用点刚关掉 rows，但"在遍历结果集期间再查库"
+// 这个模式本身就容易把连接池锁死（见 handleListInstances 里的长注释）。
+func applyInstanceExtras(s *Server, userID int64, role string, v *instanceView, levels map[string]string) {
+	v.DiskAutostop = v.diskAutostop == 1
+	if role == RoleAdmin {
+		// admin 对一切实例都是 owner（与 instanceLevel 的短路一致）
 		v.Level = LevelOwner
+	} else {
+		v.Level = levels[v.InstanceID]
+		// 节点用户对自己管的实例至少是 owner（否则连控制台都进不去，
+		// 而"能创建"却"不能用"显然说不通）。
+		// 这一句在 rows 关闭之后执行，所以它再查库也不会造成"占着连接要连接"。
+		if isNodeUserRole(role) && v.Level == "" && s.canManageNode(userID, role, v.NodeID) {
+			v.Level = LevelOwner
+		}
 	}
-	v.ExpiresAt, v.ExpiryState, v.ExpiryDaysLeft = expiryView(expires)
+	v.ExpiresAt, v.ExpiryState, v.ExpiryDaysLeft = expiryView(v.expires)
+}
+
+// instanceLevels 一次取回"该用户对哪些实例有权限、分别是什么级别"。
+//
+// 替代"每个实例查一次"的写法：既少了一串往返，更重要的是让调用方能在
+// **关闭 rows 之后**再拿权限（否则就是占着连接要连接，池一小就死锁）。
+func (s *Server) instanceLevels(userID int64, role string) map[string]string {
+	out := map[string]string{}
+	if role == RoleAdmin {
+		return out // admin 对一切实例都是 owner，调用方会短路处理
+	}
+	rows, err := s.db.Query(
+		`SELECT instance_id, level FROM instance_assignments WHERE user_id = ?`, userID)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, level string
+		if err := rows.Scan(&id, &level); err == nil {
+			out[id] = level
+		}
+	}
+	return out
 }
 
 // expiryView 把到期时间换算成前端好用的三件套。

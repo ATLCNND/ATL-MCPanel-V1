@@ -75,6 +75,12 @@ type Server struct {
 	grpcMTLS    bool              // gRPC 是否已启用 mTLS
 	backup      *dbbackup.Manager // 面板数据库备份
 
+	// touchAt 记录"上次为用户累计在线时长"的内存时间戳（见 touchOnline）。
+	// 放在内存里是为了**避免每个请求都查一次库** —— 那次事故里，
+	// 54 个 goroutine 卡在这条查询上；这个功能不值得给数据库加这种负担。
+	touchMu sync.Mutex
+	touchAt map[int64]time.Time
+
 	daemonBinary      string               // 节点部署时下发的 Daemon 二进制路径
 	grpcPublicAddr    string               // 节点连接面板 gRPC 的地址
 	listenAddrOfGRPC  string               // 面板 gRPC 监听地址
@@ -260,6 +266,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	// 面板身份信息（名称/版本/图标）：**免登录** —— 登录页要用它显示品牌与版本号
 	mux.HandleFunc("GET /api/meta", s.handleMeta)
+	// 排查用：数据库连接池与运行时计数（仅总管理员，见 debug.go 的说明）
+	mux.HandleFunc("GET /api/debug/dbpool", s.requireAuth(s.handleDebugDBPool))
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
 
 	// ---- 日志分析的可插拔化（提供方 / 密钥 / 限额）----

@@ -31,15 +31,19 @@ func (s *Server) handleMyNodes(w http.ResponseWriter, r *http.Request) {
 	role := roleOf(r)
 
 	type nodeView struct {
-		ID        int64  `json:"id"`
-		Name      string `json:"name"`
-		IP        string `json:"ip"`
-		Status    string `json:"status"`
-		Instances int    `json:"instances"`
+		ID     int64  `json:"id"`
+		Name   string `json:"name"`
+		IP     string `json:"ip"`
+		Status string `json:"status"`
+		// Online 按心跳新鲜度算（见 nodestatus.go）：界面判断"能不能往这台放实例"
+		// 要看它，而不是看 status —— Daemon 失联时 status 不会自己变成 offline，
+		// 那样会把已经掉线的节点显示成可选。
+		Online    bool `json:"online"`
+		Instances int  `json:"instances"`
 	}
 
 	base := `
-		SELECT n.id, n.name, n.ip, n.status,
+		SELECT n.id, n.name, n.ip, n.status, n.last_seen,
 		       (SELECT COUNT(*) FROM instances i WHERE i.node_id = n.id)
 		FROM nodes n`
 
@@ -68,9 +72,11 @@ func (s *Server) handleMyNodes(w http.ResponseWriter, r *http.Request) {
 	list := []nodeView{}
 	for rows.Next() {
 		var v nodeView
-		if err := rows.Scan(&v.ID, &v.Name, &v.IP, &v.Status, &v.Instances); err != nil {
+		var lastSeen *time.Time
+		if err := rows.Scan(&v.ID, &v.Name, &v.IP, &v.Status, &lastSeen, &v.Instances); err != nil {
 			continue
 		}
+		v.Online = nodeOnline(v.Status, lastSeen)
 		// 节点 IP 只给总管理员。
 		//
 		// 节点用户只需要知道"我能把实例放到哪台机器上"（靠 name 就够），

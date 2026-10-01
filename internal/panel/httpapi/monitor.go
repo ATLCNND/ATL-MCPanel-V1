@@ -41,7 +41,7 @@ func (s *Server) handleMonitorNodes(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	const staleAfter = 90 // 与告警判定保持一致：心跳间隔 10s，90s 未上报视为离线
+	const staleAfter = int(nodeStaleAfter / time.Second) // 与 nodestatus.go 同一个口径
 
 	list := []nodeMonitorView{}
 	for rows.Next() {
@@ -54,8 +54,8 @@ func (s *Server) handleMonitorNodes(w http.ResponseWriter, r *http.Request) {
 		v.StaleAfterS = staleAfter
 		if lastSeen != nil {
 			v.LastSeen = lastSeen.Format(time.RFC3339)
-			v.Online = v.Status == "online" && time.Since(*lastSeen) < staleAfter*time.Second
 		}
+		v.Online = nodeOnline(v.Status, lastSeen)
 		list = append(list, v)
 	}
 	rows.Close()

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -92,29 +93,66 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 //
 // 策略：以相邻两次请求的间隔累加，但**单次间隔上限 5 分钟** ——
 // 否则用户关掉页面去睡觉，下次打开会被计入一大段"在线"。
-// 同时做写节流：间隔不足 30 秒不写库，避免每个请求都产生一次 UPDATE。
+//
+// 2026-10-01 的两处改动（都来自"面板整体卡死"那次事故）：
+//
+//  1. **先在内存里节流**，再谈查库。原来每个已登录请求都要先跑一条 SELECT
+//     （判断距上次活跃多久），一次压测下来栈里有 54 个 goroutine 卡在这条查询上 ——
+//     它给数据库加的负担与"累计在线时长"这个功能完全不成比例。
+//     现在同一用户 30 秒内最多碰一次库（与原来的写节流窗口一致，语义不变）。
+//  2. **带 3 秒超时**：拿不到连接就放弃这次统计。这个功能是锦上添花，
+//     绝不能因为它让用户的请求挂死（池被占满时，原来的写法会一直等下去）。
+//
+// 时间基准仍在库里（last_active_at），所以进程重启不会把在线时长算重。
 func (s *Server) touchOnline(userID int64) {
+	if !s.touchAllowed(userID) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
 	var last sql.NullTime
-	if err := s.db.QueryRow(`SELECT last_active_at FROM users WHERE id = ?`, userID).
+	if err := s.db.QueryRowContext(ctx, `SELECT last_active_at FROM users WHERE id = ?`, userID).
 		Scan(&last); err != nil {
 		return
 	}
 	now := time.Now()
 	if last.Valid {
 		gap := now.Sub(last.Time)
-		if gap < 30*time.Second {
+		if gap < touchOnlineThrottle {
 			return // 节流：过近的请求不写库
 		}
 		add := int64(gap.Seconds())
 		if add > 300 {
 			add = 300 // 上限 5 分钟，避免把长时间离开算成在线
 		}
-		_, _ = s.db.Exec(
+		_, _ = s.db.ExecContext(ctx,
 			`UPDATE users SET total_online_seconds = total_online_seconds + ?, last_active_at = CURRENT_TIMESTAMP WHERE id = ?`,
 			add, userID)
 		return
 	}
-	_, _ = s.db.Exec(`UPDATE users SET last_active_at = CURRENT_TIMESTAMP WHERE id = ?`, userID)
+	_, _ = s.db.ExecContext(ctx, `UPDATE users SET last_active_at = CURRENT_TIMESTAMP WHERE id = ?`, userID)
+}
+
+// touchOnlineThrottle 同一用户两次碰库之间的最小间隔。
+const touchOnlineThrottle = 30 * time.Second
+
+// touchAllowed 内存节流：同一用户 30 秒内只允许碰一次库。
+//
+// 表本身不需要清理：一个用户一行时间戳，几千用户也就几十 KB；
+// 真到了需要清理的规模，说明该换架构了（这条注释就是提醒）。
+func (s *Server) touchAllowed(userID int64) bool {
+	now := time.Now()
+	s.touchMu.Lock()
+	defer s.touchMu.Unlock()
+	if s.touchAt == nil {
+		s.touchAt = map[int64]time.Time{}
+	}
+	if last, ok := s.touchAt[userID]; ok && now.Sub(last) < touchOnlineThrottle {
+		return false
+	}
+	s.touchAt[userID] = now
+	return true
 }
 
 // handleUploadAvatar POST /api/my/avatar （multipart/form-data，字段名 avatar）

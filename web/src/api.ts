@@ -589,7 +589,10 @@ export interface MyNode {
   id: number
   name: string
   ip: string
+  /** 原始状态列（Daemon 失联时不会自己变）—— 判断在线请用 online */
   status: string
+  /** 按心跳新鲜度算出来的在线状态 */
+  online: boolean
   instances: number
 }
 
@@ -879,10 +882,15 @@ export interface NodeInfo {
   ssh_user: string
   ssh_port: number
   has_auth: boolean
+  /** 数据库里的原始状态列。Daemon 失联时它不会自己变 —— 判断在线请用 online */
   status: string
+  /** 按心跳新鲜度算出来的在线状态（90 秒没有心跳即视为离线） */
+  online: boolean
   cpu: number
   mem: number
   last_seen: string
+  /** 心跳距今秒数（-1 = 从未上报） */
+  last_seen_age_s: number
   instances: number
 }
 

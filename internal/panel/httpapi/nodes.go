@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ATLCNND/ATL-MCPanel/internal/panel/nodeinstall"
 )
@@ -31,10 +32,16 @@ type nodeView struct {
 	SSHPort   int    `json:"ssh_port"`
 	HasAuth   bool   `json:"has_auth"`
 	Status    string `json:"status"`
-	CPU       int    `json:"cpu"`
-	Mem       int64  `json:"mem"`
-	LastSeen  string `json:"last_seen"`
-	Instances int    `json:"instances"`
+	// Online 界面该用的"在线/离线"：按心跳新鲜度算出来的（见 nodestatus.go）。
+	// status 只是数据库里的原始列——Daemon 失联时它**不会**自己变成 offline，
+	// 只看它会把"已经掉线 4 分钟的节点"显示成在线。
+	Online   bool   `json:"online"`
+	CPU      int    `json:"cpu"`
+	Mem      int64  `json:"mem"`
+	LastSeen string `json:"last_seen"`
+	// LastSeenAgeS 心跳距今秒数（-1 = 从未上报）：排查"到底断了多久"时最直观
+	LastSeenAgeS int `json:"last_seen_age_s"`
+	Instances    int `json:"instances"`
 }
 
 // handleListNodes GET /api/nodes
@@ -53,12 +60,20 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var v nodeView
 		var auth sql.NullString
-		var lastSeen sql.NullString
+		// last_seen 直接扫成时间（与 monitor.go / scheduler.go 一致）。
+		// 早先这里扫的是字符串，结果只能原样丢给前端 —— 判不了新鲜度，
+		// 也就没法回答"这个节点到底断了多久"。
+		var lastSeen *time.Time
 		if err := rows.Scan(&v.ID, &v.Name, &v.IP, &v.SSHUser, &v.SSHPort, &auth, &v.Status, &v.CPU, &v.Mem, &lastSeen); err != nil {
 			continue
 		}
 		v.HasAuth = auth.String != ""
-		v.LastSeen = lastSeen.String
+		v.LastSeenAgeS = -1
+		if lastSeen != nil {
+			v.LastSeen = lastSeen.Format("2006-01-02 15:04:05")
+			v.LastSeenAgeS = int(time.Since(*lastSeen).Seconds())
+		}
+		v.Online = nodeOnline(v.Status, lastSeen)
 		_ = s.db.QueryRow(`SELECT COUNT(*) FROM instances WHERE node_id = ?`, v.ID).Scan(&v.Instances)
 		list = append(list, v)
 	}

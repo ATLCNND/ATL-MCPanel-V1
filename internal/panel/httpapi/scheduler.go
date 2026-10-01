@@ -73,15 +73,10 @@ func (s *Server) StartScheduler() {
 			return resp.Status, nil
 		},
 		NodeProbe: func(nodeID int64, nodeName string) (bool, int64, error) {
-			var lastSeen *time.Time
-			var status string
-			if err := s.db.QueryRow(`SELECT status, last_seen FROM nodes WHERE id = ?`, nodeID).
-				Scan(&status, &lastSeen); err != nil {
-				return false, 0, err
-			}
-			// 心跳间隔 10 秒，超过 90 秒未上报视为离线
-			online := status == "online" && lastSeen != nil && time.Since(*lastSeen) < 90*time.Second
-			return online, s.nodeFreeDiskMB(nodeID), nil
+			// 判定口径统一在 nodestatus.go（心跳间隔 10s，90s 未上报视为离线）。
+			// 以前这里、monitor.go 与 /api/nodes 各写一份，断网测试时就露过馅：
+			// 同一时刻监控页说离线、节点列表还说在线。
+			return nodeOnlineFromDB(s.db, nodeID), s.nodeFreeDiskMB(nodeID), nil
 		},
 		// 定时指令任务（开机 / 关机 / 游戏指令）的执行体。
 		// 由调度器判断"谁到期了"，这里只负责把动作落到 Daemon。

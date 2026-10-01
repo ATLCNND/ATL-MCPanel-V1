@@ -376,7 +376,7 @@ export default function Instances({ onOpen }: {
                   <option value="">— 选择节点 —</option>
                   {nodes.map((n) => (
                     <option key={n.id} value={n.id}>
-                      {n.name}{n.ip ? `（${n.ip}）` : ''}{n.status !== 'online' ? ' · 离线' : ''} · 已有 {n.instances} 个实例
+                      {n.name}{n.ip ? `（${n.ip}）` : ''}{!n.online ? ' · 离线' : ''} · 已有 {n.instances} 个实例
                     </option>
                   ))}
                 </select>
