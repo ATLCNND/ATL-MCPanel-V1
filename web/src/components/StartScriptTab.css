@@ -176,6 +176,25 @@
   flex: 1;
 }
 
+/* ---- JDK 选择（与容器化那块同一套外观，只是多一行"下拉 + 保存"） ---- */
+.java-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.java-row select {
+  flex: 1;
+  min-width: 260px;
+  max-width: 100%;
+}
+
+.java-box .container-desc {
+  margin-bottom: 0;
+}
+
 .ctr-switch {
   display: inline-flex;
   align-items: center;

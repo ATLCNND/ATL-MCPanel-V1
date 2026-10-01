@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react'
 import {
   ContainerState,
+  JavaRuntime,
   StartScriptState,
   getContainerState,
+  getInstanceJava,
   getStartScript,
   setContainerEnabled,
+  setInstanceJava,
   setStartScript,
 } from '../api'
 import './StartScriptTab.css'
@@ -25,6 +28,12 @@ export default function StartScriptTab({ instanceId, canWrite, running, isAdmin 
   const [ctr, setCtr] = useState<ContainerState | null>(null)
   const [ctrErr, setCtrErr] = useState('')
   const [ctrBusy, setCtrBusy] = useState(false)
+  // JDK：节点上装了哪些、这个实例当前选了哪个（换 JDK 是本次新增的能力，
+  // 以前只在建实例时能选，已有实例没有任何入口）
+  const [java, setJava] = useState<{ current: string; runtimes: JavaRuntime[]; fallback: string; node_error: string } | null>(null)
+  const [javaDraft, setJavaDraft] = useState('')
+  const [javaErr, setJavaErr] = useState('')
+  const [javaBusy, setJavaBusy] = useState(false)
 
   const load = async () => {
     try {
@@ -41,6 +50,14 @@ export default function StartScriptTab({ instanceId, canWrite, running, isAdmin 
       setCtrErr('')
     } catch (e: any) {
       setCtrErr(e.message)
+    }
+    try {
+      const j = await getInstanceJava(instanceId)
+      setJava(j)
+      setJavaDraft(j.current)
+      setJavaErr('')
+    } catch (e: any) {
+      setJavaErr(e.message)
     }
   }
 
@@ -75,6 +92,21 @@ export default function StartScriptTab({ instanceId, canWrite, running, isAdmin 
       setError(e.message)
     } finally {
       setBusy(false)
+    }
+  }
+
+  // 保存 JDK 选择。它写的是**节点上的实例元数据**（instance.json），
+  // 重启实例后生效 —— 所以成功提示里一定带上这一句，不留"改了却没变"的错觉。
+  const saveJava = async () => {
+    setJavaBusy(true); setJavaErr(''); setMsg('')
+    try {
+      const r = await setInstanceJava(instanceId, javaDraft)
+      setMsg(r.message || 'JDK 已更新（重启实例后生效）')
+      await load()
+    } catch (e: any) {
+      setJavaErr(e.message)
+    } finally {
+      setJavaBusy(false)
     }
   }
 
@@ -131,6 +163,56 @@ export default function StartScriptTab({ instanceId, canWrite, running, isAdmin 
             <strong>默认 java 命令</strong> —— <code>java -Xms… -Xmx… -jar 核心.jar nogui</code>
           </li>
         </ol>
+      </div>
+
+      {/* JDK：以前只有建实例时能选，已有实例没有任何入口（用户反馈"JDK 修改没实现"）。
+          与容器化那块并列放，因为两者都属于"启动环境"。 */}
+      <div className="container-box java-box">
+        <div className="container-head">
+          <strong>Java 版本（JDK）</strong>
+          <span className="muted">
+            当前：<span className="mono">{java?.current || '自动（PATH 上的 java）'}</span>
+          </span>
+          <div className="spacer" />
+        </div>
+
+        {javaErr && <div className="error-banner">{javaErr}</div>}
+
+        {java && (
+          <>
+            {java.node_error && (
+              <div className="warn-banner">
+                读不到节点上的 JDK 列表（{java.node_error}）—— 仍可手填版本号或绝对路径。
+              </div>
+            )}
+            <div className="java-row">
+              <select value={javaDraft} onChange={(e) => setJavaDraft(e.target.value)} disabled={!canWrite || javaBusy}>
+                <option value="">自动（用 PATH 上的 java{java.fallback ? `：${java.fallback}` : ''}）</option>
+                {java.runtimes.map((r) => (
+                  <option key={r.path} value={r.label}>
+                    Java {r.label}{r.version ? `（${r.version}）` : ''} · {r.home || r.path}
+                  </option>
+                ))}
+                {/* 当前值不在探测结果里（例如手填的绝对路径、或节点上刚卸载的版本）：
+                    补一个选项，否则下拉会显示成"自动"——那是在骗人 */}
+                {javaDraft !== '' && !java.runtimes.some((r) => r.label === javaDraft) && (
+                  <option value={javaDraft}>{javaDraft}（当前值，节点未探测到）</option>
+                )}
+              </select>
+              <button className="primary" onClick={saveJava}
+                disabled={!canWrite || javaBusy || javaDraft === (java?.current || '')}>
+                {javaBusy ? '保存中…' : '保存'}
+              </button>
+            </div>
+            <div className="container-desc">
+              选项来自 Daemon 对该节点上<b>实际安装的 JDK</b> 的探测；保存后写进实例元数据，
+              <b>重启实例后生效</b>。
+              {running && '实例正在运行 —— 当前进程仍在用启动时选定的那个 JDK。'}
+              {!java.runtimes.length && ' 节点上暂未探测到 JDK，将回退到 PATH 上的 java。'}
+            </div>
+            {!canWrite && <div className="warn-banner">需要实例所有者（owner）及以上权限才能修改。</div>}
+          </>
+        )}
       </div>
 
       {/* 容器化隔离：安全属性，值得单独一块、且把"当前到底有没有隔离"说明白 */}

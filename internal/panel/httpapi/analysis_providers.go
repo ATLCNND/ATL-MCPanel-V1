@@ -24,6 +24,7 @@ const (
 	settingAnalysisRateMin     = "analysis_rate_per_min"
 	settingAnalysisRateDay     = "analysis_rate_per_day"
 	settingAnalysisRecommended = "analysis_show_free_tip"
+	settingAnalysisHelpTmpl    = "analysis_help_template"
 )
 
 // analysisSettings 一次读取全部分析设置（带默认值）。
@@ -32,6 +33,9 @@ type analysisSettings struct {
 	AllowPrivate bool
 	RatePerMin   int
 	RatePerDay   int
+	// HelpTemplate 求助文本模板（mclo.gs 保底通道用来生成"可以直接贴出去"的求助帖）。
+	// 空 = 用内置默认模板（见 analysis.DefaultHelpTemplate）。
+	HelpTemplate string
 }
 
 func (s *Server) analysisSettings() analysisSettings {
@@ -59,7 +63,38 @@ func (s *Server) analysisSettings() analysisSettings {
 			out.RatePerDay = n
 		}
 	}
+	if v, ok := s.settingGet(settingAnalysisHelpTmpl); ok && strings.TrimSpace(v) != "" {
+		out.HelpTemplate = v
+	}
 	return out
+}
+
+// helpTemplate 当前**生效**的求助模板。
+//
+// 注意：管理员没改过时它返回的是内置默认模板的原文，而不是空串 ——
+// 界面拿它直接填进编辑框、也直接显示给用户看，"生效值"才是有意义的东西。
+// 想判断"是不是还没被改过"，看 analysisSettings().HelpTemplate 是否为空。
+func (s *Server) helpTemplate() string {
+	if v := strings.TrimSpace(s.analysisSettings().HelpTemplate); v != "" {
+		return v
+	}
+	return analysis.DefaultHelpTemplate
+}
+
+// helpTextFor 用**管理员配置的模板**生成求助文本。
+//
+// info 来自 instanceBrief（实例名/核心/Java/内存/运行方式），
+// 缺哪个占位符就少哪一行（RenderHelp 会把整行都是空占位符的行丢掉）。
+func (s *Server) helpTextFor(info map[string]string, phenomenon, url, raw string, errors int) string {
+	errStr := ""
+	if errors > 0 {
+		errStr = strconv.Itoa(errors)
+	}
+	return analysis.RenderHelp(s.helpTemplate(), analysis.HelpVars{
+		Instance: info["name"], Panel: s.displayName(), URL: url, RawURL: raw, Errors: errStr,
+		Core: info["core"], Java: info["java"], Mem: info["mem"], Runtime: info["runtime"],
+		Phenomenon: phenomenon,
+	})
 }
 
 // analysisSecretPath 分析平台主密钥的路径（与数据库同目录，随 data/ 一起备份）。
@@ -451,6 +486,9 @@ func (s *Server) handleTestAnalysisProvider(w http.ResponseWriter, r *http.Reque
 // ---- 接口：分析设置 ----
 
 // handleGetAnalysisSettings GET /api/analysis/settings
+//
+// help_template 返回**当前生效的模板原文**（含 {占位符}）与内置默认值：
+// 界面要能同时给出"现在长什么样"和"想恢复默认时该填什么"。
 func (s *Server) handleGetAnalysisSettings(w http.ResponseWriter, r *http.Request) {
 	st := s.analysisSettings()
 	perMin, perDay := s.rateLimiter.Limits()
@@ -463,6 +501,11 @@ func (s *Server) handleGetAnalysisSettings(w http.ResponseWriter, r *http.Reques
 		"logshare_on":      s.LogShareEnabled(),
 		"rate_default_min": analysis.DefaultPerMinute,
 		"rate_default_day": analysis.DefaultPerDay,
+
+		"help_template":             s.helpTemplate(),
+		"help_template_default":     analysis.DefaultHelpTemplate,
+		"help_template_is_default":  strings.TrimSpace(st.HelpTemplate) == "",
+		"help_placeholders":         analysis.HelpPlaceholders(),
 	})
 }
 
@@ -477,6 +520,7 @@ func (s *Server) handleSetAnalysisSettings(w http.ResponseWriter, r *http.Reques
 		AllowPrivate *bool     `json:"allow_private"`
 		RatePerMin   *int      `json:"rate_per_min"`
 		RatePerDay   *int      `json:"rate_per_day"`
+		HelpTemplate *string   `json:"help_template"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "无效请求体")
@@ -528,7 +572,20 @@ func (s *Server) handleSetAnalysisSettings(w http.ResponseWriter, r *http.Reques
 		// 立刻生效（限流器是常驻对象）
 		s.rateLimiter.SetLimits(perMin, perDay)
 	}
-	s.audit(r, "analysis_settings_update", "", "更新了分析平台设置（顺序/内网开关/速率限制）")
+	if req.HelpTemplate != nil {
+		tmpl := *req.HelpTemplate
+		if err := analysis.ValidateHelpTemplate(tmpl); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		// 存空 = 恢复默认（而不是"生成空文本"）：这样界面上"恢复默认"按钮
+		// 不需要知道默认模板长什么样，语义也不会随时间漂移。
+		if err := s.settingSet(settingAnalysisHelpTmpl, strings.TrimSpace(tmpl)); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	s.audit(r, "analysis_settings_update", "", "更新了分析平台设置（顺序/内网开关/速率限制/求助模板）")
 	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "设置已保存并立即生效"})
 }
 

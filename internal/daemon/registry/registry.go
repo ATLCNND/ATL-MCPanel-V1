@@ -164,6 +164,22 @@ func (r *Registry) registerContainerInstance(m Meta, dir, sdir string) *mcproces
 			apply(inst)
 			slog.Info("已接管运行中的实例容器", "instance", m.ID,
 				"container", container.NameOf(m.ID), "pid", st.Pid)
+			// 接管来的容器**未必还有人采集输出**：实例的 stdout 原本是靠
+			// 启动它的那个 `docker run` CLI 重定向进 logs/console.log 的。
+			// unit 用 KillMode=control-group（默认）时，重启会把 CLI 一起收掉，
+			// 而**容器本身在 dockerd 的 cgroup 里照常运行** —— 于是日志文件停在
+			// 被接管的那一刻，用户对着一个"没有新内容"的控制台，很容易以为实例卡死。
+			// 用 KillMode=process 时 CLI 会活下来继续写，那就不能再补一个跟随进程
+			//（否则同一行会被写两遍）—— 两种情况都由 EnsureContainerLogFollow 判断。
+			// （2026-09-30 起，见 mcprocess.Instance.EnsureContainerLogFollow）
+			following, err := inst.EnsureContainerLogFollow()
+			if err != nil {
+				slog.Warn("重新跟随容器输出失败，控制台可能停在接管时刻",
+					"instance", m.ID, "error", err)
+				noteConsoleInterrupted(dir, m.ID)
+			} else if following {
+				slog.Info("容器输出已有人采集", "instance", m.ID, "container", container.NameOf(m.ID))
+			}
 			return inst
 		}
 		if err != nil {
@@ -317,6 +333,35 @@ func (r *Registry) Create(m Meta) (*mcprocess.Instance, error) {
 	return inst, nil
 }
 
+// noteConsoleInterrupted 在**没能重新跟随容器输出**时，往 console.log 末尾追加一句说明。
+//
+// 这是兜底文案，正常路径不走它：接管运行中的容器时 registry 会补一条
+// `docker logs -f`（见 mcprocess.FollowContainerLogs），输出会照常接上。
+// 只有当那条命令起不来（docker 不可用、容器名对不上等）时才落到这里 ——
+// 那时用户看到的是一个"停在某个时间点、再也不更新"的控制台，
+// 最自然的猜测是"服务端卡死了"，所以必须把原因与恢复办法写进控制台本身。
+//
+// 失败只记日志：写不进去（目录只读、磁盘满）不该让实例注册不上。
+func noteConsoleInterrupted(dir, instanceID string) {
+	logPath := filepath.Join(dir, "logs", "console.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		slog.Warn("写控制台说明失败", "instance", instanceID, "error", err)
+		return
+	}
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		slog.Warn("写控制台说明失败", "instance", instanceID, "error", err)
+		return
+	}
+	defer f.Close()
+	msg := "\r\n[平台] 本实例在节点服务重启前就已启动，平台已重新接管它（状态、端口、监控都正常）。" +
+		"但控制台输出无法接续 —— 重新跟随容器输出的进程没能起来，" +
+		"所以上面最后一行之后不会再有新内容。在「控制台」页点一次「重启」即可恢复输出。\r\n"
+	if _, err := f.WriteString(msg); err != nil {
+		slog.Warn("写控制台说明失败", "instance", instanceID, "error", err)
+	}
+}
+
 // Load 从磁盘恢复所有实例（Daemon 启动时调用）。
 // 若实例目录中的 PID 文件指向仍存活的进程，则接管为 running 状态。
 func (r *Registry) Load() (loaded int, adopted int) {
@@ -460,6 +505,32 @@ func (r *Registry) SetJarPath(id, jarPath string) error {
 		return fmt.Errorf("读取实例元数据失败: %w", err)
 	}
 	m.JarPath = jarPath
+	if err := writeMeta(sdir, m); err != nil {
+		return fmt.Errorf("写入实例元数据失败: %w", err)
+	}
+	return nil
+}
+
+// SetJavaVersion 更新实例使用的 JDK 并持久化到 instance.json（下次启动生效）。
+//
+// 与 SetJarPath 不同，**不要求实例处于停止状态**：换 JDK 不会动正在跑的那个 JVM
+//（它启动时就把解释器定死了），只影响下一次启动 —— 为此逼用户先停服没有意义。
+// 面板会把"下次启动生效"写在界面上，不留"改了却没变"的错觉。
+//
+// 取值与建实例时一致：主版本号（"21"）或 java 可执行文件的绝对路径；空 = 自动（PATH）。
+func (r *Registry) SetJavaVersion(id, javaVersion string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, ok := r.instances[id]; !ok {
+		return fmt.Errorf("实例不存在")
+	}
+	sdir := filepath.Join(r.stateDir, id)
+	m, err := readMeta(sdir)
+	if err != nil {
+		return fmt.Errorf("读取实例元数据失败: %w", err)
+	}
+	m.JavaVersion = javaVersion
 	if err := writeMeta(sdir, m); err != nil {
 		return fmt.Errorf("写入实例元数据失败: %w", err)
 	}

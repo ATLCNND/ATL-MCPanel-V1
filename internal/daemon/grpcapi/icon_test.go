@@ -28,6 +28,47 @@ func TestFindIconAbsent(t *testing.T) {
 	}
 }
 
+// world/ 下的图标是**兜底**（2026-09-30 用户问"world 文件夹的 icon 会不会找"）：
+// 有些整合包/教程把图标放世界目录里，而原版只认工作目录。
+func TestFindIconInWorldDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "world"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeIcon(t, filepath.Join(dir, "world"), "icon.png", 128)
+
+	ic, ok := findIcon(dir)
+	if !ok {
+		t.Fatal("world/icon.png 应当被认出来（兜底档）")
+	}
+	if ic.Name != filepath.Join("world", "icon.png") {
+		t.Errorf("应返回相对实例目录的路径，实际 %q", ic.Name)
+	}
+	// 路径必须是可打开的（GetInstanceIcon 直接 Join(dir, Name)）
+	if _, err := os.Stat(filepath.Join(dir, ic.Name)); err != nil {
+		t.Errorf("拼出来的路径打不开: %v", err)
+	}
+}
+
+// 根目录里的图标要**压过** world/ 里的：放在 world 只可能是"用户放错了地方"，
+// 不该盖过位置正确的那个。
+func TestFindIconRootBeatsWorld(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "world"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeIcon(t, filepath.Join(dir, "world"), "server-icon.png", 300)
+	writeIcon(t, dir, "icon.png", 100)
+
+	ic, ok := findIcon(dir)
+	if !ok {
+		t.Fatal("应该找到图标")
+	}
+	if ic.Name != "icon.png" {
+		t.Errorf("根目录的 icon.png 应优先于 world/ 下的，实际 %q", ic.Name)
+	}
+}
+
 // server-icon.png 是原版约定，优先级要高于 icon.png。
 func TestFindIconPrefersServerIcon(t *testing.T) {
 	dir := t.TempDir()

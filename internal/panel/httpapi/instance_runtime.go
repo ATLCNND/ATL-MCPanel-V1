@@ -41,12 +41,25 @@ func (s *Server) handleInstanceRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 管理员为该实例配置的对外域名（在「穿透管理」里填写）
-	var domain string
-	_ = s.db.QueryRow(
-		"SELECT display_domain FROM tunnels WHERE instance_id = ? AND display_domain != '' ORDER BY id LIMIT 1",
-		instanceID,
-	).Scan(&domain)
+	// 该实例的对外地址（「穿透管理」里配的域名 + 这条隧道的端口）。
+	//
+	// 以前这里直接把**隧道级原始值**返回给前端，前端又优先用它 ——
+	// 管理员只填域名不填端口时，实例页顶部就显示成 `mc.example.com`，
+	// 玩家拿这个地址连不上（端口明明就在旁边一列里）。
+	// 现在统一走 publicAddress：域名归一化 + 按需补端口。
+	var publicAddr string
+	{
+		var tunnelDomain, lineDomain, lineHost string
+		var remotePort int32
+		_ = s.db.QueryRow(`
+			SELECT COALESCE(t.display_domain,''), COALESCE(f.display_domain,''), COALESCE(f.host,''), t.remote_port
+			FROM tunnels t LEFT JOIN frps_servers f ON f.id = t.frps_id
+			WHERE t.instance_id = ? ORDER BY t.remote_port LIMIT 1`,
+			instanceID).Scan(&tunnelDomain, &lineDomain, &lineHost, &remotePort)
+		if remotePort > 0 {
+			publicAddr = publicAddress(tunnelDomain, lineDomain, lineHost, remotePort)
+		}
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"instance_id":    resp.InstanceId,
@@ -62,7 +75,8 @@ func (s *Server) handleInstanceRuntime(w http.ResponseWriter, r *http.Request) {
 		"net_tx_rate":    resp.NetTxRate,
 		"net_rx_total":   resp.NetRxTotal,
 		"net_tx_total":   resp.NetTxTotal,
-		"display_domain": domain,
+		// public_address 才是"该连的地址"；display_domain 保留给需要原始值的界面
+		"public_address": publicAddr,
 		"net_scope":      resp.NetScope,
 		// 运行提示（空 = 正常）：JDK 回退、cgroup 限额没生效。
 		// 这两条以前只写进 daemon 内存，界面上看不到 —— 于是"选了 17 却在跑 21"

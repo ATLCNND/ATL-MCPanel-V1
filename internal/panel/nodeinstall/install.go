@@ -39,6 +39,15 @@ type Options struct {
 	GRPCListen   string // Daemon 反向 gRPC 监听，默认 ":9091"
 	ServiceName  string // systemd 单元名，默认 atlmcpanel-daemon
 
+	// FrpcBinary 穿透客户端（可选）。有就一并下发 —— Daemon 用 exec.LookPath("frpc")
+	// 找它，节点上没有 frpc 时"给实例开公网端口"整块不可用，而让用户自己去 GitHub
+	// 下 frp 完全没有必要。为空时跳过并只提示，不算失败（穿透是可选能力）。
+	FrpcBinary []byte
+
+	// InstanceDir 节点上的实例目录（留空 = 沿用节点现有配置里的值；
+	// 节点上还没有配置时退回 <安装目录>/instances）。见 reuseInstanceDir。
+	InstanceDir string
+
 	// mTLS 材料（可为空表示明文）
 	CACert     []byte
 	ClientCert []byte
@@ -200,7 +209,9 @@ func (c *Client) Deploy(o Options) (*Result, error) {
 
 	dir := o.RemoteDir
 	if dir == "" {
-		dir = "/opt/mcpanel"
+		// 与 config 的默认保持一致：**独立于面板目录**。
+		// 用面板目录会让节点安装重写面板自己的 config.yaml（丢掉 TLS/端口设置）。
+		dir = "/opt/atl-node"
 	}
 	svc := o.ServiceName
 	if svc == "" {
@@ -224,10 +235,22 @@ func (c *Client) Deploy(o Options) (*Result, error) {
 		return nil, fmt.Errorf("创建目录失败: %w", err)
 	}
 	addStep("创建目录 " + dir)
+	// 面板目录与节点目录相同时给出**显式警告**：这不是不能跑，而是同机部署时
+	// 节点安装会覆盖面板的 config.yaml（丢 TLS/端口），现象与原因隔得很远。
+	if dir == "/opt/mcpanel" {
+		addStep("⚠️ 节点目录与面板目录相同：节点安装会覆盖面板的 config.yaml，建议改成 /opt/atl-node")
+	}
 
 	// 2. 上传 Daemon 二进制
+	//
+	// 上传前**再确保一次目录存在**：SFTP 打开远程文件失败（sftp: "Failure"）
+	// 最常见的原因就是目录还没建好（或建在了另一个路径上），而那时错误信息里
+	// 只有一句 "打开远程文件失败"，很难联想到目录 —— 重试一次比让人去猜便宜。
 	if err := c.Upload(dir+"/bin/dsh-daemon", o.DaemonBinary, 0o755); err != nil {
-		return nil, fmt.Errorf("上传 Daemon 二进制失败: %w", err)
+		_, _ = c.Run(fmt.Sprintf("mkdir -p %s/bin && chmod 755 %s %s/bin", dir, dir, dir))
+		if err2 := c.Upload(dir+"/bin/dsh-daemon", o.DaemonBinary, 0o755); err2 != nil {
+			return nil, fmt.Errorf("上传 Daemon 二进制失败: %w（已自动建目录后重试仍失败）", err)
+		}
 	}
 	addStep("上传 Daemon 二进制")
 
@@ -247,6 +270,13 @@ func (c *Client) Deploy(o Options) (*Result, error) {
 	}
 
 	// 4. 写配置
+	//
+	// 实例目录：**优先沿用节点上已有的那一份**（见 reuseInstanceDir 的注释）——
+	// 重跑一次一键部署不该把在跑的实例"换到另一个目录去"，
+	// 那样面板与 Daemon 会对不上（现象是实例还在跑、面板里却是空的/未注册）。
+	if o.InstanceDir == "" {
+		o.InstanceDir = reuseInstanceDir(c, dir)
+	}
 	cfg := renderDaemonConfig(o, dir, useTLS)
 	if err := c.Upload(dir+"/config.yaml", []byte(cfg), 0o600); err != nil {
 		return nil, fmt.Errorf("写入配置失败: %w", err)
@@ -276,11 +306,143 @@ func (c *Client) Deploy(o Options) (*Result, error) {
 	}
 	addStep("服务状态校验通过")
 
+	// 8. 容器隔离防火墙（**容器化可用的前提**，不是可选加固）
+	//
+	// 为什么放在节点部署里：这条 iptables 规则是"容器不得访问宿主服务"的唯一保证，
+	// 少了它，实例能连到宿主上绑 0.0.0.0 的服务（实测能连上 Daemon 的 gRPC 端口），
+	// 容器隔离就只剩一半。此前只有"节点包 + install.sh"那条路径会装它，
+	// 走面板一键部署的机器会**静默缺少**这条规则 —— 属于安全项，不能靠文档提醒。
+	//
+	// 做成 systemd 单元而不是直接加规则：直接加只在当下生效，服务器一重启隔离就悄悄失效；
+	// 单元里 After=docker.service 保证规则落在 docker 重建自己的链之后，且脚本是幂等的。
+	if out, err := installContainerFirewall(c); err != nil {
+		// 不因为这一步失败就判定部署失败：没装 docker 的节点本来就用不上容器化。
+		addStep("⚠️ 容器隔离防火墙未安装：" + firstLine(out))
+	} else {
+		addStep("安装容器隔离防火墙（容器不得访问宿主服务）")
+	}
+
+	// 9. 穿透客户端 frpc（可选：Daemon 用 exec.LookPath("frpc") 找它）
+	//
+	// 面板包与节点包同目录时（一键部署下发的是面板包里那份），这里把 frpc 一并推过去，
+	// 让"穿透"开箱可用；没有 frpc 时只提示、不算失败（穿透是可选能力）。
+	if len(o.FrpcBinary) > 0 {
+		if err := c.Upload(dir+"/bin/frpc", o.FrpcBinary, 0o755); err != nil {
+			addStep("⚠️ frpc 上传失败：" + err.Error())
+		} else {
+			// LookPath 只看 PATH，而 systemd 的默认 PATH 含 /usr/local/bin ——
+			// 少了这一步会出现"包里有 frpc、Daemon 却说找不到"这种很难查的不一致。
+			if _, err := c.Run("install -m755 " + dir + "/bin/frpc /usr/local/bin/frpc"); err != nil {
+				addStep("⚠️ frpc 已上传但未能链接到 /usr/local/bin")
+			} else {
+				addStep("安装穿透客户端 frpc")
+			}
+		}
+	}
+
 	res.Message = "Daemon 部署完成并已启动"
 	if useTLS {
 		res.Message += "（mTLS 已启用）"
 	}
 	return res, nil
+}
+
+// containerFirewallUnit 容器隔离防火墙的 systemd 单元（与节点包里那份保持一致）。
+//
+// 直接内联而不是"从包里读文件"：一键部署可能运行在一个只有面板二进制的环境里，
+// 少一个文件依赖就少一种"部署成功、隔离没生效"的可能。
+//
+// ⚠️ 规则必须限定 `--ctstate NEW`（2026-10-01 内测踩到，代价很大）：
+// 原来是无条件 `-i br-+ -j DROP`，它连**宿主自己发起的**到容器的连接的回程也一起丢了 ——
+// docker-proxy 用网桥地址（172.18.0.1）作源去连容器，容器的 SYN-ACK 目的地址就是宿主的
+// 网桥地址 → 命中 INPUT 链 → 被丢弃，连接永远停在 SYN_RECV。后果是
+// **`-p 127.0.0.1:25565:25565` 这种端口发布整个失效**：容器端口在宿主上连不通，
+// frpc 也就转不进去，外面用 MOTD 工具查实例一律超时。
+//
+// 而它**看起来**是好的：TCP 连接能连上（docker-proxy 会先 accept），
+// 只是永远没有数据回来 —— 现象与"服务端没开 enable-status"极像，很容易查错方向。
+//
+// 限定 NEW 之后语义才正确：容器**主动发起**到宿主服务的连接被挡（我们的目标），
+// 宿主主动连容器的回程属于 ESTABLISHED，照常放行。
+const containerFirewallUnit = `[Unit]
+Description=ATL-MCPanel 容器隔离防火墙规则（容器不得访问宿主服务）
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# 幂等：先 -C 检查，存在就跳过；重复执行不会堆叠规则。
+# 只挡 NEW：容器主动发起的连接被挡，宿主主动连容器的回程（ESTABLISHED）必须放行，
+# 否则 docker 的端口发布就废了（见 install.go 里这段注释的完整说明）。
+ExecStart=/bin/bash -c 'iptables -C INPUT -i br-+ -m conntrack --ctstate NEW -j DROP 2>/dev/null || iptables -I INPUT -i br-+ -m conntrack --ctstate NEW -j DROP; iptables -C INPUT -i docker0 -m conntrack --ctstate NEW -j DROP 2>/dev/null || iptables -I INPUT -i docker0 -m conntrack --ctstate NEW -j DROP'
+# 停止时不删规则：它们是安全控制，服务停了也不该把口子放开
+ExecStop=/bin/true
+
+[Install]
+WantedBy=multi-user.target
+`
+
+// installContainerFirewall 安装并启用容器隔离防火墙单元；返回命令输出（供失败提示用）。
+//
+// 没有 docker 时**不装**：规则本身没坏处，但没有容器就没有意义，
+// 而且部分发行版连 iptables 都没装 —— 那种情况下"单元启动失败"会让人误以为部署有问题。
+func installContainerFirewall(c *Client) (string, error) {
+	if out, err := c.Run("command -v iptables >/dev/null 2>&1 && command -v docker >/dev/null 2>&1"); err != nil {
+		return "节点上没有 docker 或 iptables（容器化不可用，跳过）", nil
+	} else if strings.TrimSpace(out) != "" {
+		return out, nil
+	}
+	const path = "/etc/systemd/system/atl-container-firewall.service"
+	if err := c.Upload(path, []byte(containerFirewallUnit), 0o644); err != nil {
+		return "写入单元失败: " + err.Error(), err
+	}
+	out, err := c.Run("systemctl daemon-reload && systemctl enable --now atl-container-firewall 2>&1 && " +
+		"iptables -S INPUT | grep -cE '\\-i (br-\\+|docker0)'")
+	if err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	if strings.TrimSpace(s) == "" {
+		return "（无输出）"
+	}
+	return s
+}
+
+// reuseInstanceDir 读节点上**已有的** daemon 配置，沿用它的 instance_dir。
+//
+// 为什么必须这么做（2026-09-30 在内测节点上踩到）：一键部署会重写节点配置，
+// 而配置里的 instance_dir 原先是"安装目录 + /instances"。于是**重跑一次部署**
+// 就把实例目录换了个地方 —— 实例进程照常在跑（旧目录里），新 Daemon 却去新目录找，
+// 结果是"面板里实例消失/变成未注册"，而机器上什么都没坏。同机部署时这个坑尤其致命：
+// 面板自己的实例就在它的目录下。
+//
+// 读不到（首次部署）或读不出值时返回空串，由调用方退回默认。
+func reuseInstanceDir(c *Client, dir string) string {
+	out, err := c.Run(fmt.Sprintf("grep -m1 '^\\s*instance_dir:' %s/config.yaml 2>/dev/null", dir))
+	if err != nil {
+		return ""
+	}
+	line := strings.TrimSpace(out)
+	if line == "" {
+		return ""
+	}
+	// 形如：  instance_dir: "/opt/mcpanel/instances"（或单引号 / 无引号）
+	if i := strings.Index(line, ":"); i >= 0 {
+		line = strings.TrimSpace(line[i+1:])
+	}
+	line = strings.Trim(line, `"'`)
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "{{") {
+		return ""
+	}
+	return line
 }
 
 // renderDaemonConfig 生成节点配置。
@@ -297,7 +459,13 @@ func renderDaemonConfig(o Options, dir string, useTLS bool) string {
 		grpcListen = ":9091"
 	}
 	fmt.Fprintf(&sb, "  grpc_listen: %q\n", grpcListen)
-	fmt.Fprintf(&sb, "  instance_dir: %q\n", dir+"/instances")
+	// 实例目录：沿用节点已有配置（同机部署时就是面板自己的实例目录），
+	// 否则退回 <安装目录>/instances。state/resource/frp 目录由 Daemon 从它推导。
+	if o.InstanceDir != "" {
+		fmt.Fprintf(&sb, "  instance_dir: %q\n", o.InstanceDir)
+	} else {
+		fmt.Fprintf(&sb, "  instance_dir: %q\n", dir+"/instances")
+	}
 	if useTLS {
 		sb.WriteString("  tls: true\n")
 		fmt.Fprintf(&sb, "  cert_file: %q\n", dir+"/certs/node.crt")

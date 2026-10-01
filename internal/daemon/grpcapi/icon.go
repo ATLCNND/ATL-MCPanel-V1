@@ -10,12 +10,21 @@ import (
 	pb "github.com/ATLCNND/ATL-MCPanel/internal/proto/mcpanel"
 )
 
-// 实例图标的文件名约定（按优先级）。
+// 实例图标的文件名约定（按优先级，路径相对实例目录）。
 //
 // server-icon.png 放前面是因为它是**原版/Paper 系的官方约定**（服务器列表里
 // 显示的 64×64 图标就用这个名字，服务端自己不会生成，得用户自己放）；
 // icon.png 则是一些整合包/面板的习惯叫法。两个都认，省得用户放对了名字却没生效。
-var iconFileNames = []string{"server-icon.png", "icon.png"}
+//
+// `world/` 下那两个是**兜底**（2026-09-30 用户问"world 文件夹的 icon 会不会也找"）：
+// 有些整合包/教程会把图标放进世界目录，而原版只认工作目录。
+// 放在最后是因为它们只可能来自"用户放错地方"，不该盖过根目录里正确的那个。
+var iconFileNames = []string{
+	"server-icon.png",
+	"icon.png",
+	filepath.Join("world", "server-icon.png"),
+	filepath.Join("world", "icon.png"),
+}
 
 // maxIconBytes 图标大小上限。
 //
@@ -74,7 +83,8 @@ func (s *Server) GetInstanceIcon(req *pb.InstanceRequest, stream pb.DaemonServic
 	}
 	ic, ok := findIcon(dir)
 	if !ok {
-		return errors.New("实例没有图标（可在实例目录放 server-icon.png 或 icon.png）")
+		return errors.New("实例没有图标（可在实例目录放 server-icon.png 或 icon.png，" +
+			"也支持 world/ 下的同名文件）")
 	}
 
 	f, err := os.Open(filepath.Join(dir, ic.Name))

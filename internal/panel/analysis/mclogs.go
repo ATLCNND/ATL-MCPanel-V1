@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -202,47 +201,8 @@ func (l *MclogsLimits) MaxLengthMB() int64 {
 	return (l.MaxLength + (1 << 20) - 1) >> 20
 }
 
-// HelpText 生成"求助文本"（面板替用户拼好，一键复制）。
-//
-// 为什么值得做（这是这个功能真正的落点）：光给一个链接，用户去社区提问时
-// 往往只贴链接、不说环境，而**"容器化运行 + 内存上限"这类信息帮你的人看不到，
-// 却经常正是崩溃原因**（容器内存超限被杀 vs JVM 堆不足，处理方式完全不同）。
-// 把它拼好，用户就不必自己组织语言，也不会漏关键信息。
-func HelpText(instanceName, coreType, javaVersion, memLimit, containerNote, phenomenon, url, raw string, errors int) string {
-	var b strings.Builder
-	b.WriteString("【求助】服务器崩溃 / 报错")
-	if instanceName != "" {
-		b.WriteString("（实例：" + instanceName + "）")
-	}
-	b.WriteString("\n日志：" + url)
-	if raw != "" {
-		b.WriteString("（原文：" + raw + "）")
-	}
-	if errors > 0 {
-		b.WriteString("\n日志里的 ERROR 行数：" + strconv.Itoa(errors))
-	}
-	env := []string{}
-	if coreType != "" {
-		env = append(env, coreType)
-	}
-	if javaVersion != "" {
-		env = append(env, "Java "+javaVersion)
-	}
-	if len(env) > 0 {
-		b.WriteString("\n核心与版本：" + strings.Join(env, " · "))
-	}
-	if memLimit != "" {
-		b.WriteString("\n内存上限：" + memLimit)
-	}
-	if containerNote != "" {
-		b.WriteString("\n运行方式：" + containerNote)
-	}
-	if strings.TrimSpace(phenomenon) != "" {
-		b.WriteString("\n现象：" + strings.TrimSpace(phenomenon))
-	}
-	b.WriteString("\n（本段由 ATL-MCPanel 自动生成，可直接粘贴到社区/群里求助）")
-	return b.String()
-}
+// 求助文本的生成已经搬到 helptext.go（模板化、管理员可改）。
+// 这里保留 fallback：客户端的默认地址与版本号回退。
 
 func fallback(s, def string) string {
 	if strings.TrimSpace(s) == "" {

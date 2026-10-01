@@ -158,6 +158,27 @@ if [ "$MODE" = "panel" ] && [ -f "$SRC_DIR/bin/dsh-daemon" ]; then
   echo "    已安装 dsh-daemon（供一键部署下发）"
 fi
 
+# 面板包同样带一份 frpc：一键部署会把"面板二进制旁边"的 frpc 一并下发到节点，
+# 这样用户不用自己去 GitHub 找 frp（见 internal/panel/httpapi/nodes.go）。
+if [ "$MODE" = "panel" ] && [ -f "$SRC_DIR/bin/frpc" ]; then
+  install -m 0755 "$SRC_DIR/bin/frpc" "$INSTALL_DIR/bin/frpc"
+  echo "    已安装 frpc（供一键部署下发，穿透用）"
+fi
+
+# ---------------------------------------------------------------------------
+# 2b. 节点：安装穿透客户端 frpc（随节点包分发）
+# ---------------------------------------------------------------------------
+#
+# 为什么要装到 /usr/local/bin：Daemon 是用 `exec.LookPath("frpc")` 找它的
+#（见 internal/daemon/grpcapi/frpstest.go），只看 PATH；而 systemd 单元的默认
+# PATH 里有 /usr/local/bin。所以除了放在安装目录，再放一份到 /usr/local/bin，
+# 否则"包里有 frpc、Daemon 却说找不到"—— 这种不一致很难排查。
+if [ "$MODE" = "daemon" ] && [ -f "$SRC_DIR/bin/frpc" ]; then
+  install -m 0755 "$SRC_DIR/bin/frpc" "$INSTALL_DIR/bin/frpc"
+  install -m 0755 "$SRC_DIR/bin/frpc" /usr/local/bin/frpc
+  echo "    已安装 frpc（穿透客户端）：$(frpc --version 2>/dev/null | head -1 || echo '版本未知')"
+fi
+
 # ---------------------------------------------------------------------------
 # 3. 前端（仅面板）
 # ---------------------------------------------------------------------------

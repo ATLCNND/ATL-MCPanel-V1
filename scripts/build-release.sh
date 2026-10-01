@@ -112,9 +112,31 @@ make_pkg() {
     cp "$srcbin/dsh-panel" "$out/bin/"
     # 面板的一键部署节点要用**同版本**的 daemon，所以面板包里也放一份
     [ -f "$srcbin/dsh-daemon" ] && cp "$srcbin/dsh-daemon" "$out/bin/"
+    # frpc 也要放一份：一键部署会把"面板二进制旁边"的 frpc 一并下发到节点
+    # （见 httpapi/nodes.go 的 readSiblingBinary），这样穿透开箱可用。
+    frpc="dist/frpc-linux-${arch}"
+    [ -f "$frpc" ] || frpc="dist/frpc"
+    if [ -f "$frpc" ]; then
+      cp "$frpc" "$out/bin/frpc"
+      echo "    含 frpc $(du -h "$frpc" | cut -f1)（供一键部署下发）"
+    fi
     cp -r web/dist "$out/web-dist"
   else
     cp "$srcbin/dsh-daemon" "$out/bin/"
+    # frpc 随节点包分发（**穿透开箱可用**的前提）。
+    #
+    # 为什么随包发：Daemon 用 `exec.LookPath("frpc")` 找它（见 internal/daemon/grpcapi/
+    # frpstest.go），节点上没有 frpc 时"穿透"整块不可用；而"自己去 GitHub 下 frp 再解压"
+    # 对用户是纯粹的额外负担 —— 节点包本来就带运行时镜像了，多带一个 frpc 最省事。
+    # 找不到时只提示、不算失败：穿透是可选能力。
+    frpc="dist/frpc-linux-${arch}"
+    [ -f "$frpc" ] || frpc="dist/frpc"
+    if [ -f "$frpc" ]; then
+      cp "$frpc" "$out/bin/frpc"
+      echo "    含 frpc $(du -h "$frpc" | cut -f1)（穿透客户端）"
+    else
+      echo "    提示：未找到 dist/frpc（节点上将没有穿透客户端）" >&2
+    fi
     # 容器隔离防火墙规则随节点包分发：它是**容器化可用的前提**（容器能访问宿主
     # 服务就等于没隔离），且必须由 systemd 在 docker 之后落地，不能只写在文档里。
     cp deploy/systemd/atl-container-firewall.service "$out/deploy/systemd/" 2>/dev/null || true

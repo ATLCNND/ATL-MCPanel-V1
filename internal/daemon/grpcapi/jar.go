@@ -141,6 +141,62 @@ func (s *Server) SetInstanceJar(ctx context.Context, req *pb.SetInstanceJarReque
 		Message: "核心已切换为 " + filepath.Base(full) + "，重启实例后生效"}, nil
 }
 
+// SetInstanceJava 切换实例使用的 JDK（下次启动生效）。
+//
+// 为什么要有这条 RPC：java_version 原本只在建实例时写进 instance.json，
+// 之后面板再无办法改它 —— "给已有实例换个 JDK"只能删库重建。
+// 而 instance.json 是**被 root 信任的元数据**（mem/配额/容器开关都在里面），
+// 在节点侧对文件管理是只读虚拟映射，所以只能在 Daemon 里改。
+//
+// 这里只做最小校验（空 = 自动用 PATH 上的 java）：
+// **能不能真的解析到这个 JDK 由启动时决定**，解析不到会回退到 PATH 并把原因
+// 记进启动提示（见 mcprocess 的 resolveJavaBin）—— 在这里硬校验反而会把
+// "节点上刚装的 JDK 还没被探测到"这类情形变成无法保存。
+func (s *Server) SetInstanceJava(ctx context.Context, req *pb.SetInstanceJavaRequest) (*pb.OperationResponse, error) {
+	inst, ok := s.reg.Get(req.InstanceId)
+	if !ok {
+		return &pb.OperationResponse{Success: false, Error: "实例不存在"}, nil
+	}
+
+	val := strings.TrimSpace(req.JavaVersion)
+	if len(val) > 512 {
+		return &pb.OperationResponse{Success: false, Error: "JDK 取值过长"}, nil
+	}
+	if val != "" && !looksLikeJavaSelector(val) {
+		return &pb.OperationResponse{Success: false, Error: "JDK 取值不合法：应为版本号（如 21）或 java 可执行文件的绝对路径"}, nil
+	}
+
+	if err := s.reg.SetJavaVersion(req.InstanceId, val); err != nil {
+		return &pb.OperationResponse{Success: false, Error: err.Error()}, nil
+	}
+	inst.JavaVersion = val
+
+	shown := val
+	if shown == "" {
+		shown = "自动（PATH 上的 java）"
+	}
+	s.log.Info("实例 JDK 已切换", "instance", req.InstanceId, "java_version", shown,
+		"running", inst.Status() == "running")
+	msg := "JDK 已切换为 " + shown + "，重启实例后生效"
+	if inst.Status() == "running" {
+		msg += "（当前进程仍在用启动时选定的那个 JDK）"
+	}
+	return &pb.OperationResponse{Success: true, Message: msg}, nil
+}
+
+// looksLikeJavaSelector JDK 取值是否合法：纯版本号（21 / 1.8 / 21.0.2）或绝对路径。
+func looksLikeJavaSelector(v string) bool {
+	if filepath.IsAbs(v) {
+		return true
+	}
+	for _, r := range v {
+		if (r < '0' || r > '9') && r != '.' && r != '_' && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
 // samePath 比较两个路径是否指向同一文件（忽略绝对/相对差异）。
 func samePath(a, b string) bool {
 	if a == "" || b == "" {

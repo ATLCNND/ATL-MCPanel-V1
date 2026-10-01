@@ -53,6 +53,9 @@ export default function AnalysisProviders({ role }: { role?: string }) {
   // 每个提供方的自检结果（键是 id）：填完就点一下，比"分析失败再回来猜"省事得多
   const [tests, setTests] = useState<Record<number, { ok: boolean; text: string }>>({})
   const [rateForm, setRateForm] = useState({ per_min: 6, per_day: 200, allow_private: false })
+  // 求助模板编辑框：**独立于 rateForm**，因为它是长文本、保存也是单独一个动作
+  //（混在一起的话，改一行模板会连带把速率设置也提交一遍，容易误伤）
+  const [templateForm, setTemplateForm] = useState('')
   const isAdmin = role === 'admin'
 
   const load = async () => {
@@ -61,6 +64,7 @@ export default function AnalysisProviders({ role }: { role?: string }) {
       setData(p)
       setSettings(s)
       setRateForm({ per_min: s.rate_per_min, per_day: s.rate_per_day, allow_private: s.allow_private })
+      setTemplateForm(s.help_template || s.help_template_default || '')
       setError('')
     } catch (e: any) {
       setError(e.message)
@@ -132,6 +136,21 @@ export default function AnalysisProviders({ role }: { role?: string }) {
         allow_private: rateForm.allow_private,
       })
       setMsg('设置已保存并立即生效')
+      await load()
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // 求助模板保存：校验在后端（那里有唯一的真值），这里只把错误原文摆出来 ——
+  // 前端复制一份校验规则，迟早会和后端说的不一样。
+  const saveTemplate = async () => {
+    setBusy(true); setError(''); setMsg('')
+    try {
+      await setAnalysisSettings({ help_template: templateForm })
+      setMsg('求助模板已保存，下次上传（mclo.gs 通道）就按新模板生成')
       await load()
     } catch (e: any) {
       setError(e.message)
@@ -308,6 +327,41 @@ export default function AnalysisProviders({ role }: { role?: string }) {
           </div>
           <div className="ap-ops">
             <button className="primary" onClick={saveSettings} disabled={busy}>保存设置</button>
+          </div>
+
+          {/* ---- 求助模板 ---- */}
+          <div className="ap-subtitle">
+            求助模板
+            <span className="muted">
+              走 mclo.gs（保底通道）时，面板替你拼好的那段"可直接贴出去"的求助帖
+            </span>
+          </div>
+          <div className="ap-hint">
+            面板只负责把 <code>{'{占位符}'}</code> 换成真实信息，措辞归你改 ——
+            不同社区要的东西不一样（有的要 crash-report 全文，有的要 mods 列表，有的群规要求先写"已试过什么"）。<br />
+            行内的占位符<b>全部为空时整行会被丢掉</b>（不会留下"· Java："这种悬空标签）；
+            <code>{'{url}'}</code> 必须保留，否则求助帖里就没有日志链接了。
+            模板清空 = 恢复内置默认。
+          </div>
+          <div className="ap-placeholders">
+            {settings?.help_placeholders?.map((ph) => (
+              <span className="ap-ph" key={ph.name}
+                title={ph.desc}
+                onClick={() => setTemplateForm((t) => `${t}{${ph.name}}`)}>
+                {'{' + ph.name + '}'}
+              </span>
+            ))}
+          </div>
+          <textarea className="ap-template" rows={14} value={templateForm} spellCheck={false}
+            onChange={(e) => setTemplateForm(e.target.value)} />
+          <div className="ap-ops">
+            <button onClick={() => setTemplateForm(settings?.help_template_default || '')} disabled={busy}>
+              恢复内置默认（填入编辑框）
+            </button>
+            <button className="primary" onClick={saveTemplate} disabled={busy}>
+              {busy ? '保存中…' : '保存模板'}
+            </button>
+            {settings?.help_template_is_default && <span className="muted">当前：内置默认</span>}
           </div>
         </section>
       )}

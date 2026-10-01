@@ -87,6 +87,14 @@ service DaemonService {
   // 核心 jar 管理
   rpc UploadJar(UploadJarRequest) returns (OperationResponse);
   rpc SetInstanceJar(SetInstanceJarRequest) returns (OperationResponse);
+
+  // 切换实例使用的 JDK（下次启动生效）。
+  //
+  // 为什么需要单独的 RPC：java_version 原本只在**建实例时**写进 instance.json，
+  // 之后面板没有任何办法改它 —— 用户要"给已有实例换个 JDK"只能删库重建。
+  // 而 instance.json 在节点侧是**只读虚拟映射**（它是被 root 信任的元数据，
+  // 不能让实例用户改写），所以只能在 Daemon 里改。
+  rpc SetInstanceJava(SetInstanceJavaRequest) returns (OperationResponse);
   rpc ListJars(ListJarsRequest) returns (ListJarsResponse);
 
   // 备份/回滚
@@ -337,6 +345,15 @@ message UploadJarRequest {
 message SetInstanceJarRequest {
   string instance_id = 1;
   string jar_path = 2;       // 相对实例目录的 jar 路径
+}
+
+// SetInstanceJavaRequest 切换实例的 JDK。
+//
+// java_version 的取值与建实例时一致：主版本号（"21"）或 java 可执行文件的绝对路径；
+// 空串表示"自动"（用 PATH 上的 java）。
+message SetInstanceJavaRequest {
+  string instance_id = 1;
+  string java_version = 2;
 }
 
 message ListJarsRequest {

@@ -15,11 +15,21 @@ RemainAfterExit=yes
 # 幂等：先 -C 检查，存在就跳过；重复执行/重复安装不会把规则堆叠起来。
 #
 # 为什么必须有这两条规则（不是可选加固）：
-#   容器访问宿主服务走 INPUT（容器 → 宿主），宿主访问容器（发布端口）走 FORWARD。
-#   因此 DROP 掉来自容器网桥的 INPUT，只掐掉"容器连宿主上的服务"，端口发布与
-#   容器出网都不受影响。少了它，实例就能连到宿主上绑 0.0.0.0 的服务
+#   容器**主动**访问宿主服务时，第一个包是新连接（NEW），把来自容器网桥的新连接
+#   DROP 掉就掐断了这条路。少了它，实例就能连到宿主上绑 0.0.0.0 的服务
 #   （实测能连上 Daemon 的 gRPC 端口），容器隔离等于白做。
-ExecStart=/bin/bash -c 'for i in br-+ docker0; do iptables -C INPUT -i "$i" -j DROP 2>/dev/null || iptables -I INPUT -i "$i" -j DROP; done'
+#
+# ⚠️ 必须限定 `--ctstate NEW`（2026-10-01 内测踩到，代价很大）：
+#   原来写的是无条件 `-i br-+ -j DROP`，看起来"只挡容器 → 宿主"，其实**连宿主
+#   主动连容器的回程也一起挡了**：docker-proxy 用网桥地址（172.18.0.1）作源去连容器，
+#   容器回的 SYN-ACK 目的地址就是宿主的网桥地址 → 属于本机投递 → 命中 INPUT 链 → 被丢。
+#   后果是 `-p 127.0.0.1:25565:25565` 这类端口发布整个失效：宿主上连不通容器端口，
+#   frpc 也就转不进去，外部 MOTD 工具查实例一律超时。
+#   而且它**看起来**是好的 —— TCP 能连上（docker-proxy 会先 accept），只是永远没有
+#   数据回来，与"服务端没开 enable-status"极像，很容易查错方向。
+#   限定 NEW 之后语义才对：容器主动发起的被挡，宿主发起的那条流的回程是
+#   ESTABLISHED，照常放行。
+ExecStart=/bin/bash -c 'iptables -C INPUT -i br-+ -m conntrack --ctstate NEW -j DROP 2>/dev/null || iptables -I INPUT -i br-+ -m conntrack --ctstate NEW -j DROP; iptables -C INPUT -i docker0 -m conntrack --ctstate NEW -j DROP 2>/dev/null || iptables -I INPUT -i docker0 -m conntrack --ctstate NEW -j DROP'
 # 停止时**不删**规则：它们是安全控制，服务停了也不该把口子放开。
 ExecStop=/bin/true
 

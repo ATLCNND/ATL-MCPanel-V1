@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   LogShareFile, AnalysisProvidersResp, AnalysisRecord, AnalysisKind,
   listLogShareFiles, listAnalysisProviders, analyseInstance, deleteAnalysisRecord,
-  streamAnalysisAI, listAnalysisHistory,
+  streamAnalysisAI, listAnalysisHistory, previewHelpText,
 } from '../api'
 import MiniMarkdown from './MiniMarkdown'
 import './LogShareTab.css'
@@ -48,8 +48,74 @@ function fmtExpire(s: string): string {
   if (!s) return '—'
   const d = new Date(s.replace(' ', 'T'))
   if (isNaN(d.getTime())) return s
+  // 自配平台那条路没有云端副本，落库时 Expires 是 Go 的零值，
+  // 序列化出来就是 0001-01-01 —— 直接显示会变成"约 -74 万天后"，属于典型的描述误区。
+  if (d.getFullYear() < 2000) return '—'
   const days = Math.ceil((d.getTime() - Date.now()) / 86400000)
   return `${d.toLocaleDateString('zh-CN')}（约 ${days} 天后）`
+}
+
+/** 只取站点域名，用于按钮文案（避免把地址写死成 logshare.cn —— 自建/代理时就不对了） */
+function siteLabel(url: string): string {
+  try { return new URL(url).hostname || '对方站点' } catch { return '对方站点' }
+}
+
+/**
+ * 提供方在界面上的显示名：名称与类型说明**只出现一次**。
+ *
+ * 为什么需要它（用户报的"描述误区"就在这里）：内置提供方的名字叫 `LogShare`，
+ * 而 KIND_LABEL 是 `LogShare（AI 分析）` —— 直接拼成 `${name}（${label}）` 会得到
+ * **`LogShare（LogShare（AI 分析））`**。
+ *
+ * 上一版想用"名称里已经含类型说明就跳过"来防重复，方向搞反了：
+ * 短名字（LogShare）当然不包含长标签（LogShare（AI 分析）），条件永远不成立，
+ * 于是重复照旧 —— 真机上打开下拉一眼就能看到。
+ * 正确的判断是**标签里有没有已经包含这个名字**。
+ */
+function providerLabel(name: string, kind: string): string {
+  const label = KIND_LABEL[kind]
+  if (!label) return name || kind
+  if (!name) return label
+  if (label.includes(name)) return label // 「LogShare（AI 分析）」已含名字
+  if (name.includes(label)) return name  // 名字里已经写全
+  return `${name}（${label}）`
+}
+
+/** 类型标签的短文案：挂在名字后面当胶囊用，不含名字本身（见 providerLabel）。 */
+const KIND_SHORT: Record<string, string> = {
+  logshare: 'AI 分析',
+  mclogs: '分享链接',
+  openai: '自配平台',
+  'builtin-rules': '内置规则',
+}
+
+/**
+ * 把 LogShare 的 status 事件翻译成人话。
+ *
+ * 对方在真正开始分析前会发 `{"type":"queued","position":N}` ——
+ * 不显示它的话，用户看到的就是一个转了很久的圈，很容易理解成
+ * "面板卡住了 / 调用又出问题了"（2026-09-30 用户就是这么报上来的）。
+ */
+function describeStatus(raw: string): string {
+  try {
+    const v = JSON.parse(raw)
+    const type = typeof v === 'string' ? v : v?.type
+    if (type === 'queued') {
+      const pos = v?.position
+      return typeof pos === 'number'
+        ? `已进入 LogShare 的分析队列，前面还有 ${pos} 个任务（免费公益服务，高峰期需要排队）`
+        : '已进入 LogShare 的分析队列，正在排队'
+    }
+    if (type === 'cached') return '' // 回放已缓存的结论，不需要提示
+    return type ? `LogShare：${type}` : ''
+  } catch {
+    return ''
+  }
+}
+
+/** 这条错误是不是"对方 AI 队列满了"（免费公益服务的限流，不是面板坏了）。 */
+function isQueueFullError(msg: string): boolean {
+  return /429|队列已满|queue is full|rate limit/i.test(msg)
 }
 
 const KIND_ICON: Record<string, string> = {
@@ -66,7 +132,10 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
   const [files, setFiles] = useState<LogShareFile[]>([])
   const [history, setHistory] = useState<AnalysisRecord[]>([])
   const [providers, setProviders] = useState<AnalysisProvidersResp | null>(null)
-  const [providerId, setProviderId] = useState(0)   // 0 = 自动（按链依次尝试）
+  // 选中的提供方：**三态**。内置的 LogShare / mclo.gs 没有数据库行、id 都是 0，
+  // 只靠 id 无法与"自动"区分（下拉里会撞值，选了等于没选），所以内置的用 kind 指定。
+  const [pick, setPick] = useState<{ kind: string; id: number }>({ kind: '', id: 0 })
+  const pickValue = pick.id > 0 ? `id:${pick.id}` : pick.kind ? `kind:${pick.kind}` : 'auto'
   const [meta, setMeta] = useState({ siteUrl: 'https://logshare.cn', termsUrl: '', privacyUrl: '', maxBytes: 0 })
   const [picked, setPicked] = useState('')
   const [filterChat, setFilterChat] = useState(true)
@@ -107,6 +176,11 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
   const [answer, setAnswer] = useState('')
   const [analysing, setAnalysing] = useState(false)
   const [streamErr, setStreamErr] = useState('')
+  // 确认弹窗里的求助文本预览（见 previewHelpText：模板可由管理员改，用户得先看到成品）
+  const [helpPreview, setHelpPreview] = useState('')
+  const [previewErr, setPreviewErr] = useState('')
+  /** LogShare 的排队提示（对方会发 `{"type":"queued","position":N}`） */
+  const [queueNote, setQueueNote] = useState('')
   const abortRef = useRef<AbortController | null>(null)
 
   const load = async () => {
@@ -159,12 +233,12 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
 
   const pickedFile = useMemo(() => files.find((f) => f.path === picked), [files, picked])
   const chain = providers?.chain || []
-  /** 选中的提供方类型（决定确认弹窗里写哪家的条款） */
+  /** 选中的提供方（决定确认弹窗里写哪家的条款；自动时取链上第一家） */
   const selected = useMemo(() => {
-    if (providerId === 0) return chain[0] || null
-    return chain.find((c) => c.id === providerId && c.kind !== 'logshare') ||
-      chain.find((c) => c.id === providerId) || null
-  }, [providerId, chain])
+    if (pick.id > 0) return chain.find((c) => c.id === pick.id) || chain[0] || null
+    if (pick.kind) return chain.find((c) => c.kind === pick.kind) || chain[0] || null
+    return chain[0] || null
+  }, [pick, chain])
 
   const openConfirm = () => {
     setError(''); setMsg('')
@@ -173,12 +247,49 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
     setConfirmOpen(true)
   }
 
+  /**
+   * 确认"已读 mclo.gs 使用须知"。
+   *
+   * 它**顺带把上传确认也勾上**：用户刚刚读完须知、点的是"我已阅读并理解"，
+   * 那就是同一件事的两半。此前这是两个互不相干的勾选（一个存 localStorage、
+   * 一个是弹窗里的复选框），两个都满足按钮才亮 —— 用户只勾了一个，
+   * 看到的就是"同意须知了还是灰的点不动"，而且界面**不说为什么**。
+   * 那个"这份日志可以上传"的勾选框仍然留着（仍然可以取消），只是不再需要他勾第二次。
+   */
+  const confirmNotice = () => {
+    setNoticeRead(true)
+    try { localStorage.setItem(MCLOGS_NOTICE_KEY, '1') } catch { /* 隐私模式下忽略 */ }
+    setAgree(true)
+    setNoticeOpen(false)
+  }
+
+  // 选中 mclo.gs 且还没确认过须知时，**自动把须知弹出来** ——
+  // 让"必读"变成流程里的一步，而不是一个用户可能永远没注意到的链接。
+  useEffect(() => {
+    if (confirmOpen && selected?.kind === 'mclogs' && !noticeRead) setNoticeOpen(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [confirmOpen, selected?.kind, noticeRead])
+
+  // 确认弹窗里预生成的求助文本（只在选中 mclo.gs 时取；改「现象」会重新渲染）。
+  // 取不到不影响上传：这只是预览。
+  useEffect(() => {
+    if (!confirmOpen || selected?.kind !== 'mclogs') { setHelpPreview(''); setPreviewErr(''); return }
+    let alive = true
+    const t = setTimeout(() => {
+      previewHelpText(instanceId, phenomenon)
+        .then((r) => { if (alive) { setHelpPreview(r.text); setPreviewErr('') } })
+        .catch((e: any) => { if (alive) setPreviewErr(e?.message || String(e)) })
+    }, 250) // 打字防抖：改「现象」时不要每敲一个字打一次
+    return () => { alive = false; clearTimeout(t) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [confirmOpen, selected?.kind, phenomenon, instanceId])
+
   const doAnalyse = async () => {
     if (!agree) { setError('请先勾选同意'); return }
     setBusy(true); setError(''); setMsg('')
     try {
       const r = await analyseInstance(instanceId, {
-        path: picked, filterChat, agree, providerId, phenomenon,
+        path: picked, filterChat, agree, providerId: pick.id, providerKind: pick.kind, phenomenon,
       })
       setConfirmOpen(false)
       setResult({
@@ -207,6 +318,7 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
     abortRef.current = ac
     setAnalysing(true)
     setStreamErr('')
+    setQueueNote('')
     streamAnalysisAI(recordId, (ev) => {
       const text = (() => {
         try {
@@ -217,6 +329,7 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
       if (ev.event === 'content') setAnswer((a) => a + text)
       else if (ev.event === 'thinking') setThinking((t) => t + text)
       else if (ev.event === 'error') setStreamErr(text)
+      else if (ev.event === 'status') setQueueNote(describeStatus(ev.data))
       else if (ev.event === 'done') setAnalysing(false)
     }, ac.signal)
       .catch((e: any) => { if (e.name !== 'AbortError') setStreamErr(e.message) })
@@ -266,6 +379,12 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
   }
 
   const needsMclogsNotice = selected?.kind === 'mclogs' && !noticeRead
+  /** 灰按钮的原因（没有原因就不显示）。空串 = 可以点。 */
+  const disabledReason = needsMclogsNotice
+    ? '请先阅读《mclo.gs 使用须知》并点「我已阅读并理解」'
+    : !agree
+      ? '请勾选下方的确认项'
+      : ''
 
   if (disabled) {
     return (
@@ -298,15 +417,14 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
               : chain.map((c, i) => (
                 <span key={`${c.kind}-${c.id}-${i}`}>
                   {i > 0 && ' → '}
-                  <b>{c.name}</b>
-                  <span className="muted">（{KIND_LABEL[c.kind] || c.kind}）</span>
+                  <b>{providerLabel(c.name, c.kind)}</b>
                 </span>
               ))}
             。<b>LogShare</b> 给 AI 结论；<b>mclo.gs</b> 不做 AI，只把日志变成可分享的链接（用于去社区求助）。
           </span>
         </div>
         <a className="ls-site-btn" href={meta.siteUrl} target="_blank" rel="noreferrer noopener">
-          访问 logshare.cn ↗
+          访问 {siteLabel(meta.siteUrl)} ↗
         </a>
       </div>
 
@@ -337,11 +455,18 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
           <div className="ls-actions">
             <label className="ls-pick">
               用哪个平台：
-              <select value={providerId} onChange={(e) => setProviderId(Number(e.target.value))}>
-                <option value={0}>自动（按顺序尝试，推荐）</option>
+              <select value={pickValue}
+                onChange={(e) => {
+                  // 值形如 "auto" / "kind:mclogs" / "id:3"（见 pick 的注释）
+                  const v = e.target.value
+                  if (v === 'auto') { setPick({ kind: '', id: 0 }); return }
+                  const [t, raw] = v.split(':')
+                  setPick(t === 'kind' ? { kind: raw, id: 0 } : { kind: '', id: Number(raw) })
+                }}>
+                <option value="auto">自动（按顺序尝试，推荐）</option>
                 {chain.map((c) => (
-                  <option key={`${c.kind}-${c.id}`} value={c.id || 0} disabled={c.id === 0 && providerId !== 0}>
-                    {c.name}（{KIND_LABEL[c.kind] || c.kind}）
+                  <option key={`${c.kind}-${c.id}`} value={c.id > 0 ? `id:${c.id}` : `kind:${c.kind}`}>
+                    {providerLabel(c.name, c.kind)}
                   </option>
                 ))}
               </select>
@@ -353,10 +478,12 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
             {!canWrite && <span className="muted">需要 owner 及以上权限（上传日志到第三方）</span>}
           </div>
 
-          {/* 「现象」是给求助文本用的：社区看不到你的控制台，但"崩之前发生了什么"往往最关键 */}
+          {/* 「现象」是给求助文本用的：社区看不到你的控制台，但"崩之前发生了什么"往往最关键。
+              默认留空（模板里 {phenomenon} 那一行会自动消失）—— 预填一句假的"现象"
+              比留空更糟：用户不编辑就会把不属于他的描述贴到社区去。右边会实时预览成品。 */}
           <label className="ls-phenomenon">
             现象（可选，会写进求助文本）：
-            <input value={phenomenon} maxLength={200}
+            <input value={phenomenon} maxLength={400}
               placeholder="例如：启动后约 30 秒崩溃 / 玩家一进服就掉线"
               onChange={(e) => setPhenomenon(e.target.value)} />
           </label>
@@ -387,8 +514,10 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
                     {h.deleted && ' · 云端已删除'}
                   </div>
                   <div className="ls-hist-meta">
-                    {h.provider_kind === 'mclogs' ? '分享链接保留至 ' : '云端保留至 '}
-                    {fmtExpire(h.expires_at)}
+                    {h.provider_kind === 'mclogs' && <>分享链接保留至 {fmtExpire(h.expires_at)}</>}
+                    {h.provider_kind === 'logshare' && <>云端保留至 {fmtExpire(h.expires_at)}</>}
+                    {/* 自配平台：日志发给了对方，但对方不替我们存副本，这条记录只在面板里 */}
+                    {h.provider_kind === 'openai' && <>日志已发给自配平台，结论仅保存在本面板</>}
                     {h.provider_kind !== 'mclogs' && (h.analysis ? ' · 已有分析结论' : ' · 尚未分析')}
                   </div>
                   <div className="ls-hist-ops">
@@ -475,14 +604,39 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
                   <pre>{thinking}</pre>
                 </details>
               )}
-              {streamErr && <div className="ls-error">分析失败：{streamErr}</div>}
+              {streamErr && (
+                <div className="ls-error">
+                  分析失败：{streamErr}
+                  {/* "AI 队列已满"是**对方**的限流（LogShare 是免费公益服务），
+                      不说清楚的话，用户只会认为"面板的 logshare 调用又坏了"。
+                      同时给两个出路：重试（它是暂时的），或改走 mclo.gs 拿分享链接。 */}
+                  {isQueueFullError(streamErr) && (
+                    <div className="ls-error-hint">
+                      这是 LogShare 侧的限流（免费公益服务，高峰期 AI 队列会满），与面板无关。
+                      等一会儿点「重试分析」通常就好了；也可以改用 mclo.gs 先拿到分享链接去社区求助。
+                    </div>
+                  )}
+                  <div className="ls-error-ops">
+                    <button onClick={() => startStream(result.recordId)} disabled={analysing}>重试分析</button>
+                    {isQueueFullError(streamErr) && (
+                      <button onClick={() => {
+                        setPick({ kind: 'mclogs', id: 0 })
+                        setNoticeOpen(false)
+                        openConfirm()
+                      }}>改用 mclo.gs 生成分享链接</button>
+                    )}
+                  </div>
+                </div>
+              )}
               {!answer && !analysing && !streamErr && <div className="ls-empty">（没有内容）</div>}
               {answer && (
                 // AI 返回 Markdown，用 MiniMarkdown 渲染（纯 React 构造、不走 innerHTML，
                 // 第三方返回的文本注入不了标签 —— 这条比"渲染好看"更重要）
                 <div className="ls-answer md-body"><MiniMarkdown text={answer} /></div>
               )}
-              {analysing && !answer && <div className="ls-empty">正在等待分析结果…</div>}
+              {analysing && !answer && (
+                <div className="ls-empty">{queueNote || '正在等待分析结果…'}</div>
+              )}
             </>
           )}
         </div>
@@ -494,7 +648,12 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
           <div className="ls-confirm" onClick={(e) => e.stopPropagation()}>
             <div className="ls-confirm-title">
               上传到 {selected?.name || '分析平台'}
-              <span className="ls-prov-tag">{selected ? KIND_LABEL[selected.kind] || selected.kind : ''}</span>
+              {/* 胶囊只放**类型**（"AI 分析"/"分享链接"），不重复名字 ——
+                  以前这里挂的是 KIND_LABEL，于是标题读作
+                  "上传到 LogShareLogShare（AI 分析）"。 */}
+              {selected && (
+                <span className="ls-prov-tag">{KIND_SHORT[selected.kind] || selected.kind}</span>
+              )}
             </div>
 
             <div className="ls-confirm-body">
@@ -541,6 +700,20 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
                 </span>
               </label>
 
+              {/* mclo.gs 的"必读须知"单独一行、单独一个按钮 ——
+                  以前它是个塞在同意勾选框里的链接，点它既可能顺手把勾选框切掉、
+                  又和下面那个勾选框的语义重叠（用户反馈：同意了须知，按钮还是灰的点不动）。 */}
+              {selected?.kind === 'mclogs' && (
+                <p className="ls-notice-row">
+                  <button type="button" className="ls-link-btn" onClick={() => setNoticeOpen(true)}>
+                    {noticeRead ? '再看一遍《mclo.gs 使用须知》' : '阅读《mclo.gs 使用须知》（首次必读）'}
+                  </button>
+                  {noticeRead
+                    ? <span className="muted">已确认过（记在这台浏览器上）</span>
+                    : <span className="muted">未确认前无法上传</span>}
+                </p>
+              )}
+
               <label className="ls-agree">
                 <input type="checkbox" checked={agree} onChange={(e) => setAgree(e.target.checked)} />
                 <span>
@@ -554,10 +727,8 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
                   )}
                   {selected?.kind === 'mclogs' && (
                     <>
-                      我已阅读并理解
-                      <a href="#" onClick={(e) => { e.preventDefault(); setNoticeOpen(true) }}>《mclo.gs 使用须知》</a>
-                      （分享链接公开可读、最多保留 90 天、玩家名与聊天不会被过滤），
-                      并确认这份日志可以上传。
+                      我已确认这份日志<b>可以上传到 mclo.gs</b>
+                      （分享链接公开可读、最多保留 90 天，玩家名与聊天内容不会被过滤）。
                     </>
                   )}
                   {selected?.kind === 'openai' && (
@@ -566,22 +737,41 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
                 </span>
               </label>
 
-              {needsMclogsNotice && (
+              {/* 上限数字来自 LogShare 自己的 meta 接口，只有真的会走 LogShare 时才显示，
+                  否则选 mclo.gs / 自配平台时会看到一个跟自己无关的 16MB。 */}
+              {meta.maxBytes > 0 && selected?.kind === 'logshare' && (
                 <p className="muted">
-                  首次使用 mclo.gs 需要先看一遍使用须知（点上面的链接打开）。
+                  LogShare 单次上限 {formatSize(meta.maxBytes)}；超出会保留尾部（崩溃现场在后面）并在结果里注明。
+                </p>
+              )}
+              {selected?.kind === 'mclogs' && (
+                <p className="muted">
+                  mclo.gs 单次上限 10 MB / 25000 行；超出会保留尾部并在结果里注明。
                 </p>
               )}
 
-              {meta.maxBytes > 0 && (
-                <p className="muted">单次上限 {formatSize(meta.maxBytes)}；超出会保留尾部（崩溃现场在后面）并在结果里注明。</p>
+              {/* 走 mclo.gs 时把**渲染后的求助文本**摆出来：模板可以由管理员改，
+                  只给模板原文（一堆 {占位符}）用户不知道自己最后会贴出去什么。 */}
+              {selected?.kind === 'mclogs' && (
+                <div className="ls-help-preview">
+                  <div className="ls-help-title">
+                    将生成的求助文本
+                    <span className="muted">上传后链接会自动填进去，可直接复制去社区提问</span>
+                  </div>
+                  <pre className="ls-help-text">{helpPreview || '（正在生成预览…）'}</pre>
+                  {previewErr && <p className="muted">预览生成失败：{previewErr}（不影响上传）</p>}
+                </div>
               )}
             </div>
 
             <div className="ls-confirm-ops">
               {error && <span className="ls-confirm-err">{error}</span>}
+              {/* 灰按钮必须自己说明"为什么不能点"：只把按钮置灰、不给原因，
+                  用户只会得出"这个功能坏了"（这正是本轮反馈的由来）。 */}
+              {!error && disabledReason && <span className="ls-confirm-hint">{disabledReason}</span>}
               <div className="spacer" />
               <button onClick={() => setConfirmOpen(false)} disabled={busy}>取消</button>
-              <button className="primary" onClick={doAnalyse} disabled={busy || !agree || needsMclogsNotice}>
+              <button className="primary" onClick={doAnalyse} disabled={busy || !!disabledReason}>
                 {busy ? '处理中…' : '同意并分析'}
               </button>
             </div>
@@ -634,20 +824,15 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
                 </li>
                 <li>数据权利（查询/更正/删除/投诉）依对方政策直接找他们（GDPR，§77 投诉权）。</li>
               </ol>
-              <label className="ls-agree">
-                <input type="checkbox" checked={noticeRead}
-                  onChange={(e) => {
-                    setNoticeRead(e.target.checked)
-                    try { localStorage.setItem(MCLOGS_NOTICE_KEY, e.target.checked ? '1' : '0') } catch { /* 隐私模式下忽略 */ }
-                  }} />
-                <span>我已阅读并理解以上内容（这份确认只记在这台浏览器上，不会上传）</span>
-              </label>
+              <p className="muted">
+                点下面的按钮即表示你已阅读并理解以上内容。
+                这份确认只记在**这台浏览器**上（不上传服务端、也不代表其他人同意过）。
+              </p>
             </div>
             <div className="ls-confirm-ops">
               <div className="spacer" />
-              <button className="primary" onClick={() => setNoticeOpen(false)} disabled={!noticeRead}>
-                关闭
-              </button>
+              <button onClick={() => setNoticeOpen(false)}>取消</button>
+              <button className="primary" onClick={confirmNotice}>我已阅读并理解</button>
             </div>
           </div>
         </div>

@@ -525,6 +525,26 @@
   user-select: all;
 }
 
+/* 求助模板预览（确认弹窗里）：和结果区的 .ls-help-box 长得像，
+   但它在弹窗内、宽度更窄，所以限高更矮一点，避免把"同意并分析"按钮顶出屏幕 */
+.ls-help-preview {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-subtle);
+}
+
+.ls-help-preview .ls-help-text {
+  margin-bottom: 0;
+  max-height: 200px;
+}
+
+.ls-help-preview .muted {
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
 /* ---- 用户须知（首次使用 mclo.gs 时的必读清单）---- */
 .ls-notice-list {
   margin: 4px 0 10px;
@@ -650,6 +670,56 @@
 
 .ls-agree a {
   color: var(--accent);
+}
+
+/* 须知入口单独一行：以前它是塞在同意勾选框里的链接，点一下既可能把勾选框切掉、
+   语义又和勾选框重叠（"同意了须知为什么按钮还灰着"就是这么来的） */
+.ls-notice-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0 0 8px;
+}
+
+.ls-link-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-size: 12.5px;
+  font-family: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.ls-link-btn:hover {
+  color: var(--accent-solid);
+}
+
+.ls-notice-row .muted {
+  font-size: 11.5px;
+}
+
+/* 灰按钮旁边的"为什么不能点"。放在左侧、不换行挤压按钮 */
+.ls-confirm-hint {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+/* ---- 分析失败的说明与出路 ---- */
+.ls-error-hint {
+  margin-top: 6px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--text-2);
+}
+
+.ls-error-ops {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
 }
 
 .ls-confirm-ops {

@@ -286,8 +286,13 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
     listInstancePorts(instanceId)
       .then((r) => {
         const first = (r?.ports || [])[0]
-        // 优先用 display_domain（隧道级单独配的），否则用后端算好的 public_address
-        if (first) setPubAddr((first as any).display_domain || first.public_address || '')
+        // 直接用后端算好的 public_address：它已经按"隧道级域名 > 线路级域名 > IP"
+        // 的优先级取好，并且**补上了端口**（见 publicAddress）。
+        //
+        // 以前这里优先取 display_domain —— 那是管理员在隧道上填的原始值，
+        // 多数人只填域名不填端口，于是实例页顶部显示成 `mc.example.com`
+        //（玩家拿这个地址是连不上的），而端口明明就在旁边这一行里。
+        if (first) setPubAddr(first.public_address || (first as any).display_domain || '')
       })
       .catch(() => { /* 读不到就不显示，别把错误抛到界面上 */ })
   }, [instanceId])
@@ -727,9 +732,9 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
             <div className="domain">
               <div className="lbl">公网域名 · 管理员设置</div>
               <div className="val">
-                <span>{runtime?.display_domain || pubAddr || '未配置'}</span>
-                {(runtime?.display_domain || pubAddr) && (
-                  <span className="copy" onClick={() => navigator.clipboard?.writeText(runtime?.display_domain || pubAddr)}>复制</span>
+                <span>{runtime?.public_address || pubAddr || '未配置'}</span>
+                {(runtime?.public_address || pubAddr) && (
+                  <span className="copy" onClick={() => navigator.clipboard?.writeText(runtime?.public_address || pubAddr)}>复制</span>
                 )}
               </div>
               <div className="sync">⇄ 与「穿透管理」中的域名同步（含端口）</div>

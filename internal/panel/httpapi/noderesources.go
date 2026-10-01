@@ -236,3 +236,61 @@ func (s *Server) handleListNodeJava(w http.ResponseWriter, r *http.Request) {
 		"fallback": resp.Fallback,
 	})
 }
+
+// handleGetInstanceJava GET /api/instances/{id}/java
+//
+// 实例当前用的 JDK + **该节点上实际装了哪些 JDK**（给"换 JDK"的下拉用）。
+//
+// 为什么不复用 /api/nodes/{id}/java：那个接口要调用方自己知道 node_id，
+// 而实例页只拿得到 instance_id；顺带这里还能把"当前生效值"一起返回，
+// 免得前端拼两次请求、还要处理两者不一致的中间态。
+//
+// 权限 viewer：看得到自己实例的 JDK 版本是合理需求（很多启动报错就是因为版本不对），
+// 改它才是 owner 的事（见 handleSetJava）。
+func (s *Server) handleGetInstanceJava(w http.ResponseWriter, r *http.Request) {
+	instanceID := r.PathValue("id")
+	if !s.requireInstanceLevel(w, r, instanceID, LevelViewer) {
+		return
+	}
+	var nodeID int64
+	var current string
+	if err := s.db.QueryRow(
+		`SELECT node_id, COALESCE(java_version,'') FROM instances WHERE instance_id = ?`, instanceID).
+		Scan(&nodeID, &current); err != nil {
+		writeErr(w, http.StatusNotFound, "实例不存在")
+		return
+	}
+
+	type rt struct {
+		Label   string `json:"label"`
+		Path    string `json:"path"`
+		Home    string `json:"home"`
+		Version string `json:"version"`
+	}
+	list := []rt{}
+	fallback := ""
+	// 节点不可达时**不报错**：下拉退化成一个说明，用户至少还能看到当前值。
+	// 换 JDK 本身反正也要节点在线（走 handleSetJava）。
+	nodeErr := ""
+	if cli, err := s.nodes.GetClient(nodeID); err != nil {
+		nodeErr = err.Error()
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if resp, err := cli.ListJavaRuntimes(ctx, &pb.EmptyRequest{}); err != nil {
+			nodeErr = err.Error()
+		} else {
+			for _, x := range resp.Runtimes {
+				list = append(list, rt{Label: x.Label, Path: x.Path, Home: x.Home, Version: x.Version})
+			}
+			fallback = resp.Fallback
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"current":  current,
+		"runtimes": list,
+		"fallback": fallback,
+		"node_error": nodeErr,
+	})
+}

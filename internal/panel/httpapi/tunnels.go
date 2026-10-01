@@ -48,20 +48,81 @@ func normalizeDisplayHost(s string) string {
 // publicAddress 组装"玩家/外部服务实际该连的地址"。
 //
 // 优先级：
-//  1. **隧道级** display_domain —— 管理员给某一条隧道单独配的（可含端口），最具体
+//  1. **隧道级** display_domain —— 管理员给某一条隧道单独配的，最具体
 //  2. **线路级** display_domain + 端口 —— 最常见：一条线路一个域名，所有端口复用
 //  3. 线路 host + 端口 —— 兜底
 //
-// 为什么线路级这一档很重要：没有它，实例页只能给用户显示 `节点IP:端口`。
-// 用户把地址填进模组配置或发给朋友，等于把节点的真实入口地址公布了。
+// **端口一律由这里自动拼**（2026-09-30 用户反馈："公网域名后带的端口应该自动拼接，
+// 不要依赖线路管理里输入"）：管理员在「穿透管理」里只需要填域名，端口按这条隧道
+// 实际用的 remote_port 补。以前隧道级那档是**原样返回**填进去的字符串：
+// 用户只填了 `mc.example.com`，实例页就显示 `mc.example.com` —— 玩家拿这个地址
+// 连不上，而端口明明就写在旁边那一列里。
+//
+// 已经自己带了端口（`mc.example.com:25570`）的仍然尊重原值：那是有意为之
+//（比如外面还挡了一层 NAT/负载均衡），不能强行改。
 func publicAddress(tunnelDomain, lineDomain, lineHost string, remotePort int32) string {
-	if d := strings.TrimSpace(tunnelDomain); d != "" {
-		return d
+	port := strconv.Itoa(int(remotePort))
+	// 隧道级：归一化（剥掉协议/路径）后按需补端口
+	if d := normalizeTunnelDomain(tunnelDomain); d != "" {
+		if hasExplicitPort(d) {
+			return d
+		}
+		return joinHostPort(d, port)
 	}
 	if d := normalizeDisplayHost(lineDomain); d != "" {
-		return d + ":" + strconv.Itoa(int(remotePort))
+		return joinHostPort(d, port)
 	}
-	return strings.TrimSpace(lineHost) + ":" + strconv.Itoa(int(remotePort))
+	return joinHostPort(strings.TrimSpace(lineHost), port)
+}
+
+// normalizeTunnelDomain 整理隧道级域名，但**保留管理员写明的端口**。
+//
+// 与线路级的 normalizeDisplayHost 不同：线路级要求纯主机名（端口是拼上去的），
+// 而隧道级允许写死端口（`special.example.com:9999`），所以这里只剥协议与路径。
+func normalizeTunnelDomain(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
+// hasExplicitPort 判断主机串里是否已经写了端口。
+//
+// 只认「单个冒号 + 后面全数字」（`x.com:25570`）与「方括号 IPv6 + 冒号数字」
+//（`[::1]:25570`）：裸 IPv6（`fe80::1`）里的冒号不是端口分隔符，
+// 误判会拼出 `fe80::1:25570` 这种看着像但又不像的地址。
+func hasExplicitPort(s string) bool {
+	if strings.HasPrefix(s, "[") {
+		if i := strings.LastIndex(s, "]"); i >= 0 {
+			rest := s[i+1:]
+			return strings.HasPrefix(rest, ":") && isAllDigits(rest[1:])
+		}
+		return false
+	}
+	if strings.Count(s, ":") != 1 {
+		return false
+	}
+	i := strings.LastIndex(s, ":")
+	return isAllDigits(s[i+1:])
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	return strings.IndexFunc(s, func(r rune) bool { return r < '0' || r > '9' }) < 0
+}
+
+// joinHostPort 拼主机与端口（IPv6 字面量要加方括号）。
+func joinHostPort(host, port string) string {
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		return "[" + host + "]:" + port
+	}
+	return host + ":" + port
 }
 
 // handleListFrps GET /api/frps

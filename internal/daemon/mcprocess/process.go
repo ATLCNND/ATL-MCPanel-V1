@@ -3,6 +3,7 @@ package mcprocess
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -71,6 +72,14 @@ type Instance struct {
 	RunAsFor func(instanceID string) (*runas.Identity, error)
 
 	adoptedPID int // 非 0 表示接管 Daemon 重启前遗留的进程
+	// followCmd 接管运行中的容器之后，替我们跟随容器输出的 `docker logs -f` 进程。
+	//
+	// 为什么要有它：容器是 dockerd 管的独立进程，Daemon 重启后容器照跑，
+	// 但**采集输出的那条链路断了** —— 原来 stdout 重定向到 console.log 的是
+	// `docker run` 那个 CLI 子进程，它随 Daemon 一起没了。不补一条跟随进程的话，
+	// 用户看到的是一个"停在被接管那一刻"的控制台，很容易以为实例卡死。
+	// 停止/删除实例时必须把它一起收掉，否则每重启一次就漏一个进程。
+	followCmd *exec.Cmd
 
 	// CPUQuotaPercent 实例的 CPU 配额（百分比，100 = 1 核；0 = 不限制）
 	CPUQuotaPercent int
@@ -798,6 +807,134 @@ func (i *Instance) Containerized() bool {
 	return i.containerized
 }
 
+// EnsureContainerLogFollow 接管一个**仍在运行**的容器后，确保控制台输出有人采集。
+//
+// 背景：实例的 stdout 是靠启动它的那个 `docker run` CLI 进程重定向进
+// logs/console.log 的（见 Start 里 "stdout/stderr 直接重定向到日志文件" 那段）。
+// Daemon 重启后，那个 CLI 未必还在：
+//
+//   - unit 是 `KillMode=control-group`（默认）时，重启会把整个 cgroup 收掉，
+//     CLI 随之消失；**容器本身在 dockerd 的 cgroup 里照常运行** ——
+//     于是没有任何东西再往日志文件里写了，面板上的控制台停在被接管的那一刻；
+//   - unit 是 `KillMode=process`（本项目节点单元用的就是它）时，CLI 会活下来、
+//     继续写，这时**不能再补一个跟随进程**，否则同一行会被写两遍。
+//
+// 所以这里先看 CLI 还在不在（扫 /proc 的 cmdline 找 `--name atl-<id>`），
+// 只有确实没人采集时才补一条
+// `docker logs -f --since <console.log 的 mtime>`。
+//
+// `--since` 用**文件最后写入时间**：用"现在"会丢掉接管期间容器产生的那段输出
+//（崩溃现场往往就在里面），用容器启动时间则会把整段历史重放一遍。
+// 代价是边界上可能重复一两行 —— 比少一段现场划算。
+//
+// 返回 true 表示"现在有东西在采集输出"，false 表示没人采集
+//（调用方据此写"输出无法接续"的兜底说明）。错了不是致命错误，实例本身还是好的。
+func (i *Instance) EnsureContainerLogFollow() (bool, error) {
+	i.mu.Lock()
+	rt := i.Container
+	id := i.ID
+	dir := i.Dir
+	i.mu.Unlock()
+	if rt == nil {
+		return false, fmt.Errorf("该实例没有可用的容器运行时")
+	}
+	if containerRunCLIAlive(id) {
+		// 原有的采集进程还在：它持有 console.log 的 fd，输出照常。
+		return true, nil
+	}
+
+	logPath := filepath.Join(dir, "logs", "console.log")
+	lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return false, fmt.Errorf("打开控制台日志失败：%w", err)
+	}
+	// 时间基准：日志文件的最后写入时间；取不到就退回"1 小时前"
+	//（宁可重放一段，也不要静默丢掉崩溃现场）。
+	since := time.Now().Add(-time.Hour)
+	if st, err := os.Stat(logPath); err == nil {
+		since = st.ModTime()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(ctx, rt.Bin(), "logs", "-f",
+		"--since", since.UTC().Format(time.RFC3339Nano), container.NameOf(id))
+	cmd.Stdout = lf
+	cmd.Stderr = lf
+	if err := cmd.Start(); err != nil {
+		cancel()
+		lf.Close()
+		return false, fmt.Errorf("启动 docker logs -f 失败：%w", err)
+	}
+
+	i.mu.Lock()
+	i.followCmd = cmd
+	i.mu.Unlock()
+
+	go func() {
+		err := cmd.Wait()
+		lf.Close()
+		cancel()
+		i.mu.Lock()
+		if i.followCmd == cmd {
+			i.followCmd = nil
+		}
+		i.mu.Unlock()
+		// 容器停下来时这条命令会正常退出，那不是错误；只有意外退出才值得记一行。
+		if err != nil && ctx.Err() == nil {
+			slog.Warn("跟随容器输出的进程退出了", "instance", id, "error", err)
+		}
+	}()
+	return true, nil
+}
+
+// containerRunCLIAlive 启动该容器的那个 `docker run` 进程是否还活着。
+//
+// 为什么不用 `pgrep`：节点上不保证有 pgrep（CentOS 最小化安装就没有），
+// 而 /proc 一定有；顺带能跳过僵尸进程（僵尸的 cmdline 还是旧的，
+// 它已经不再写任何东西了 —— 拿它当"还活着"会让控制台彻底静默）。
+func containerRunCLIAlive(instanceID string) bool {
+	needle := []byte("--name\x00" + container.NameOf(instanceID))
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		pid := e.Name()
+		if pid[0] < '0' || pid[0] > '9' {
+			continue
+		}
+		raw, err := os.ReadFile("/proc/" + pid + "/cmdline")
+		if err != nil || len(raw) == 0 {
+			continue // 权限或进程已消失：当作不存在
+		}
+		if !bytes.Contains(raw, needle) || !bytes.Contains(raw, []byte("docker")) {
+			continue
+		}
+		// 僵尸 / 已退出：状态字段在 stat 的第 3 列
+		if st, err := os.ReadFile("/proc/" + pid + "/stat"); err == nil {
+			if f := bytes.Fields(st); len(f) > 2 && f[2][0] == 'Z' {
+				continue
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// stopFollowLocked 收掉跟随进程（停止/删除实例时必须调用，否则会漏进程）。
+//
+// **调用方必须已持有 i.mu**：Stop / Kill 都是拿着锁进来的，
+// 这里再去 Lock 一次就是自死锁（Go 的 sync.Mutex 不可重入）——
+// 上一版就是这么写的，编译能过、测试能过，只在"停止一个接管来的容器实例"
+// 这条路径上永久挂住。
+func (i *Instance) stopFollowLocked() {
+	cmd := i.followCmd
+	i.followCmd = nil
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+}
+
 // Runtime 返回该实例的容器运行时（未启用容器化或节点上没有 docker 时为 nil）。
 //
 // 供监控采集用：容器模式下**不能**用 PID 定位实例负载（那是 docker CLI 的
@@ -952,6 +1089,10 @@ func (i *Instance) Stop() error {
 	}
 	// 接管状态：无 stdin 管道，用 SIGTERM（MC 有 shutdown hook，可优雅退出）
 	if i.adoptedPID != 0 {
+		// 跟随进程要一起收掉：容器停了之后 `docker logs -f` 自己会退出，
+		// 但这里不能指望它 —— 停止过程中它还在往 console.log 里写，
+		// 留着就会出现"实例已停止、控制台还在冒字"。
+		i.stopFollowLocked()
 		// 容器模式下"接管的进程"其实是接管的**容器**：容器没有 stdin 可写，
 		// 但可以让 docker 去送 SIGTERM（同样是优雅退出）。
 		if i.containerized && i.Container != nil {
@@ -1026,6 +1167,7 @@ func (i *Instance) Restart(timeout time.Duration) error {
 func (i *Instance) Kill() error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	i.stopFollowLocked()
 	if i.adoptedPID != 0 {
 		if err := syscall.Kill(-i.adoptedPID, syscall.SIGKILL); err != nil {
 			_ = syscall.Kill(i.adoptedPID, syscall.SIGKILL)

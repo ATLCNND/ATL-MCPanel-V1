@@ -109,6 +109,65 @@ func (s *Server) prepareAnalysis(cli pb.DaemonServiceClient, instanceID, path st
 	return p, nil
 }
 
+// maxPhenomenonRunes 「现象」的最长字数。
+//
+// 它会被插进求助文本再发给第三方：不设上限的话，一段粘贴进来的
+// 十万字聊天记录会跟着日志一起上传（既浪费对方额度，也不是用户的本意）。
+const maxPhenomenonRunes = 2000
+
+// clampPhenomenon 截断「现象」到上限（多出来的部分直接丢掉，不再报错）。
+func clampPhenomenon(s string) string {
+	r := []rune(strings.TrimSpace(s))
+	if len(r) <= maxPhenomenonRunes {
+		return string(r)
+	}
+	return string(r[:maxPhenomenonRunes]) + "…（已截断）"
+}
+
+// handleHelpPreview POST /api/instances/{id}/analysis/help-preview
+//
+// body: {phenomenon?}
+//
+// 「上传之前先看看会生成什么」：确认弹窗里显示**渲染后的求助文本**，用户改「现象」时立刻跟着变。
+//
+// 为什么值得单独开一个接口：模板现在是管理员可改的，如果界面只显示模板原文
+// （一堆 {占位符}），用户根本不知道自己最后会贴出去什么 —— 那正是"描述误区"的温床。
+//
+// 纯本地渲染：不出网、不计限流、不写审计。
+func (s *Server) handleHelpPreview(w http.ResponseWriter, r *http.Request) {
+	instanceID := r.PathValue("id")
+	var req struct {
+		Phenomenon string `json:"phenomenon"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req) // body 可以为空
+
+	// 实例必须存在（否则给一段文本出来只会让人以为"预览成功了"）
+	var exists int
+	if err := s.db.QueryRow(`SELECT COUNT(1) FROM instances WHERE instance_id = ?`, instanceID).
+		Scan(&exists); err != nil || exists == 0 {
+		writeErr(w, http.StatusNotFound, "实例不存在")
+		return
+	}
+	// 节点离线时**照样给预览**：环境信息大部分来自数据库，
+	// 只有"运行方式"要靠 Daemon 上报 —— 为此整个预览失败太苛刻了。
+	cli := cliFor(s, instanceID)
+	info := s.instanceBrief(cli, instanceID)
+	text := s.helpTextFor(info, clampPhenomenon(req.Phenomenon),
+		"（上传成功后会填在这里）", "", 0)
+
+	note := "日志链接、原文地址与 ERROR 行数要等上传完成后才会填进去。"
+	if info["runtime"] == "" {
+		note += "（该实例所在节点当前不在线，『运行方式』这一行暂时无法确定）"
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"text":           text,
+		"template":       s.helpTemplate(),
+		"is_default":     strings.TrimSpace(s.analysisSettings().HelpTemplate) == "",
+		"pending_fields": []string{"{url}", "{raw_url}", "{errors}"},
+		"note":           note,
+	})
+}
+
 // handleInstanceAnalyse POST /api/instances/{id}/analyse
 //
 // body: {path, filter_chat, agree, provider_id?, phenomenon?}
@@ -125,7 +184,13 @@ func (s *Server) handleInstanceAnalyse(w http.ResponseWriter, r *http.Request) {
 		FilterChat bool   `json:"filter_chat"`
 		Agree      bool   `json:"agree"`
 		ProviderID int64  `json:"provider_id"`
-		Phenomenon string `json:"phenomenon"`
+		// ProviderKind 按**类型**指定内置提供方（logshare / mclogs）。
+		//
+		// 为什么需要它：内置的 LogShare 与 mclo.gs 都没有数据库行、id 都是 0 ——
+		// 只靠 provider_id 区分不了"自动"与"指定某个内置提供方"（前端下拉里
+		// 三者的 value 会撞在一起，选内置等于选自动）。
+		ProviderKind string `json:"provider_kind"`
+		Phenomenon   string `json:"phenomenon"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "无效请求体")
@@ -156,6 +221,21 @@ func (s *Server) handleInstanceAnalyse(w http.ResponseWriter, r *http.Request) {
 	all = append(all, s.builtinProviders()...)
 	all = append(all, custom...)
 	chain := analysis.BuildChain(st.Order, all, req.ProviderID)
+	// 按类型指定内置提供方（id 都是 0，只能用类型区分；见 req.ProviderKind 的注释）
+	if k := strings.TrimSpace(req.ProviderKind); k != "" && req.ProviderID == 0 {
+		filtered := chain[:0:0]
+		for _, e := range chain {
+			if e.Provider.Kind == k {
+				filtered = append(filtered, e)
+			}
+		}
+		chain = filtered
+		if len(chain) == 0 {
+			writeErr(w, http.StatusBadRequest,
+				"指定的分析提供方不可用（可能已被停用，或该类型不存在）")
+			return
+		}
+	}
 	if len(chain) == 0 {
 		writeErr(w, http.StatusServiceUnavailable, "没有可用的分析提供方（可在「分析平台」里配置，或联系管理员）")
 		return
@@ -194,7 +274,7 @@ func (s *Server) handleInstanceAnalyse(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		resp, err := s.attemptProvider(r, cli, instanceID, p, prep, req.Phenomenon)
+		resp, err := s.attemptProvider(r, cli, instanceID, p, prep, clampPhenomenon(req.Phenomenon))
 		if err != nil {
 			attempts = append(attempts, map[string]interface{}{
 				"provider": p.Name, "kind": p.Kind, "error": err.Error(), "reason": entry.Reason,
@@ -337,7 +417,13 @@ func (s *Server) attemptMclogs(r *http.Request, instanceID string,
 		base = "https://api.mclo.gs"
 	}
 	cli := analysis.NewMclogsClient(base)
-	res, err := cli.Upload(ctx, prep.Content, s.logShareVer)
+
+	// mclo.gs 有自己的上限（实测 /1/limits：10MB / 25000 行），比面板默认的 16MB 小 ——
+	// 不在这里再截一次的话，稍大的日志会被对方直接拒（错误原文是 "Content is too long"），
+	// 而用户看到的只是一句失败。这里按"尾部保留"再截一次，并把截断情况带进结果。
+	content, cut := capForMclogs(prep.Content, mclogsMaxBytes, mclogsMaxLines)
+
+	res, err := cli.Upload(ctx, content, s.logShareVer)
 	if err != nil {
 		return nil, err
 	}
@@ -348,16 +434,16 @@ func (s *Server) attemptMclogs(r *http.Request, instanceID string,
 	recordID := s.insertUploadRecord(uploadRecord{
 		InstanceID: instanceID, RemoteID: res.ID, Token: res.Token, URL: res.URL,
 		RawURL: res.Raw, SourcePath: prep.Path, Size: prep.Size, Lines: res.Lines,
-		Errors: res.Errors, Filtered: prep.Filtered, Truncated: prep.Truncated,
+		Errors: res.Errors, Filtered: prep.Filtered, Truncated: prep.Truncated + cut,
 		UserID: currentUserID(r), Expires: expires, ProviderKind: analysis.KindMclogs, ProviderID: p.ID,
 	})
 	s.audit(r, "analysis_upload", instanceID,
 		fmt.Sprintf("%s → %s（分享链接，mclo.gs，ERROR %d 行）", prep.Path, res.URL, res.Errors))
 
-	// 求助文本：把"社区看不到、但很可能是原因"的环境信息一起拼好
+	// 求助文本：把"社区看不到、但很可能是原因"的环境信息一起拼好。
+	// 措辞来自**管理员配置的模板**（analysis_help_template），面板只负责填占位符。
 	info := s.instanceBrief(cliFor(s, instanceID), instanceID)
-	help := analysis.HelpText(info["name"], info["core"], info["java"], info["mem"],
-		info["runtime"], phenomenon, res.URL, res.Raw, res.Errors)
+	help := s.helpTextFor(info, phenomenon, res.URL, res.Raw, res.Errors)
 
 	return map[string]interface{}{
 		"id":            res.ID,
@@ -424,6 +510,38 @@ type uploadRecord struct {
 	Expires      time.Time
 	ProviderKind string
 	ProviderID   int64
+}
+
+// mclo.gs 的硬上限（实测 GET /1/limits：storageTime=90 天 / maxLength=10MiB / maxLines=25000）。
+const (
+	mclogsMaxBytes = 10 << 20
+	mclogsMaxLines = 25000
+)
+
+// capForMclogs 把日志裁到对方能接受的大小，返回裁剪后的内容与被砍掉的字节数。
+//
+// 两条规则与 LogShare 那条链路一致：**保留尾部**（崩溃现场在后面）、
+// 在文件头注明截断量（用户要能一眼看出"分析的不是完整日志"）。
+// 行数超限时同样保留尾部 —— 只留前 25000 行会把最关键的崩溃现场丢掉。
+func capForMclogs(content string, maxBytes int64, maxLines int) (string, int64) {
+	var cut int64
+	if int64(len(content)) > maxBytes {
+		over := int64(len(content)) - maxBytes
+		cut = over
+		tail := content[over:]
+		if i := strings.IndexByte(tail, '\n'); i >= 0 {
+			tail = tail[i+1:]
+		}
+		content = "（日志过大，为适配 mclo.gs 的上限已省略前部 " + humanBytes(over) + "，以下为尾部）\n" + tail
+	}
+	if lines := strings.Count(content, "\n") + 1; lines > maxLines {
+		all := strings.SplitN(content, "\n", lines)
+		keep := all[lines-maxLines:]
+		cut += int64(len(content) - len(strings.Join(keep, "\n")))
+		content = "（日志行数超过 mclo.gs 上限，已省略前部 " + strconv.Itoa(lines-maxLines) + " 行）\n" +
+			strings.Join(keep, "\n")
+	}
+	return content, cut
 }
 
 func (s *Server) insertUploadRecord(u uploadRecord) int64 {

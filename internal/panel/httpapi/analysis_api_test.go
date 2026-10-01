@@ -277,6 +277,109 @@ func TestAnalysisChainExposed(t *testing.T) {
 
 // itoa 复用 api_test.go 里的同名辅助函数（同一个包，避免重复定义）。
 
+// 求助模板：**默认就有一套可用的**（不是空字符串），管理员能改，改坏了要能当场被拒。
+//
+// 用户反馈的原话是"预填充的求助模板也是空的" —— 所以这里第一条断言就是
+// "全新安装的面板，模板不能是空的"。
+func TestAnalysisHelpTemplate(t *testing.T) {
+	srv, ts := newTestServer(t)
+	admin := loginAs(t, ts, "adm9", "adm9-pass-1234")
+	other := mkUser(t, srv, ts, admin, "pl9", "pl9-pass-1234", RoleUser)
+
+	code, body := doJSON(t, ts, "GET", "/api/analysis/settings", admin, nil)
+	if code != 200 {
+		t.Fatalf("读设置失败：%d", code)
+	}
+	def, _ := body["help_template_default"].(string)
+	if strings.TrimSpace(def) == "" {
+		t.Fatal("内置默认求助模板不能为空（否则用户看到的就是一个空模板）")
+	}
+	if !strings.Contains(def, "{url}") {
+		t.Errorf("默认模板必须含 {url}：\n%s", def)
+	}
+	// 没被改过时，生效值就是默认值（界面据此显示"当前：内置默认"）
+	if body["help_template"] != def || body["help_template_is_default"] != true {
+		t.Errorf("初始状态应等于内置默认：%v / %v", body["help_template_is_default"], body["help_template"])
+	}
+	// 占位符图例要发给前端（界面上点一下就能插入）
+	phs, _ := body["help_placeholders"].([]interface{})
+	if len(phs) < 5 {
+		t.Errorf("占位符图例太少：%v", body["help_placeholders"])
+	}
+
+	// 非管理员不能改
+	if code, _ := doJSON(t, ts, "PUT", "/api/analysis/settings", other,
+		map[string]interface{}{"help_template": "日志：{url}"}); code != http.StatusForbidden {
+		t.Errorf("非管理员改模板应 403，实际 %d", code)
+	}
+
+	// 缺少 {url} 的模板必须被拒（求助帖里最不能少的就是日志链接）
+	if code, res := doJSON(t, ts, "PUT", "/api/analysis/settings", admin,
+		map[string]interface{}{"help_template": "帮我看看这个崩溃"}); code != http.StatusBadRequest {
+		t.Errorf("缺少 {url} 的模板应 400，实际 %d %v", code, res)
+	}
+
+	// 正常保存 → 立刻生效，且 is_default 变为 false
+	if code, res := doJSON(t, ts, "PUT", "/api/analysis/settings", admin,
+		map[string]interface{}{"help_template": "【急】{instance}\n{url}\n现象：{phenomenon}"}); code != 200 {
+		t.Fatalf("保存模板失败：%d %v", code, res)
+	}
+	_, body = doJSON(t, ts, "GET", "/api/analysis/settings", admin, nil)
+	if body["help_template_is_default"] != false {
+		t.Error("保存后不应再标记为内置默认")
+	}
+	if s, _ := body["help_template"].(string); !strings.Contains(s, "【急】") {
+		t.Errorf("模板未保存：%v", body["help_template"])
+	}
+
+	// 存空 = 恢复默认（语义要稳定：界面上的"恢复默认"直接提交空串即可）
+	if code, _ := doJSON(t, ts, "PUT", "/api/analysis/settings", admin,
+		map[string]interface{}{"help_template": ""}); code != 200 {
+		t.Fatalf("清空模板应被接受（= 恢复默认）")
+	}
+	_, body = doJSON(t, ts, "GET", "/api/analysis/settings", admin, nil)
+	if body["help_template"] != def || body["help_template_is_default"] != true {
+		t.Errorf("清空后应回到内置默认：%v", body["help_template"])
+	}
+}
+
+// 求助文本预览：确认弹窗里给用户看"最后会贴出去什么"。
+//
+// 模板可改之后这一步更必要 —— 只显示模板原文（一堆 {占位符}），
+// 用户根本不知道成品长什么样，那正是"描述误区"的来源。
+func TestHelpPreviewEndpoint(t *testing.T) {
+	srv, ts := newTestServer(t)
+	admin := loginAs(t, ts, "adm10", "adm10-pass-1234")
+	// 直接写库建实例：预览不依赖 Daemon（节点离线也要能给预览）
+	seedInstance(t, srv, "prev01", 1)
+
+	code, body := doJSON(t, ts, "POST", "/api/instances/prev01/analysis/help-preview", admin,
+		map[string]interface{}{"phenomenon": "启动 30 秒后崩溃"})
+	if code != 200 {
+		t.Fatalf("预览失败：%d %v", code, body)
+	}
+	text, _ := body["text"].(string)
+	if strings.TrimSpace(text) == "" {
+		t.Fatal("预览文本不能为空 —— 空预览等于没预览")
+	}
+	if !strings.Contains(text, "启动 30 秒后崩溃") {
+		t.Errorf("「现象」没进预览：\n%s", text)
+	}
+	if strings.Contains(text, "{") {
+		t.Errorf("预览里不该残留未替换的占位符：\n%s", text)
+	}
+	// 链接还没产生，必须**明确说明**而不是编一个假链接出来
+	if note, _ := body["note"].(string); note == "" {
+		t.Error("必须说明哪些字段要等上传后才填（否则用户以为预览就是最终版）")
+	}
+
+	// 不存在的实例：404（而不是给一段莫名其妙的文本）
+	if code, _ := doJSON(t, ts, "POST", "/api/instances/nope-nope/analysis/help-preview", admin,
+		map[string]interface{}{}); code != http.StatusNotFound {
+		t.Errorf("不存在的实例应 404，实际 %d", code)
+	}
+}
+
 // mkUser 建一个用户并拿到**带正确角色**的令牌。
 //
 // 两个坑（都是跑出来才发现的）：

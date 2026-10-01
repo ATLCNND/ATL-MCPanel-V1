@@ -112,8 +112,15 @@ type ServerConfig struct {
 	// 留空则使用与面板二进制同目录的 dsh-daemon（保证版本一致）。
 	DaemonBinary string `yaml:"daemon_binary"`
 
-	// 一键部署到节点时使用的目录与单元名（一般无需修改；
-	// 同机运行多个 Daemon 时可借此区分）
+	// RemoteInstallDir 一键部署节点时的安装目录。
+	//
+	// ⚠️ **不能是面板自己的安装目录**（2026-09-30 在内测节点上踩出来的）：
+	// 面板与 Daemon 同机时，节点部署会**重写**该目录下的 config.yaml
+	//（它只写 `server.listen` 占位 + 完整的 `daemon:` 段），面板随即丢掉自己的
+	// `server:` 配置并退回默认值 —— 无 TLS、gRPC 明文、`grpc_mtls: false`。
+	// 现象是两个、看起来毫不相干：面板 443 不再监听 + Daemon 报
+	// `tls: first record does not look like a TLS handshake`。
+	// 所以默认用一个**独立的节点目录**，与面板分开。
 	RemoteInstallDir  string `yaml:"remote_install_dir"`
 	DaemonServiceName string `yaml:"daemon_service_name"`
 	DaemonGRPCListen  string `yaml:"daemon_grpc_listen"`
@@ -359,7 +366,8 @@ func (c *Config) applyDefaults() {
 		c.Server.PKIDir = "data/pki" // CA 与节点证书目录
 	}
 	if c.Server.RemoteInstallDir == "" {
-		c.Server.RemoteInstallDir = "/opt/mcpanel"
+		// 独立于面板目录：同机部署时两者共用 config.yaml 会互相覆盖（见字段注释）
+		c.Server.RemoteInstallDir = "/opt/atl-node"
 	}
 	if c.Server.DaemonServiceName == "" {
 		c.Server.DaemonServiceName = "atlmcpanel-daemon"

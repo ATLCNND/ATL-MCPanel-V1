@@ -282,10 +282,13 @@ func (s *Server) handleDeployNode(w http.ResponseWriter, r *http.Request) {
 		Auth:         auth,
 		RemoteDir:    s.remoteInstallDir(),
 		NodeID:       nv.Name,
-		PanelAddress: s.grpcPublicAddress(),
+		PanelAddress: s.grpcAddressFor(nv.IP),
 		DaemonBinary: binData,
 		GRPCListen:   s.daemonGRPCListen,
 		ServiceName:  s.daemonServiceName,
+		// frpc 就在面板二进制旁边（面板包 bin/ 里带着）——有就一并下发，
+		// 让"给实例开公网端口"开箱可用；没有时跳过（穿透是可选能力）。
+		FrpcBinary: readSiblingBinary(binPath, "frpc"),
 	}
 
 	// 启用 mTLS 时为新节点签发证书
@@ -321,10 +324,23 @@ func (s *Server) handleDeployNode(w http.ResponseWriter, r *http.Request) {
 		_, _ = s.db.Exec(`UPDATE nodes SET grpc_port = ? WHERE id = ?`, p, id)
 	}
 	s.audit(r, "deploy_node", nv.Name, strings.Join(res.Steps, " → "))
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"message": res.Message,
 		"steps":   res.Steps,
-	})
+	}
+	// 远程节点 + 面板 gRPC 只监听回环 = 这个节点**永远连不上来**：
+	// 部署本身会成功（SSH 通、服务能起），但心跳/注册全失败，
+	// 于是「节点监控」显示离线、而实例操控却一切正常 —— 极难归因。
+	// 与其让用户去猜，不如在这里直接说清楚。
+	if !isLocalNodeHost(nv.IP) && s.grpcListenIsLoopback() {
+		resp["warning"] = "面板的 gRPC 只监听回环（" + s.listenAddrOfGRPC + "），" +
+			"而 " + nv.IP + " 是另一台机器 —— 它连不上面板，节点会一直显示离线（实例操控不受影响）。" +
+			"请把 config.yaml 的 server.grpc_listen 改成 0.0.0.0:" + s.grpcPort() +
+			"（并用防火墙只放行节点 IP），或改用同机部署。"
+		s.logger.Warn("部署远程节点，但面板 gRPC 只监听回环",
+			"node", nv.Name, "ip", nv.IP, "grpc_listen", s.listenAddrOfGRPC)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleRestartDaemon POST /api/nodes/{id}/daemon/restart
@@ -434,6 +450,86 @@ func (s *Server) daemonBinaryPath() (string, error) {
 	return p, nil
 }
 
+// readSiblingBinary 读"与某个二进制同目录"的可选文件（读不到就返回 nil）。
+//
+// 用途：面板包在 bin/ 里同时带着 dsh-daemon 与 frpc，一键部署要把 frpc 也下发。
+// 读不到**不算错误** —— 老包或裁剪过的包没有 frpc，穿透只是不可用而已，
+// 不该让整次部署失败。
+func readSiblingBinary(refPath, name string) []byte {
+	p := filepath.Join(filepath.Dir(refPath), name)
+	b, err := os.ReadFile(p)
+	if err != nil || len(b) == 0 {
+		return nil
+	}
+	return b
+}
+
+// grpcAddressFor 返回**这个节点**该用来连面板 gRPC 的地址。
+//
+// 为什么要按节点区分（2026-09-30 实测踩到）：面板的 gRPC 默认只监听回环
+//（`grpc_listen: 127.0.0.1:9090`，gRPC 是**明文 + 仅 CA 校验节点证书**的管理口，
+// 不该直接暴露公网）。如果节点就是面板本机，却把 external_url 推导出来的
+// 公网域名交给它，Daemon 会一直 `connect: connection refused`：
+//
+//   - 面板 → 节点的 gRPC（9091）照常可用，所以**实例操控一切正常**；
+//   - 节点 → 面板的心跳/注册全失败，于是「节点监控」显示离线、
+//     `node_offline` 告警一直挂着 —— 一个看起来自相矛盾、极难归因的现象。
+//
+// 同机节点（ip 是回环 / localhost / 本机名）一律给回环地址。
+func (s *Server) grpcAddressFor(nodeIP string) string {
+	if isLocalNodeHost(nodeIP) {
+		return "127.0.0.1:" + s.grpcPort()
+	}
+	return s.grpcPublicAddress()
+}
+
+// isLocalNodeHost 这个节点地址是不是"面板自己这台机器"。
+func isLocalNodeHost(host string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	switch h {
+	case "127.0.0.1", "::1", "localhost", "":
+		return true
+	}
+	// 本机名（如 HK8194921.local）：面板与节点同机部署时，一键部署默认填的就是它
+	if name, err := os.Hostname(); err == nil && name != "" {
+		if h == strings.ToLower(name) {
+			return true
+		}
+		if short := strings.SplitN(strings.ToLower(name), ".", 2)[0]; h == short {
+			return true
+		}
+	}
+	return false
+}
+
+// grpcPort 面板 gRPC 实际监听的端口（取 grpc_listen 的端口部分）。
+func (s *Server) grpcPort() string {
+	if i := strings.LastIndex(s.listenAddrOfGRPC, ":"); i >= 0 {
+		if p := strings.TrimSpace(s.listenAddrOfGRPC[i+1:]); p != "" {
+			return p
+		}
+	}
+	return "9090"
+}
+
+// grpcListenIsLoopback 面板的 gRPC 是否**只**监听回环。
+//
+// 刻意不复用 isLocalNodeHost：这里问的是"监听地址覆盖面"，
+// `:9090` 与 `0.0.0.0:9090` 都表示"所有网卡"（远程节点连得上），
+// 而空主机名在 isLocalNodeHost 里会被当成"本机" —— 那样会得出反的结论。
+func (s *Server) grpcListenIsLoopback() bool {
+	host := s.listenAddrOfGRPC
+	if i := strings.LastIndex(host, ":"); i >= 0 {
+		host = host[:i]
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	switch strings.ToLower(host) {
+	case "127.0.0.1", "::1", "localhost":
+		return true
+	}
+	return false
+}
+
 // grpcPublicAddress 返回节点用于连接面板 gRPC 的地址。
 func (s *Server) grpcPublicAddress() string {
 	if s.grpcPublicAddr != "" {
@@ -453,11 +549,5 @@ func (s *Server) grpcPublicAddress() string {
 			host = trimmed
 		}
 	}
-	port := "9090"
-	if i := strings.LastIndex(s.listenAddrOfGRPC, ":"); i >= 0 {
-		if p := strings.TrimSpace(s.listenAddrOfGRPC[i+1:]); p != "" {
-			port = p
-		}
-	}
-	return host + ":" + port
+	return host + ":" + s.grpcPort()
 }

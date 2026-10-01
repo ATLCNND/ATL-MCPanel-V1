@@ -58,6 +58,7 @@ const (
 	DaemonService_SetConfig_FullMethodName              = "/mcpanel.DaemonService/SetConfig"
 	DaemonService_UploadJar_FullMethodName              = "/mcpanel.DaemonService/UploadJar"
 	DaemonService_SetInstanceJar_FullMethodName         = "/mcpanel.DaemonService/SetInstanceJar"
+	DaemonService_SetInstanceJava_FullMethodName        = "/mcpanel.DaemonService/SetInstanceJava"
 	DaemonService_ListJars_FullMethodName               = "/mcpanel.DaemonService/ListJars"
 	DaemonService_Backup_FullMethodName                 = "/mcpanel.DaemonService/Backup"
 	DaemonService_Restore_FullMethodName                = "/mcpanel.DaemonService/Restore"
@@ -137,6 +138,13 @@ type DaemonServiceClient interface {
 	// 核心 jar 管理
 	UploadJar(ctx context.Context, in *UploadJarRequest, opts ...grpc.CallOption) (*OperationResponse, error)
 	SetInstanceJar(ctx context.Context, in *SetInstanceJarRequest, opts ...grpc.CallOption) (*OperationResponse, error)
+	// 切换实例使用的 JDK（下次启动生效）。
+	//
+	// 为什么需要单独的 RPC：java_version 原本只在**建实例时**写进 instance.json，
+	// 之后面板没有任何办法改它 —— 用户要"给已有实例换个 JDK"只能删库重建。
+	// 而 instance.json 在节点侧是**只读虚拟映射**（它是被 root 信任的元数据，
+	// 不能让实例用户改写），所以只能在 Daemon 里改。
+	SetInstanceJava(ctx context.Context, in *SetInstanceJavaRequest, opts ...grpc.CallOption) (*OperationResponse, error)
 	ListJars(ctx context.Context, in *ListJarsRequest, opts ...grpc.CallOption) (*ListJarsResponse, error)
 	// 备份/回滚
 	Backup(ctx context.Context, in *BackupRequest, opts ...grpc.CallOption) (*BackupResponse, error)
@@ -584,6 +592,16 @@ func (c *daemonServiceClient) SetInstanceJar(ctx context.Context, in *SetInstanc
 	return out, nil
 }
 
+func (c *daemonServiceClient) SetInstanceJava(ctx context.Context, in *SetInstanceJavaRequest, opts ...grpc.CallOption) (*OperationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OperationResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SetInstanceJava_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) ListJars(ctx context.Context, in *ListJarsRequest, opts ...grpc.CallOption) (*ListJarsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListJarsResponse)
@@ -742,6 +760,13 @@ type DaemonServiceServer interface {
 	// 核心 jar 管理
 	UploadJar(context.Context, *UploadJarRequest) (*OperationResponse, error)
 	SetInstanceJar(context.Context, *SetInstanceJarRequest) (*OperationResponse, error)
+	// 切换实例使用的 JDK（下次启动生效）。
+	//
+	// 为什么需要单独的 RPC：java_version 原本只在**建实例时**写进 instance.json，
+	// 之后面板没有任何办法改它 —— 用户要"给已有实例换个 JDK"只能删库重建。
+	// 而 instance.json 在节点侧是**只读虚拟映射**（它是被 root 信任的元数据，
+	// 不能让实例用户改写），所以只能在 Daemon 里改。
+	SetInstanceJava(context.Context, *SetInstanceJavaRequest) (*OperationResponse, error)
 	ListJars(context.Context, *ListJarsRequest) (*ListJarsResponse, error)
 	// 备份/回滚
 	Backup(context.Context, *BackupRequest) (*BackupResponse, error)
@@ -882,6 +907,9 @@ func (UnimplementedDaemonServiceServer) UploadJar(context.Context, *UploadJarReq
 }
 func (UnimplementedDaemonServiceServer) SetInstanceJar(context.Context, *SetInstanceJarRequest) (*OperationResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetInstanceJar not implemented")
+}
+func (UnimplementedDaemonServiceServer) SetInstanceJava(context.Context, *SetInstanceJavaRequest) (*OperationResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetInstanceJava not implemented")
 }
 func (UnimplementedDaemonServiceServer) ListJars(context.Context, *ListJarsRequest) (*ListJarsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListJars not implemented")
@@ -1590,6 +1618,24 @@ func _DaemonService_SetInstanceJar_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_SetInstanceJava_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetInstanceJavaRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SetInstanceJava(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SetInstanceJava_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SetInstanceJava(ctx, req.(*SetInstanceJavaRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_ListJars_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListJarsRequest)
 	if err := dec(in); err != nil {
@@ -1894,6 +1940,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetInstanceJar",
 			Handler:    _DaemonService_SetInstanceJar_Handler,
+		},
+		{
+			MethodName: "SetInstanceJava",
+			Handler:    _DaemonService_SetInstanceJava_Handler,
 		},
 		{
 			MethodName: "ListJars",

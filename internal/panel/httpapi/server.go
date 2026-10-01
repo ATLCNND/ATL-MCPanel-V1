@@ -274,6 +274,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/analysis/settings", s.requireAdmin(s.handleSetAnalysisSettings))
 	// 统一的"发起分析"入口（按提供方链依次尝试）
 	mux.HandleFunc("POST /api/instances/{id}/analyse", s.requireAuth(s.handleInstanceAnalyse))
+	mux.HandleFunc("POST /api/instances/{id}/analysis/help-preview", s.requireAuth(s.handleHelpPreview))
 	mux.HandleFunc("GET /api/instances/{id}/analysis", s.requireAuth(s.handleInstanceAnalysisHistory))
 	mux.HandleFunc("GET /api/analysis/ai/{record_id}", s.requireAuth(s.handleAnalysisAI))
 	mux.HandleFunc("DELETE /api/analysis/{record_id}", s.requireAuth(s.handleDeleteAnalysisRecord))
@@ -437,6 +438,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/instances/{id}/jars", s.requireAuth(s.handleListJars))
 	mux.HandleFunc("POST /api/instances/{id}/jars", s.requireAuth(s.handleUploadJar))
 	mux.HandleFunc("POST /api/instances/{id}/jar", s.requireAuth(s.handleSetJar))
+	mux.HandleFunc("PUT /api/instances/{id}/java", s.requireAuth(s.handleSetJava))
+	mux.HandleFunc("GET /api/instances/{id}/java", s.requireAuth(s.handleGetInstanceJava))
 
 	// 启动脚本（start.sh）
 	mux.HandleFunc("GET /api/instances/{id}/start-script", s.requireAuth(s.handleGetStartScript))

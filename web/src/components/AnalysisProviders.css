@@ -248,6 +248,63 @@
   margin-top: 10px;
 }
 
+/* ---- 求助模板编辑 ---- */
+.ap-subtitle {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 18px 0 6px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.ap-subtitle .muted {
+  font-weight: 400;
+  font-size: 11.5px;
+}
+
+/* 占位符徽标：点一下就插到模板末尾，省得手打花括号打错 */
+.ap-placeholders {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.ap-ph {
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--bg-subtle);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.ap-ph:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ap-template {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--bg-base);
+  color: var(--text-1);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.7;
+  resize: vertical;
+}
+
 .ap-form {
   width: min(560px, 94vw);
   display: flex;

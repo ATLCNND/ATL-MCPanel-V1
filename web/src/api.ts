@@ -355,6 +355,29 @@ export async function listNodeJava(nodeId: number): Promise<{ runtimes: JavaRunt
   return apiFetch(`/api/nodes/${nodeId}/java`)
 }
 
+/**
+ * 实例当前用的 JDK + 该节点上装了哪些 JDK（「启动」页换 JDK 的下拉用）。
+ *
+ * 单独一个实例级接口而不是让前端拼两次请求：实例页只拿得到 instance_id，
+ * 而且"当前生效值"与"可选列表"来自两处（面板库 / 节点探测），
+ * 分成两次请求就得处理两者不一致的中间态。
+ */
+export async function getInstanceJava(instanceId: string): Promise<{
+  current: string
+  runtimes: JavaRuntime[]
+  fallback: string
+  node_error: string
+}> {
+  return apiFetch(`/api/instances/${encodeURIComponent(instanceId)}/java`)
+}
+
+/** 给**已有实例**换 JDK（空串 = 自动用 PATH 上的 java）。下次启动生效。 */
+export async function setInstanceJava(instanceId: string, javaVersion: string): Promise<{ message: string; java_version: string }> {
+  return apiFetch(`/api/instances/${encodeURIComponent(instanceId)}/java`, {
+    method: 'PUT', body: JSON.stringify({ java_version: javaVersion }),
+  })
+}
+
 // ---- 节点用户授权（仅总管理员） ----
 
 export interface NodeUserGrant {
@@ -1064,6 +1087,11 @@ export interface AnalysisProvidersResp {
   logshare_on: boolean
 }
 
+export interface HelpPlaceholder {
+  name: string
+  desc: string
+}
+
 export interface AnalysisSettings {
   order: string[]
   allow_private: boolean
@@ -1073,6 +1101,14 @@ export interface AnalysisSettings {
   logshare_on: boolean
   rate_default_min: number
   rate_default_day: number
+  /** 当前生效的求助模板原文（含 {占位符}） */
+  help_template: string
+  /** 内置默认模板（「恢复默认」按钮用它，也用作编辑框的初始内容） */
+  help_template_default: string
+  /** 是否还是内置默认（没被管理员改过） */
+  help_template_is_default: boolean
+  /** 占位符图例：由后端给出，避免文档与实现走散 */
+  help_placeholders: HelpPlaceholder[]
 }
 
 export async function listAnalysisProviders(): Promise<AnalysisProvidersResp> {
@@ -1100,8 +1136,28 @@ export async function getAnalysisSettings(): Promise<AnalysisSettings> {
   return apiFetch('/api/analysis/settings')
 }
 
-export async function setAnalysisSettings(payload: Partial<Pick<AnalysisSettings, 'order' | 'allow_private' | 'rate_per_min' | 'rate_per_day'>>) {
+export async function setAnalysisSettings(payload: Partial<Pick<AnalysisSettings, 'order' | 'allow_private' | 'rate_per_min' | 'rate_per_day' | 'help_template'>>) {
   return apiFetch('/api/analysis/settings', { method: 'PUT', body: JSON.stringify(payload) })
+}
+
+export interface HelpPreview {
+  text: string
+  template: string
+  is_default: boolean
+  pending_fields: string[]
+  note: string
+}
+
+/**
+ * 预览「将生成的求助文本」。
+ *
+ * 求助模板现在是管理员可改的：只把模板原文摆给用户看（一堆 {占位符}），
+ * 他并不知道自己最后会贴出去什么。这里按真实实例渲染一遍，纯本地、不出网。
+ */
+export async function previewHelpText(instanceId: string, phenomenon: string): Promise<HelpPreview> {
+  return apiFetch(`/api/instances/${encodeURIComponent(instanceId)}/analysis/help-preview`, {
+    method: 'POST', body: JSON.stringify({ phenomenon }),
+  })
 }
 
 export interface AnalyseOpts {
@@ -1109,6 +1165,8 @@ export interface AnalyseOpts {
   filterChat: boolean
   agree: boolean
   providerId?: number
+  /** 按**类型**指定内置提供方（logshare / mclogs）：它们没有数据库行、id 都是 0 */
+  providerKind?: string
   /** 可选：把"现象"也带上（用于生成求助文本） */
   phenomenon?: string
 }
@@ -1143,7 +1201,10 @@ export async function analyseInstance(instanceId: string, opts: AnalyseOpts): Pr
       path: opts.path,
       filter_chat: opts.filterChat,
       agree: opts.agree,
+      // 内置提供方（LogShare / mclo.gs）没有数据库行，id 都是 0 ——
+      // 只传 id 的话"自动"与"指定内置"撞成同一个值，所以内置的用 kind 指定
       provider_id: opts.providerId || 0,
+      provider_kind: opts.providerKind || '',
       phenomenon: opts.phenomenon || '',
     }),
   })
@@ -2003,7 +2064,11 @@ export interface InstanceRuntime {
   net_tx_rate: number
   net_rx_total: number
   net_tx_total: number
-  display_domain: string
+  /**
+   * 该连的对外地址（域名 + 端口）。端口由后端按这条隧道实际用的 remote_port 自动拼上，
+   * 管理员只填域名即可 —— 见 publicAddress。
+   */
+  public_address: string
   /** node = 节点整机聚合；instance = 该实例隧道精确值 */
   net_scope?: string
   /** JDK 回退说明（空 = 正常）：选了 17、节点上却没有，实际用了 PATH 上的哪个 */

@@ -261,10 +261,73 @@ func TestHelpText(t *testing.T) {
 	s := HelpText("beta01", "Paper 1.21.1", "21", "2G",
 		"容器化运行（容器内存上限 2G）", "启动后约 30 秒崩溃",
 		"https://mclo.gs/abc", "https://api.mclo.gs/1/raw/abc", 12)
-	for _, want := range []string{"beta01", "https://mclo.gs/abc", "12", "Paper 1.21.1", "Java 21",
+	for _, want := range []string{"beta01", "https://mclo.gs/abc", "12", "Paper 1.21.1", "Java：21",
 		"2G", "容器化运行", "启动后约 30 秒崩溃"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("求助文本缺少 %q：\n%s", want, s)
 		}
+	}
+	// 模板里的 {占位符} 必须全部被替换掉：留一个没换的原样输出
+	// 就等于让用户把 "{raw_url}" 贴到社区里去问人。
+	if strings.Contains(s, "{") {
+		t.Errorf("求助文本里还有没被替换的占位符：\n%s", s)
+	}
+}
+
+// 求助模板引擎：整行空占位符要连标签一起丢掉，未知占位符要原样留着（让人看得见写错了）。
+func TestRenderHelp(t *testing.T) {
+	base := HelpVars{URL: "https://mclo.gs/x", Panel: "我的面板"}
+
+	// 1) 空值行整行消失：不能留下 "· Java：" 这种悬空标签
+	got := RenderHelp("核心：{core}\nJava：{java}\n日志：{url}", base)
+	if strings.Contains(got, "Java") || strings.Contains(got, "核心") {
+		t.Errorf("空占位符所在行没有被丢掉：\n%s", got)
+	}
+	if !strings.Contains(got, "https://mclo.gs/x") {
+		t.Errorf("非空占位符被误删：\n%s", got)
+	}
+
+	// 2) 不含占位符的固定文案永远保留（那是管理员自己写的话）
+	got = RenderHelp("请帮我看看，谢谢！\n日志：{url}", base)
+	if !strings.Contains(got, "请帮我看看，谢谢！") {
+		t.Errorf("固定文案被丢掉了：\n%s", got)
+	}
+
+	// 3) 未知占位符原样保留 —— 写错名字要能被看见
+	got = RenderHelp("日志：{url}\n{urlr}", base)
+	if !strings.Contains(got, "{urlr}") {
+		t.Errorf("未知占位符不该被静默吞掉：\n%s", got)
+	}
+
+	// 4) 空模板 = 内置默认模板（清空设置等于恢复默认，不是生成空文本）
+	got = RenderHelp("", base)
+	if !strings.Contains(got, "https://mclo.gs/x") || !strings.Contains(got, "我的面板") {
+		t.Errorf("空模板没有回退到默认模板：\n%s", got)
+	}
+
+	// 5) 管理员自定义措辞要原样生效
+	got = RenderHelp("【急】{instance} 挂了\n{url}\n{panel}", HelpVars{Instance: "s1", URL: "u", Panel: "P"})
+	if !strings.HasPrefix(got, "【急】s1 挂了") || !strings.HasSuffix(got, "P") {
+		t.Errorf("自定义模板没有被完整渲染：\n%s", got)
+	}
+}
+
+// 保存前校验：没有 {url} 的模板必须被拒 —— 求助帖里最不能少的就是日志链接。
+func TestValidateHelpTemplate(t *testing.T) {
+	if err := ValidateHelpTemplate(""); err != nil {
+		t.Errorf("空模板应当允许（= 恢复默认），却报错：%v", err)
+	}
+	if err := ValidateHelpTemplate("日志：{url}"); err != nil {
+		t.Errorf("含 {url} 的模板不该被拒：%v", err)
+	}
+	if err := ValidateHelpTemplate("麻烦帮我看看崩溃原因"); err == nil {
+		t.Error("缺少 {url} 的模板应当被拒（否则求助帖里没有日志链接）")
+	}
+	if err := ValidateHelpTemplate("{url}" + strings.Repeat("啊", 4001)); err == nil {
+		t.Error("超长模板应当被拒")
+	}
+	// 默认模板自己必须能过校验（否则"恢复默认"会把自己卡住）
+	if err := ValidateHelpTemplate(DefaultHelpTemplate); err != nil {
+		t.Errorf("内置默认模板没通过校验：%v", err)
 	}
 }
