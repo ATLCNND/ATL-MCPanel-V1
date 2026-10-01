@@ -87,8 +87,33 @@ db:
   driver: sqlite3
   dsn: data/mcpanel.db
 
+  # ---- 面板自身数据库的自动备份 ----
+  #
+  # 默认**开启**：面板启动时若距上次备份超过间隔就做一份，之后按间隔轮询。
+  # 快照用 SQLite 的 `VACUUM INTO` 生成**一致性副本** —— 库跑在 WAL 模式下，
+  # 直接 `cp` 文件可能拿到不一致的副本，所以别用 cp。
+  #
+  # ⚠️ 两个容易踩的点：
+  #   1) 默认间隔 24 小时 ⇒ **全新部署当天只有"首次启动"那一份**，
+  #      而那份里还没有你后来建的账号、实例与节点。投产当天或重大改动前，
+  #      请手工做一份快照：
+  #        sqlite3 data/mcpanel.db "VACUUM INTO 'data/backups/manual-$(date +%F-%H%M%S).db'"
+  #      （`deploy/upgrade.sh` 在升级前也会自动做一份）
+  #   2) 备份默认与数据库**同盘** —— 同一块盘坏了两份一起没。长期运行建议把
+  #      backup_dir 指到另一块盘。
+  #
+  # 校验备份能不能用（不必真的恢复）：
+  #   sqlite3 data/backups/panel-YYYYMMDD-HHMMSS.db "pragma integrity_check;"   # 期望 ok
+  #   sqlite3 data/backups/panel-YYYYMMDD-HHMMSS.db "select count(*) from users;"
+  backup_enabled: true      # 设为 false 可关掉自动备份（不推荐）
+  backup_dir: ""            # 默认 <dsn 所在目录>/backups
+  backup_keep: 7            # 保留最近几份，更早的自动清理
+  backup_interval: "24h"    # 备份间隔，如 "6h" / "24h"
+
 auth:
   jwt_secret: "CHANGE_ME_TO_A_RANDOM_SECRET"
+  # 留成上面的占位符即可：面板启动时会自动生成 data/jwt.secret（0600）并优先使用它。
+  # 只有想自己管密钥时才在这里填真实值（填了就以配置为准，注意权限）。
 
 # ---- 第三方日志分析（LogShare.CN）----
 #

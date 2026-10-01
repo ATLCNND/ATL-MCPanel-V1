@@ -89,13 +89,51 @@ fi
 #   · 它由 scripts/build-runtime-image.sh 单独产出（要 debootstrap，几分钟）；
 #   · 一上来 `rm -rf dist` 会把它删掉，于是"随包分发镜像"这件事会静默失效 ——
 #     打包照常成功，只是节点包里少了 runtime/，到节点上才发现容器化用不了。
+#
+# 清理范围还要**按架构收窄**（2026-10-01 踩到）：原来是"删掉所有 `-linux-*` 产物"，
+# 于是 `--arch amd64` 打完包、再来一次 `--arch arm64`，会把刚打好的 amd64 包一起删掉 ——
+# 发布时以为四个包都在，dist 里其实只剩最后那一个。
+# `.sha256` 原来也是全局删，会连带删掉运行时镜像的校验和（那份不由本脚本重新生成）。
 mkdir -p dist
-find dist -maxdepth 1 -name 'atl-mcpanel-*-linux-*' -exec rm -rf {} + 2>/dev/null || true
-find dist -maxdepth 1 -name '*.tar.gz.sha256' -delete 2>/dev/null || true
+for a in $ARCHES; do
+  find dist -maxdepth 1 -name "atl-mcpanel-*-linux-${a}-*" -exec rm -rf {} + 2>/dev/null || true
+  find dist -maxdepth 1 -name "atl-mcpanel-*-linux-${a}-*.tar.gz.sha256" -delete 2>/dev/null || true
+done
 
 # 放进包里的用户向文档（HANDOFF / V1-CLOSEOUT / V2* 这类内部文档一律不进包）
 PKG_DOCS_PANEL="DEPLOYMENT.md CERTIFICATES.md MTLS.md ARCHITECTURE.md API.md"
 PKG_DOCS_NODE="DEPLOYMENT.md MTLS.md CERTIFICATES.md"
+
+# copy_frpc 把**与包同架构**的 frpc 放进包里（$1=架构 $2=目标 bin 目录 $3=用途说明）。
+#
+# 为什么单独抽出来并校验架构（2026-10-01 踩到）：原来是
+#   frpc="dist/frpc-linux-${arch}"; [ -f "$frpc" ] || frpc="dist/frpc"
+# 也就是**找不到就退回 dist/frpc** —— 而那份是 amd64 的。于是 arm64 包里
+# 装着一个 x86-64 的 frpc：文件在、大小对、`bash -n` 也过得去，
+# 只有真在 arm64 机器上跑才会报 "cannot execute binary file"，
+# 而现象是"穿透怎么都起不来"，跟"包不全"完全不像。
+#
+# 现在的规则：优先用带架构后缀的那份；退回 dist/frpc 时**先验架构**，
+# 不匹配就**不复制**并给出显式警告 —— 宁可不带（用户能自己放），
+# 也不带一个在目标机器上根本跑不起来的二进制。
+copy_frpc() {
+  local arch="$1" dest="$2" why="$3"
+  local f="dist/frpc-linux-${arch}"
+  [ -f "$f" ] || f="dist/frpc"
+  if [ ! -f "$f" ]; then
+    echo "    提示：未找到 frpc（该包不含穿透客户端，$why）" >&2
+    return 0
+  fi
+  local want="x86-64"
+  [ "$arch" = "arm64" ] && want="aarch64"
+  if ! file -b "$f" | grep -q "$want"; then
+    echo "    ⚠️ $f 不是 ${arch} 架构（$(file -b "$f" | cut -c1-40)…），**不放进本包**：" >&2
+    echo "       请把 ${arch} 的 frpc 放到 dist/frpc-linux-${arch} 后重跑。" >&2
+    return 0
+  fi
+  cp "$f" "$dest/frpc"
+  echo "    含 frpc $(du -h "$f" | cut -f1)（$why）"
+}
 
 make_pkg() {
   local arch="$1" kind="$2"
@@ -114,12 +152,7 @@ make_pkg() {
     [ -f "$srcbin/dsh-daemon" ] && cp "$srcbin/dsh-daemon" "$out/bin/"
     # frpc 也要放一份：一键部署会把"面板二进制旁边"的 frpc 一并下发到节点
     # （见 httpapi/nodes.go 的 readSiblingBinary），这样穿透开箱可用。
-    frpc="dist/frpc-linux-${arch}"
-    [ -f "$frpc" ] || frpc="dist/frpc"
-    if [ -f "$frpc" ]; then
-      cp "$frpc" "$out/bin/frpc"
-      echo "    含 frpc $(du -h "$frpc" | cut -f1)（供一键部署下发）"
-    fi
+    copy_frpc "$arch" "$out/bin" "供一键部署下发"
     cp -r web/dist "$out/web-dist"
   else
     cp "$srcbin/dsh-daemon" "$out/bin/"
@@ -129,14 +162,7 @@ make_pkg() {
     # frpstest.go），节点上没有 frpc 时"穿透"整块不可用；而"自己去 GitHub 下 frp 再解压"
     # 对用户是纯粹的额外负担 —— 节点包本来就带运行时镜像了，多带一个 frpc 最省事。
     # 找不到时只提示、不算失败：穿透是可选能力。
-    frpc="dist/frpc-linux-${arch}"
-    [ -f "$frpc" ] || frpc="dist/frpc"
-    if [ -f "$frpc" ]; then
-      cp "$frpc" "$out/bin/frpc"
-      echo "    含 frpc $(du -h "$frpc" | cut -f1)（穿透客户端）"
-    else
-      echo "    提示：未找到 dist/frpc（节点上将没有穿透客户端）" >&2
-    fi
+    copy_frpc "$arch" "$out/bin" "穿透客户端"
     # 容器隔离防火墙规则随节点包分发：它是**容器化可用的前提**（容器能访问宿主
     # 服务就等于没隔离），且必须由 systemd 在 docker 之后落地，不能只写在文档里。
     cp deploy/systemd/atl-container-firewall.service "$out/deploy/systemd/" 2>/dev/null || true
