@@ -258,11 +258,15 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
   // 到期控制与删除同级：总管理员，或该节点上的节点用户。
   // 具体的编辑面板已搬到「任务」标签页（见 ExpiryPanel），这里只负责算权限并传下去。
   const canManageExpiry = isAdminUser || (isNodeUser(user?.role) && level !== '')
-  // 资源限制（CPU / 内存 / 磁盘）的编辑权与**改名、公网端口**同级：
-  // 后端判据是 canManageInstanceSettings（总管理员 / 该节点的节点用户 / 实例 owner），
-  // 前端据此决定要不要给编辑入口 —— 后端那道 403 不该是唯一的信号。
-  // collab / viewer 连启动脚本都改不了，这里自然也不给。
-  const canEditLimits = isAdminUser || canWriteFiles || (isNodeUser(user?.role) && level !== '')
+  // 资源限制（CPU / 内存 / 磁盘）的编辑权**与改名、公网端口不同**：
+  // 只有总管理员与该节点的节点用户能改。后端判据是 canManageInstance
+  // （见 instancelimits.go 的注释）——实例 owner 也不行。
+  //
+  // 为什么 owner 不行（这里曾经写错，2026-10-03 由用户实测发现）：
+  // 资源上限是**运营侧的约束**，租户如果能自己改，运营方收紧之后对方点一下
+  // 就能放开，这个接口等于没做。前端必须与后端口径一致，否则给出去的编辑入口
+  // 只会带来一个 403。
+  const canEditLimits = isAdminUser || (isNodeUser(user?.role) && level !== '')
 
   // ---- 全局导航折叠 ----
   // 折叠时只保留最常用的几项；其余收进「展开全部」。
@@ -903,8 +907,9 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
 
           {/* 资源限制（CPU / 内存 / 磁盘）：建实例时定下，之后原来**没有任何入口**
               能改 —— 节点用户建实例时把内存留空（= 不限制），运营侧就再也收不回来。
-              这里给它一个就地编辑的入口，权限与改名、公网端口一致
-              （总管理员 / 该节点的节点用户 / 实例 owner，见 canEditLimits）。
+              这里给它一个就地编辑的入口，但权限**只给运营侧**（总管理员 / 该节点的
+              节点用户，见 canEditLimits）：租户能自己改的话，运营方收紧之后
+              对方点一下就能放开，这个接口等于没做。
               没有权限的人只看得到当前值 —— 后端那道 403 不该是唯一的信号。 */}
           <div className="w">
             <div className="w-title"><span>资源限制</span><span className="w-ico">⚖</span></div>
@@ -945,7 +950,7 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
                     <button onClick={openLimits} disabled={busy}>修改限制</button>
                   </div>
                 ) : (
-                  <div className="res-note">需要实例所有者（owner）或节点管理员权限才能修改。</div>
+                  <div className="res-note">资源上限由运营方设置：需要总管理员或该节点的节点管理员权限才能修改。如需调整请找管理员。</div>
                 )}
               </>
             ) : (

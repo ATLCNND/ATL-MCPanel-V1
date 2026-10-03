@@ -42,28 +42,69 @@ func countLimitAudits(t *testing.T, srv *Server) int {
 	return n
 }
 
-// TestInstanceLimits_OwnerCanUpdate 覆盖本功能的主诉求：
-// 一台三个上限都留成"不限制"的实例（节点用户建实例时的默认写法），
-// 终于能被改住 —— 而且库里真的变了。
-func TestInstanceLimits_OwnerCanUpdate(t *testing.T) {
+// TestInstanceLimits_InstanceOwnerDenied 是本功能**权限口径的底线**，也是被
+// 真实用户发现的漏洞的回归用例（2026-10-03）：
+//
+//	**实例所有者（普通 user）不能改自己实例的资源上限。**
+//
+// 初版实现沿用了"改名 / 开公网端口"那套判据（canManageInstanceSettings，含
+// LevelOwner），于是租户能把上限改回"不限制" —— 运营侧刚收紧，对方点一下就放开，
+// 这个接口等于没做。配额是**运营侧的约束**，修改权只属于总管理员与该节点的节点用户。
+//
+// 这条用例的价值在于：它**必须**在"给 owner 放权"的改动下立刻失败 ——
+// 之前那条 TestInstanceLimits_OwnerCanUpdate 断言的正是反面，已删除。
+func TestInstanceLimits_InstanceOwnerDenied(t *testing.T) {
 	srv, ts := newTestServer(t)
 	adminTok := loginAs(t, ts, "admin", "admin123")
 	ownTok := mkUser(t, srv, ts, adminTok, "own1", "own12345", RoleUser)
 
 	seedInstance(t, srv, "inst1", 1)
-	seedLimits(t, srv, "inst1", 0, "", 0) // 建实例时的默认：三项都不限制
+	seedLimits(t, srv, "inst1", 50, "1G", 2048) // 运营侧已经收紧过的值
 	assignLevel(t, srv, "inst1", uidOf(t, srv, "own1"), LevelOwner)
 
-	code, body := doJSON(t, ts, "PUT", "/api/instances/inst1/limits", ownTok, map[string]any{
-		"cpu_quota": 150, "mem_limit": "4G", "disk_limit_mb": 10240,
-	})
+	for _, body := range []map[string]any{
+		{"cpu_quota": 800, "mem_limit": "", "disk_limit_mb": 0}, // 想全放开
+		{"mem_limit": "16G"},                                   // 只想加内存
+	} {
+		code, resp := doJSON(t, ts, "PUT", "/api/instances/inst1/limits", ownTok, body)
+		if code != http.StatusForbidden {
+			t.Errorf("实例所有者改资源上限应 403，实际 %d body=%v", code, resp)
+		}
+	}
+	// 最关键的一条：库里的值**一个字节都不能变**
+	if cpu, mem, disk := limitsOf(t, srv, "inst1"); cpu != 50 || mem != "1G" || disk != 2048 {
+		t.Errorf("被拒的请求不该改动任何值，实际 %d/%q/%d（应为 50/1G/2048）", cpu, mem, disk)
+	}
+}
+
+// TestInstanceLimits_NodeUserOfThatNodeCanUpdate 覆盖授权的另一侧（也是本功能的
+// 主诉求）：一台三个上限都留成"不限制"的实例，节点用户能把它改住 ——
+// 收/放资源上限正是他对那台机器负责时该做的事。
+func TestInstanceLimits_NodeUserOfThatNodeCanUpdate(t *testing.T) {
+	srv, ts := newTestServer(t)
+	adminTok := loginAs(t, ts, "admin", "admin123")
+	mkUser(t, srv, ts, adminTok, "nu1", "nu123456", RoleUser)
+
+	seedInstance(t, srv, "inst1", 1)
+	seedLimits(t, srv, "inst1", 0, "", 0) // 建实例时的默认：三项都不限制
+
+	// 走真实流程提权为节点用户（这个接口会同时改角色并写 node_users）
+	if code, body := doJSON(t, ts, "POST", "/api/node-users", adminTok,
+		map[string]any{"username": "nu1", "node_id": 1}); code != http.StatusOK {
+		t.Fatalf("设为节点用户应成功，实际 %d body=%v", code, body)
+	}
+	// 必须在提权**之后**登录：角色写在 JWT 里（见 mkUser 的注释）
+	nuTok := loginAsToken(t, ts, "nu1", "nu123456")
+
+	code, body := doJSON(t, ts, "PUT", "/api/instances/inst1/limits", nuTok,
+		map[string]any{"cpu_quota": 150, "mem_limit": "1536m", "disk_limit_mb": 10240})
 	if code != http.StatusOK {
-		t.Fatalf("owner 改自己实例的上限应 200，实际 %d body=%v", code, body)
+		t.Fatalf("该节点的节点用户应能改上限，实际 %d body=%v", code, body)
 	}
-	if cpu, mem, disk := limitsOf(t, srv, "inst1"); cpu != 150 || mem != "4G" || disk != 10240 {
-		t.Errorf("库里的上限应为 150/4G/10240，实际 %d/%q/%d", cpu, mem, disk)
+	if cpu, mem, disk := limitsOf(t, srv, "inst1"); cpu != 150 || mem != "1536m" || disk != 10240 {
+		t.Errorf("库里的上限应为 150/1536m/10240，实际 %d/%q/%d", cpu, mem, disk)
 	}
-	// 响应要把新值带回（界面据此回显），并说明生效时机
+	// 响应要把新值带回（界面据此回显）并说明生效时机
 	if body["restart_required"] != true {
 		t.Errorf("改了 CPU / 内存后 restart_required 应为 true，实际 %v", body["restart_required"])
 	}
@@ -84,8 +125,7 @@ func TestInstanceLimits_OwnerCanUpdate(t *testing.T) {
 	}
 }
 
-// TestInstanceLimits_ViewerCollabAndStrangerDenied 是本项改动的权限底线：
-// 只有"实例 owner / 该节点的节点用户 / 总管理员"能改；collab 与 viewer、
+// 只有"总管理员 / 该节点的节点用户"能改；实例 owner、collab、viewer
 // 以及完全无关的用户都必须被挡在门外。
 //
 // 为什么 collab 也不行：资源上限挤占的是**同节点上其它实例**（CPU 抢满时
@@ -96,15 +136,18 @@ func TestInstanceLimits_ViewerCollabAndStrangerDenied(t *testing.T) {
 	vwTok := mkUser(t, srv, ts, adminTok, "vw1", "vw123456", RoleUser)
 	colTok := mkUser(t, srv, ts, adminTok, "col1", "col12345", RoleUser)
 	outTok := mkUser(t, srv, ts, adminTok, "out1", "out12345", RoleUser)
+	ownTok := mkUser(t, srv, ts, adminTok, "own9", "own91234", RoleUser)
 
 	seedInstance(t, srv, "inst1", 1)
 	seedLimits(t, srv, "inst1", 200, "3G", 5120)
 	assignLevel(t, srv, "inst1", uidOf(t, srv, "vw1"), LevelViewer)
 	assignLevel(t, srv, "inst1", uidOf(t, srv, "col1"), LevelCollab)
+	assignLevel(t, srv, "inst1", uidOf(t, srv, "own9"), LevelOwner)
 
 	cases := []struct{ name, tok string }{
 		{"viewer", vwTok},
 		{"collab", colTok},
+		{"实例所有者（普通用户）", ownTok},
 		{"无任何授权的用户", outTok},
 	}
 	for _, c := range cases {
@@ -117,35 +160,6 @@ func TestInstanceLimits_ViewerCollabAndStrangerDenied(t *testing.T) {
 	// 被拒的请求一个字段都不该动
 	if cpu, mem, disk := limitsOf(t, srv, "inst1"); cpu != 200 || mem != "3G" || disk != 5120 {
 		t.Errorf("被拒的请求不该改动任何字段，实际 %d/%q/%d", cpu, mem, disk)
-	}
-}
-
-// TestInstanceLimits_NodeUserOfThatNodeCanUpdate 覆盖授权的另一侧：
-// 实例登记在别人名下（比如管理员替用户建的），但该节点的节点用户要能改 ——
-// 收/放资源上限正是他对那台机器负责时该做的事。
-func TestInstanceLimits_NodeUserOfThatNodeCanUpdate(t *testing.T) {
-	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
-	mkUser(t, srv, ts, adminTok, "nu1", "nu123456", RoleUser)
-
-	seedInstance(t, srv, "inst1", 1)
-	seedLimits(t, srv, "inst1", 0, "", 0)
-
-	// 走真实流程提权为节点用户（这个接口会同时改角色并写 node_users）
-	if code, body := doJSON(t, ts, "POST", "/api/node-users", adminTok,
-		map[string]any{"username": "nu1", "node_id": 1}); code != http.StatusOK {
-		t.Fatalf("设为节点用户应成功，实际 %d body=%v", code, body)
-	}
-	// 必须在提权**之后**登录：角色写在 JWT 里（见 mkUser 的注释）
-	nuTok := loginAsToken(t, ts, "nu1", "nu123456")
-
-	code, body := doJSON(t, ts, "PUT", "/api/instances/inst1/limits", nuTok,
-		map[string]any{"mem_limit": "1536m"})
-	if code != http.StatusOK {
-		t.Fatalf("该节点的节点用户应能改上限，实际 %d body=%v", code, body)
-	}
-	if _, mem, _ := limitsOf(t, srv, "inst1"); mem != "1536m" {
-		t.Errorf("mem_limit 应为 1536m，实际 %q", mem)
 	}
 }
 
