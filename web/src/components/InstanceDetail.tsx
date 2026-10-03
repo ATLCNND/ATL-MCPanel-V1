@@ -16,6 +16,7 @@ import {
   instanceAction, levelAtLeast, listInstances, currentUser, User, isNodeUser,
   getMetrics, listBackups, listInstancePorts, getSchedule, getInstanceRuntime,
   BackupItem, Metrics, Instance, InstanceRuntime, instanceIconUrl, renameInstance,
+  setInstanceLimits, InstanceLimitsPayload,
 } from '../api'
 import AppShell, { NavKey, NAV_ITEMS } from './AppShell'
 import ThemeToggle from './ThemeToggle'
@@ -221,6 +222,15 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
   // 实例改名（就地编辑标题）
   const [editingName, setEditingName] = useState(false)
   const [nameDraft, setNameDraft] = useState('')
+  // 资源限制（CPU / 内存 / 磁盘）的就地编辑。
+  // CPU 草稿按**核**存（可填 1.5），提交时才换算成百分比 —— 与建实例表单同一口径。
+  const [editLimits, setEditLimits] = useState(false)
+  const [limCores, setLimCores] = useState('')
+  const [limMem, setLimMem] = useState('')
+  const [limDisk, setLimDisk] = useState('')
+  const [limBusy, setLimBusy] = useState(false)
+  const [limErr, setLimErr] = useState('')
+  const [limNote, setLimNote] = useState('')
 
   const [inst, setInst] = useState<Instance | null>(null)
   const [metrics, setMetrics] = useState<Metrics | null>(null)
@@ -248,6 +258,11 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
   // 到期控制与删除同级：总管理员，或该节点上的节点用户。
   // 具体的编辑面板已搬到「任务」标签页（见 ExpiryPanel），这里只负责算权限并传下去。
   const canManageExpiry = isAdminUser || (isNodeUser(user?.role) && level !== '')
+  // 资源限制（CPU / 内存 / 磁盘）的编辑权与**改名、公网端口**同级：
+  // 后端判据是 canManageInstanceSettings（总管理员 / 该节点的节点用户 / 实例 owner），
+  // 前端据此决定要不要给编辑入口 —— 后端那道 403 不该是唯一的信号。
+  // collab / viewer 连启动脚本都改不了，这里自然也不给。
+  const canEditLimits = isAdminUser || canWriteFiles || (isNodeUser(user?.role) && level !== '')
 
   // ---- 全局导航折叠 ----
   // 折叠时只保留最常用的几项；其余收进「展开全部」。
@@ -386,6 +401,74 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
       setError(e.message || '改名失败')
     } finally {
       setBusy(false)
+    }
+  }
+
+  /**
+   * 打开资源限制的编辑（把当前值填进草稿）。
+   *
+   * 单位口径与建实例表单一致：CPU 填**核**（100% = 1 核，可填 1.5）、
+   * 内存填 cgroup 字面量（4G / 1536m）、磁盘填 MB。
+   * 权限与改名、公网端口同级（见 canEditLimits）。
+   */
+  const openLimits = () => {
+    setLimCores(String(inst?.cpu_quota ? inst.cpu_quota / 100 : 0))
+    setLimMem(inst?.mem_limit || '')
+    setLimDisk(String(inst?.disk_limit_mb || 0))
+    setLimErr(''); setLimNote('')
+    setEditLimits(true)
+  }
+
+  /**
+   * 保存资源限制。
+   *
+   * **只提交改动过的字段**：接口是部分更新，而 0 / 空串都表示"不限制"
+   * ——那是有意义的取值，不是"没填"。为了"把表单填满"而全量提交，
+   * 会把没动过的字段一起洗成不限制（后端用指针区分这两件事，前端也要配合）。
+   *
+   * 生效时机由后端的 message 说清楚，这里原样显示、不另编文案。
+   */
+  const submitLimits = async () => {
+    const payload: InstanceLimitsPayload = {}
+
+    const coresNow = inst?.cpu_quota ? inst.cpu_quota / 100 : 0
+    const cores = Number(limCores.trim() === '' ? '0' : limCores.trim())
+    if (!Number.isFinite(cores) || cores < 0) {
+      setLimErr('CPU 配额需为不小于 0 的数字（单位：核，100% = 1 核；0 = 不限制）')
+      return
+    }
+    if (cores !== coresNow) payload.cpu_quota = Math.round(cores * 100)
+
+    // 内存按 cgroup 字面量原样提交（只做 trim，不做格式判断）：
+    // 格式的权威判断在后端 —— 它清楚这个值最终会被写进哪个 cgroup 文件。
+    const mem = limMem.trim()
+    if (mem !== (inst?.mem_limit || '')) payload.mem_limit = mem
+
+    const diskNow = inst?.disk_limit_mb || 0
+    const disk = Number(limDisk.trim() === '' ? '0' : limDisk.trim())
+    if (!Number.isFinite(disk) || disk < 0) {
+      setLimErr('磁盘配额需为不小于 0 的整数（MB；0 = 不限制）')
+      return
+    }
+    if (Math.round(disk) !== diskNow) payload.disk_limit_mb = Math.round(disk)
+
+    if (Object.keys(payload).length === 0) {
+      setLimErr('三个上限都没有变化')
+      return
+    }
+
+    setLimBusy(true); setLimErr(''); setMsg('')
+    try {
+      const r = await setInstanceLimits(instanceId, payload)
+      setMsg(r.message || '资源上限已保存')
+      setLimNote(r.note || '')
+      setEditLimits(false)
+      // 保存后重新拉一次：列表接口才是这些字段的取值来源，别在本地自己拼状态
+      await reloadInst()
+    } catch (e: any) {
+      setLimErr(e.message || '保存失败')
+    } finally {
+      setLimBusy(false)
     }
   }
 
@@ -813,6 +896,115 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
                     <span className="v">{metrics.tps ? metrics.tps.toFixed(2) : '—'}<em> / 20.00</em></span>
                   </div>
                   <div className="bar"><i className="ok" style={{ width: `${Math.min(100, (metrics.tps / 20) * 100)}%` }} /></div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* 资源限制（CPU / 内存 / 磁盘）：建实例时定下，之后原来**没有任何入口**
+              能改 —— 节点用户建实例时把内存留空（= 不限制），运营侧就再也收不回来。
+              这里给它一个就地编辑的入口，权限与改名、公网端口一致
+              （总管理员 / 该节点的节点用户 / 实例 owner，见 canEditLimits）。
+              没有权限的人只看得到当前值 —— 后端那道 403 不该是唯一的信号。 */}
+          <div className="w">
+            <div className="w-title"><span>资源限制</span><span className="w-ico">⚖</span></div>
+
+            {/* 后端回来的补充提醒（当前是"节点侧元数据未同步，CPU / 内存还没真正生效"）。
+                只在刚保存过之后显示：它是针对本次改动的提醒，不是常驻说明。 */}
+            {limNote && <div className="warn-banner">{limNote}</div>}
+
+            {!editLimits ? (
+              <>
+                <div className="res">
+                  <div className="res-top">
+                    <span className="k">CPU 配额</span>
+                    <span className="v">
+                      {cores > 0 ? <>{fmtCores(cores)}<em> 核</em></> : <>不限制</>}
+                    </span>
+                  </div>
+                </div>
+                <div className="res">
+                  <div className="res-top">
+                    <span className="k">内存上限</span>
+                    <span className="v">{inst?.mem_limit ? inst.mem_limit : <em>不限制</em>}</span>
+                  </div>
+                </div>
+                <div className="res">
+                  <div className="res-top">
+                    <span className="k">磁盘配额</span>
+                    <span className="v">
+                      {inst?.disk_limit_mb ? <>{inst.disk_limit_mb}<em> MB</em></> : <>不限制</>}
+                    </span>
+                  </div>
+                </div>
+                <div className="res-note">
+                  磁盘配额由面板每分钟巡检（85% 警告 / 95% 严重）；CPU 与内存在实例启动时由 Daemon 写入 cgroup。
+                </div>
+                {canEditLimits ? (
+                  <div style={{ marginTop: 8 }}>
+                    <button onClick={openLimits} disabled={busy}>修改限制</button>
+                  </div>
+                ) : (
+                  <div className="res-note">需要实例所有者（owner）或节点管理员权限才能修改。</div>
+                )}
+              </>
+            ) : (
+              <>
+                {limErr && <div className="error-banner">{limErr}</div>}
+
+                {/* 运行中改 CPU / 内存：cgroup 的限额是启动时写进去的，
+                    所以这里必须明说"重启后生效"——不留"改了却没变"的错觉
+                    （与「启动」页换 JDK 的说法一致）。 */}
+                {curStatus === 'running' && (
+                  <div className="warn-banner">
+                    实例正在运行：CPU / 内存上限要<strong>重启实例</strong>后生效
+                    （当前进程仍按启动时的那个值运行）；磁盘配额改完即生效。
+                  </div>
+                )}
+
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8, fontSize: 12, color: 'var(--text-3)' }}>
+                  CPU 配额（核，100% = 1 核；0 = 不限制）
+                  <input
+                    value={limCores}
+                    disabled={limBusy}
+                    inputMode="decimal"
+                    placeholder="0"
+                    onChange={(e) => setLimCores(e.target.value)}
+                  />
+                </label>
+
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8, fontSize: 12, color: 'var(--text-3)' }}>
+                  内存硬上限（如 4G / 1536m；留空 = 不限制）
+                  <input
+                    value={limMem}
+                    disabled={limBusy}
+                    spellCheck={false}
+                    placeholder="4G（留空不限制）"
+                    onChange={(e) => setLimMem(e.target.value)}
+                  />
+                </label>
+
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8, fontSize: 12, color: 'var(--text-3)' }}>
+                  磁盘配额（MB；0 = 不限制）
+                  <input
+                    value={limDisk}
+                    disabled={limBusy}
+                    inputMode="numeric"
+                    placeholder="0"
+                    onChange={(e) => setLimDisk(e.target.value)}
+                  />
+                </label>
+
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  <button className="primary" onClick={submitLimits} disabled={limBusy}>
+                    {limBusy ? '保存中…' : '保存'}
+                  </button>
+                  <button
+                    onClick={() => { setEditLimits(false); setLimErr('') }}
+                    disabled={limBusy}
+                  >
+                    取消
+                  </button>
                 </div>
               </>
             )}

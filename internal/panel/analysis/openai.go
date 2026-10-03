@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -262,5 +263,28 @@ func describeHTTPError(resp *http.Response) string {
 	if msg == "" {
 		msg = "（响应体为空）"
 	}
+	// 上游把请求头原样回显进错误体是常见做法（网关的"你的 Authorization: Bearer sk-… 无效"
+	// 就是这个形状）。这段文字会一路显示到**任何租户**的界面上，而它可能是
+	// 管理员配的全局平台的 key —— 所以先把疑似凭据抹掉再外传
+	//（2026-10-01 安全审查 L6）。抹掉之后对排查没有损失：错误原因本身还在。
+	msg = scrubSecrets(msg)
 	return fmt.Sprintf("平台返回 HTTP %d %s%s", resp.StatusCode, msg, hint)
 }
+
+// scrubSecrets 把错误文本里疑似凭据的片段替换成 <已隐藏>。
+//
+// 覆盖三类最常见形态：`Bearer xxx`、各大平台的 key 前缀、以及很长的
+// 无空格 token。宁可多抹一点也不能漏 —— 这类文本的用途是"告诉用户哪里配错了"，
+// 不需要原样保留凭据。
+func scrubSecrets(s string) string {
+	s = bearerRe.ReplaceAllString(s, "Bearer <已隐藏>")
+	s = keyRe.ReplaceAllString(s, "<已隐藏>")
+	return s
+}
+
+var (
+	// Bearer <token>（大小写不敏感）
+	bearerRe = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._\-+/=]{8,}`)
+	// 常见平台密钥前缀 + 足够长的随机串
+	keyRe = regexp.MustCompile(`\b(?:sk|rk|pk|ghp|gho|github_pat|xox[baprs]|AKIA|AIza)[-_A-Za-z0-9]{12,}`)
+)

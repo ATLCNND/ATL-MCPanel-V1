@@ -156,10 +156,15 @@ if [ -n "$DRY" ]; then
 else
   # 先停服务：替换正在运行的二进制会报 "Text file busy"
   [ "$SERVICE_OK" -eq 1 ] && { systemctl stop "$UNIT" 2>/dev/null || true; }
-  if install -m 0755 "$SRC_DIR/bin/$BIN_NAME" "$INSTALL_DIR/bin/$BIN_NAME" 2>/tmp/.upgrade-install.err; then
+  # 错误输出落到 mktemp 建的文件：写死 /tmp/.upgrade-install.err 时，本机任何
+  # 用户都能预先建同名文件（甚至是指向别处的软链接）来影响 root 的这次写入
+  #（2026-10-01 安全审查 L8）。
+  ERRLOG=$(mktemp /tmp/atl-upgrade-err.XXXXXX 2>/dev/null || echo /tmp/atl-upgrade-err.$$)
+  if install -m 0755 "$SRC_DIR/bin/$BIN_NAME" "$INSTALL_DIR/bin/$BIN_NAME" 2>"$ERRLOG"; then
     echo "    已替换 $BIN_NAME"
+    rm -f "$ERRLOG"
   else
-    err=$(cat /tmp/.upgrade-install.err 2>/dev/null); rm -f /tmp/.upgrade-install.err
+    err=$(cat "$ERRLOG" 2>/dev/null); rm -f "$ERRLOG"
     echo "    ❌ 替换失败：$err" >&2
     case "$err" in
       *"Text file busy"*)

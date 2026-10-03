@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ATLCNND/ATL-MCPanel/internal/common/safepath"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/mcprocess"
 	pb "github.com/ATLCNND/ATL-MCPanel/internal/proto/mcpanel"
 )
@@ -66,11 +67,18 @@ var unsafeNameRe = regexp.MustCompile(`[^A-Za-z0-9._\-\x{4e00}-\x{9fa5}]+`)
 // 把备份放到独立磁盘的实际意义：备份是顺序读写、对随机 IO 无要求，
 // 用大容量机械盘承载可以显著降低每 GB 成本，同时避免备份挤占
 // 实例所在 SSD 的空间。
+//
+// ⚠️ inst.BackupDir **来自建实例请求里的 backup_dir 字段（客户端可控）**，
+// 因此不能无条件采信（见 instanceBackupDirAllowed）。
 func (s *Server) backupDir(inst *mcprocess.Instance) (string, error) {
 	var d string
 	switch {
 	case inst.BackupDir != "":
-		d = inst.BackupDir
+		allowed, err := s.instanceBackupDirAllowed(inst)
+		if err != nil {
+			return "", err
+		}
+		d = allowed
 	case s.cfg.BackupRoot != "":
 		// 按实例分目录，避免不同实例的备份混在一起
 		d = filepath.Join(s.cfg.BackupRoot, sanitizeDirName(inst.ID))
@@ -85,8 +93,57 @@ func (s *Server) backupDir(inst *mcprocess.Instance) (string, error) {
 	// 那份属于平台冷存储，"租户改不了"才是它的意义（否则备份就成了
 	// 可以被一并删掉的东西）。Daemon 是 root，两种情况都照样能读写；
 	// handOver 自己会拒绝越界路径，这里不必再判一次。
+	//
+	// 顺带记一笔"为什么越界的 backup_dir 以前没人发现"：正是因为它**静默**
+	// 拒绝越界路径（file.go 的不变量 1：不属于实例目录就直接返回，连日志都不记），
+	// 所以租户把备份指向别的实例时既不报错、也没人看见 —— 一切看起来都正常。
 	s.handOver(inst.ID, d)
 	return d, nil
+}
+
+// instanceBackupDirAllowed 校验实例自带的 backup_dir 并返回它。
+//
+// inst.BackupDir 直接来自面板建实例请求里的 `backup_dir` 字段（**客户端可控**），
+// 而它随后会被当作 Backup（以 root 建文件）、ListBackups、DeleteBackup
+//（os.Remove 以 root）、Restore（读文件并解到实例目录）的根目录。
+// 于是一个普通租户只要建实例时填 "/opt/atl-node/instances/<别人的实例>/backups"：
+// 列出、下载、删除别人的备份，再恢复到自己的实例里 —— 别人的 world、ops.json、
+// server.properties 全成了可读的；顺带还拿到"以 root 在任意目录建/删 *.tar.gz"
+// 的能力。
+//
+// 所以只认两种位置：① 实例自己的目录之内；② 节点配置的 backup_root 之下
+//（后者是管理员在节点配置文件里写的、可信的集中存储）。
+//
+// 两道检查都要做：先词法边界（Within），再真实路径边界（ResolveWithin）——
+// 软链接同样能把备份目录指到实例之外（`backups -> /etc`）。
+//
+// 不满足时的处理**选的是"报错"而不是"悄悄回退到默认位置"**：
+// 回退会让备份落到面板以为之外的地方（旧的备份文件看着"消失了"，
+// 保留策略也会算错），排查成本比一条明确的错误高得多；而这里其它失败
+//（MkdirAll 失败等）本来也是返回错误的，报错与文件内既有风格一致。
+//
+// TODO(面板侧)：面板不应再接受实例级 backup_dir 这个字段 —— 它由普通租户填写，
+// 却决定 root 读写哪些文件。本函数只是 Daemon 侧的兜底，不改变面板的接口。
+func (s *Server) instanceBackupDirAllowed(inst *mcprocess.Instance) (string, error) {
+	raw := inst.BackupDir
+	if !filepath.IsAbs(raw) {
+		return "", fmt.Errorf("实例配置的备份目录 %s 不是绝对路径，已拒绝使用", raw)
+	}
+	// ① 实例目录内（词法 + 真实路径两道）
+	if safepath.Within(inst.Dir, raw) {
+		if _, err := safepath.ResolveWithin(inst.Dir, raw); err == nil {
+			return raw, nil
+		}
+	}
+	// ② 节点配置的 backup_root 之下（同样两道）
+	if s.cfg != nil && s.cfg.BackupRoot != "" && safepath.Within(s.cfg.BackupRoot, raw) {
+		if _, err := safepath.ResolveWithin(s.cfg.BackupRoot, raw); err == nil {
+			return raw, nil
+		}
+	}
+	return "", fmt.Errorf(
+		"实例配置的备份目录 %s 不在允许范围内（只允许实例目录内或节点 backup_root 之下），已拒绝使用",
+		raw)
 }
 
 // sanitizeDirName 保证实例 ID 可安全用作目录名（防止路径穿越）。
@@ -332,16 +389,34 @@ func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.Opera
 	}
 	defer f.Close()
 
+	root := inst.Dir
+	base, _ := filepath.Abs(root)
+
 	gz, err := gzip.NewReader(f)
 	if err != nil {
 		return &pb.OperationResponse{Success: false, Error: "备份文件损坏: " + err.Error()}, nil
 	}
 	defer gz.Close()
 
+	// 空间预检：解压**后**的体积无法从 gzip 头部可靠得知（ISIZE 只有 4 字节、
+	// 还是 mod 2^32 的），所以这里只做一个下限检查 —— 至少要能放下备份文件本身
+	// 再加上 uploadFreeMargin 的余量，避免"磁盘已经快满了还往里灌"。
+	// 真正的上限靠下面边写边累计的字节上限兜住。
+	// 读不到容量（Statfs 失败）就不拦：不能因为一次探测失败把回滚整体挡住。
+	if fi, serr := f.Stat(); serr == nil {
+		if free, ferr := freeBytes(root); ferr == nil && !enoughSpace(free, fi.Size()) {
+			return &pb.OperationResponse{Success: false, Error: fmt.Sprintf(
+				"节点磁盘剩余空间不足：备份 %s，当前可用 %s（已预留 %s 余量）",
+				humanSize(fi.Size()), humanSize(free), humanSize(uploadFreeMargin))}, nil
+		}
+	}
+
 	tr := tar.NewReader(gz)
-	root := inst.Dir
-	base, _ := filepath.Abs(root)
 	count := 0
+	// 与解压（fileops.Extract）同一套资源上限：回滚以前一条都没有，
+	// 于是一个 1MB 的"全零 gzip"能解出几百 GB、把节点磁盘写满，
+	// 同节点**其它租户**的实例跟着一起存不了档。
+	quota := restoreQuota{maxBytes: maxRestoreBytes, maxFiles: maxRestoreFiles, maxDepth: maxRestoreDepth}
 
 	for {
 		hdr, err := tr.Next()
@@ -351,12 +426,23 @@ func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.Opera
 		if err != nil {
 			return &pb.OperationResponse{Success: false, Error: "读取备份失败: " + err.Error()}, nil
 		}
+		if err := quota.entry(hdr.Name); err != nil {
+			return &pb.OperationResponse{Success: false, Error: err.Error()}, nil
+		}
 
-		// 防目录穿越
+		// 防目录穿越（词法）
 		clean := filepath.Clean("/" + hdr.Name)
 		target := filepath.Join(root, clean)
 		abs, _ := filepath.Abs(target)
 		if abs != base && !strings.HasPrefix(abs, base+string(filepath.Separator)) {
+			return &pb.OperationResponse{Success: false, Error: "备份包含非法路径: " + hdr.Name}, nil
+		}
+		// 再加一道**真实路径**（解析软链接）检查：`backups/` 不是受保护路径，
+		// 租户可以在自己的实例里放 `d/evil -> /etc/cron.d`，再让备份文件里带
+		// 条目 `d/evil/rce` —— 词法路径看着在实例目录内，实际却写到实例之外
+		//（Daemon 是 root）。解压那条路（fileops.safeJoin）与这里是同一个口子。
+		// 解析结果只用于判成败，target 仍用词法拼出来的那个，行为与修复前一致。
+		if _, err := safepath.ResolveWithin(base, abs); err != nil {
 			return &pb.OperationResponse{Success: false, Error: "备份包含非法路径: " + hdr.Name}, nil
 		}
 		if strings.HasPrefix(filepath.ToSlash(clean), "/"+backupsDirName+"/") {
@@ -372,15 +458,24 @@ func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.Opera
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return &pb.OperationResponse{Success: false, Error: err.Error()}, nil
 			}
-			out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(hdr.Mode)&0o644)
+			// O_NOFOLLOW：拒绝把软链接当目标写（TOCTOU 窗口也一并关掉）
+			out, err := safepath.OpenNoFollow(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(hdr.Mode)&0o644)
 			if err != nil {
+				if safepath.IsSymlinkRefusal(err) {
+					return &pb.OperationResponse{Success: false,
+						Error: "备份条目目标是软链接，已拒绝写入: " + hdr.Name}, nil
+				}
 				return &pb.OperationResponse{Success: false, Error: err.Error()}, nil
 			}
-			if _, err := io.Copy(out, tr); err != nil {
-				out.Close()
-				return &pb.OperationResponse{Success: false, Error: "写入文件失败: " + err.Error()}, nil
-			}
+			// 边写边累计：多读 1 字节是为了区分"正好等于上限"与"超限"
+			n, cerr := io.Copy(out, io.LimitReader(tr, quota.limit()))
 			out.Close()
+			if err := quota.add(n); err != nil {
+				return &pb.OperationResponse{Success: false, Error: err.Error()}, nil
+			}
+			if cerr != nil {
+				return &pb.OperationResponse{Success: false, Error: "写入文件失败: " + cerr.Error()}, nil
+			}
 			count++
 		}
 	}
@@ -394,6 +489,70 @@ func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.Opera
 }
 
 // ---- 辅助 ----
+
+// 回滚（Restore）的资源上限。
+//
+// 与 fileops/archive.go 里的 maxExtractBytes / maxExtractFiles / maxExtractDepth
+// **取同一组值**：那三个常量在 fileops 包里未导出、这里拿不到，只能照抄一份 ——
+// fileops/archive.go 是这组数字的唯一权威来源，改动那边时要一起改。
+//
+// 为什么必须有：解压（Extract）早就有这三道上限，而**回滚一条都没有**，
+// 于是同一类输入换条路就能绕过 —— 一个约 1MB 的"全零 gzip"（tar 里放若干条
+// 声明尺寸巨大的条目）能解出几百 GB，把节点磁盘写满，同节点上**其它租户**的
+// 实例跟着一起存不了档、写不了日志。
+const (
+	maxRestoreBytes = int64(200) << 30 // 200 GB
+	maxRestoreFiles = 500000           // 条目数上限
+	maxRestoreDepth = 64               // 目录层级上限
+)
+
+// restoreQuota 回滚过程中的资源计数（条目数与累计写入字节）。
+//
+// 单独做成一个小类型而不是在 Restore 里散着几个变量，是为了**可测**：
+// 200 GB 的上限没法在测试里真的写出来，但把上限换成小值就能验证
+// "超限即拒绝"这条路径确实走到了（见 backup_security_test.go）。
+type restoreQuota struct {
+	maxBytes int64
+	maxFiles int
+	maxDepth int
+
+	entries int
+	bytes   int64
+}
+
+// entry 记一个归档条目，并检查条目数与目录层级上限。
+func (q *restoreQuota) entry(name string) error {
+	if q.entries+1 > q.maxFiles {
+		return fmt.Errorf("备份条目过多（> %d）", q.maxFiles)
+	}
+	if d := archiveDepth(name); d > q.maxDepth {
+		return fmt.Errorf("备份目录层级过深（%s）", name)
+	}
+	q.entries++
+	return nil
+}
+
+// add 累计本次写入的字节数，并检查总量上限。
+//
+// 先判后加（被拒绝时不改计数）：否则"多读 1 字节"的那一次超限会把计数推过上限，
+// limit() 随即算成 0 —— 读侧从此一个字节都读不到，而且失败的操作**改变了状态**
+// 本身就是这类计数器最容易出错的写法（TestRestoreQuotaCaps 锁住了这条）。
+func (q *restoreQuota) add(n int64) error {
+	if q.bytes+n > q.maxBytes {
+		return fmt.Errorf("回滚体积超过上限（%d GB）", q.maxBytes>>30)
+	}
+	q.bytes += n
+	return nil
+}
+
+// limit 返回本次还允许读取的字节数（多读 1 字节用于判断"是否正好超限"）。
+func (q *restoreQuota) limit() int64 { return q.maxBytes - q.bytes + 1 }
+
+// archiveDepth 归档条目的目录层级，与 fileops.safeJoin 的 maxExtractDepth 同口径
+//（它数的是路径段数，所以这里把条目名按 "/" 的个数来数，含最前面那个）。
+func archiveDepth(name string) int {
+	return strings.Count(filepath.ToSlash(filepath.Clean("/"+name)), "/")
+}
 
 // safeBackupPath 校验 backup_id 并返回安全路径。
 // safeBackupPath 把 backup_id 安全地拼到备份目录下。

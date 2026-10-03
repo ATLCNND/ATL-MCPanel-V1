@@ -168,6 +168,12 @@
   color: var(--success);
 }
 
+/* 全局平台对非管理员是只读的：把操作按钮换成一句说明，而不是留一个必然 403 的按钮 */
+.ap-readonly {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
 .ap-off {
   font-size: 10.5px;
   padding: 1px 7px;

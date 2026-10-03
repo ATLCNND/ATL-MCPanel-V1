@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"strings"
+
+	"github.com/ATLCNND/ATL-MCPanel/internal/panel/auth"
 )
 
 type ctxKey string
@@ -12,6 +14,36 @@ const (
 	ctxKeyUserID ctxKey = "userID"
 	ctxKeyRole   ctxKey = "role"
 )
+
+// authUser 在令牌签名校验通过之后，再用**数据库**确认这个用户仍然存在、
+// 状态正常、且令牌世代号对得上，并返回**库里**的角色。
+//
+// 为什么必须查库（2026-10-01 安全审查）：JWT 是自证明的，签发之后面板无法
+// 撤销，有效期 24 小时。于是下面这些"应该立刻生效"的管理动作原先全都要等
+// 令牌自然过期：
+//   - 管理员删掉被盗账号   → 库里查不到 → 立刻 401
+//   - 管理员重置密码       → token_version 已 +1 → 立刻 401
+//   - 管理员把 admin 降级  → 角色以库里为准 → 立刻失去管理权限
+//
+// 只按主键查一行，且用 QueryRow（Scan 完连接立即归还，不占着 rows），
+// 对连接池的压力可以忽略。
+func (s *Server) authUser(claims *auth.Claims) (int64, string, bool) {
+	var role, state string
+	var tv int64
+	err := s.db.QueryRow(
+		`SELECT role, COALESCE(status,''), COALESCE(token_version,0) FROM users WHERE id = ?`,
+		claims.UserID).Scan(&role, &state, &tv)
+	if err != nil {
+		return 0, "", false
+	}
+	if state != "" && state != "active" {
+		return 0, "", false
+	}
+	if tv != claims.TokenVersion {
+		return 0, "", false
+	}
+	return claims.UserID, role, true
+}
 
 // requireAuth 鉴权中间件：校验 JWT，将 userID/role 注入 context。
 func (s *Server) requireAuth(next func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
@@ -26,10 +58,15 @@ func (s *Server) requireAuth(next func(http.ResponseWriter, *http.Request)) http
 			writeErr(w, http.StatusUnauthorized, "令牌无效或已过期")
 			return
 		}
-		ctx := context.WithValue(r.Context(), ctxKeyUserID, claims.UserID)
-		ctx = context.WithValue(ctx, ctxKeyRole, claims.Role)
+		uid, role, ok := s.authUser(claims)
+		if !ok {
+			writeErr(w, http.StatusUnauthorized, "登录状态已失效，请重新登录")
+			return
+		}
+		ctx := context.WithValue(r.Context(), ctxKeyUserID, uid)
+		ctx = context.WithValue(ctx, ctxKeyRole, role)
 		// 累计在线时长（内部有写节流，不会每个请求都写库）
-		s.touchOnline(claims.UserID)
+		s.touchOnline(uid)
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -80,9 +117,14 @@ func (s *Server) requireAuthQuery(next func(http.ResponseWriter, *http.Request))
 			writeErr(w, http.StatusUnauthorized, "令牌无效或已过期")
 			return
 		}
-		ctx := context.WithValue(r.Context(), ctxKeyUserID, claims.UserID)
-		ctx = context.WithValue(ctx, ctxKeyRole, claims.Role)
-		s.touchOnline(claims.UserID)
+		uid, role, ok := s.authUser(claims)
+		if !ok {
+			writeErr(w, http.StatusUnauthorized, "登录状态已失效，请重新登录")
+			return
+		}
+		ctx := context.WithValue(r.Context(), ctxKeyUserID, uid)
+		ctx = context.WithValue(ctx, ctxKeyRole, role)
+		s.touchOnline(uid)
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -102,10 +144,14 @@ func requireAdminIn(w http.ResponseWriter, r *http.Request) bool {
 func (s *Server) optionalAuth(next func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if token := extractToken(r); token != "" {
+			// 与 requireAuth 同一条规矩：令牌里的角色**不作数**，以库里的为准。
+			// 校验不过就当作匿名 —— 这个中间件本来就不强制登录。
 			if claims, err := s.auth.ParseToken(token); err == nil {
-				ctx := context.WithValue(r.Context(), ctxKeyUserID, claims.UserID)
-				ctx = context.WithValue(ctx, ctxKeyRole, claims.Role)
-				r = r.WithContext(ctx)
+				if uid, role, ok := s.authUser(claims); ok {
+					ctx := context.WithValue(r.Context(), ctxKeyUserID, uid)
+					ctx = context.WithValue(ctx, ctxKeyRole, role)
+					r = r.WithContext(ctx)
+				}
 			}
 		}
 		next(w, r)

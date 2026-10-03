@@ -191,6 +191,13 @@ func certNodeName(nodeName string) string {
 	return out + suffix
 }
 
+// CertNodeName 是 certNodeName 的导出形式，供**校验**侧使用。
+//
+// 面板与 Daemon 都要拿它把"对端声称的身份"换算成证书里应该出现的那串
+// ASCII 标识，再和客户端证书的 CN 比对 —— 收发两端必须用同一份实现，
+// 否则中文节点名的部署会全部校验失败（或者更糟：校验被绕过）。
+func CertNodeName(nodeName string) string { return certNodeName(nodeName) }
+
 // IssueClientCert 为节点签发客户端证书，CN 使用节点名（ASCII 化后），有效期默认 3 年。
 func (ca *CA) IssueClientCert(nodeName string) (certPEM, keyPEM []byte, err error) {
 	return ca.IssueClientCertWithTTL(nodeName, defaultCertTTL)
@@ -366,6 +373,18 @@ func ClientTLSConfigWithName(caPEM, certPEM, keyPEM []byte, serverName string) (
 
 // ServerTLSConfigFromFiles 从文件构造服务端 mTLS 配置（Daemon 侧使用）。
 func ServerTLSConfigFromFiles(caFile, certFile, keyFile string) (*tls.Config, error) {
+	return ServerTLSConfigFromFilesForPeer(caFile, certFile, keyFile, "")
+}
+
+// ServerTLSConfigFromFilesForPeer 与服务端 mTLS 配置相同，但额外要求
+// 客户端证书的 CN **必须**等于 peerCN（为空则只校验签发链）。
+//
+// 为什么需要这一层：只校验"证书由本 CA 签发"意味着**任何一个节点**都能调用
+// **另一个节点**的 Daemon gRPC（它们用的是同一个 CA）。而 Daemon 侧的服务
+// 只应该接受面板的调用 —— 面板的客户端证书 CN 固定是 atlmcpanel-panel，
+// 节点证书的 CN 是各自的节点名。加上这一条，被攻陷的节点就无法横向控制
+// 别的节点上的实例了（2026-10-01 安全审查）。
+func ServerTLSConfigFromFilesForPeer(caFile, certFile, keyFile, peerCN string) (*tls.Config, error) {
 	caPEM, err := os.ReadFile(caFile)
 	if err != nil {
 		return nil, fmt.Errorf("读取 CA 证书失败: %w", err)
@@ -378,12 +397,30 @@ func ServerTLSConfigFromFiles(caFile, certFile, keyFile string) (*tls.Config, er
 	if err != nil {
 		return nil, fmt.Errorf("加载服务端证书失败: %w", err)
 	}
-	return &tls.Config{
+	cfg := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		ClientAuth:   tls.RequireAndVerifyClientCert,
 		ClientCAs:    pool,
 		MinVersion:   tls.VersionTLS12,
-	}, nil
+	}
+	if peerCN != "" {
+		want := peerCN
+		cfg.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+			if len(rawCerts) == 0 {
+				return fmt.Errorf("客户端未提供证书")
+			}
+			leaf, err := x509.ParseCertificate(rawCerts[0])
+			if err != nil {
+				return fmt.Errorf("解析客户端证书失败: %w", err)
+			}
+			if leaf.Subject.CommonName != want {
+				// 不把对端 CN 回显给对方：那等于告诉他"该冒充谁"
+				return fmt.Errorf("客户端证书身份不被接受")
+			}
+			return nil
+		}
+	}
+	return cfg, nil
 }
 
 // FilePaths 返回 CA 文件路径（供运维查看/分发）。

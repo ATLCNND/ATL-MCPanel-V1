@@ -440,6 +440,10 @@ const consoleHistoryLines = 2000
 //
 // 附加时会先回放最近的历史输出（来自实例 logs/console.log 尾部），
 // 使前端重连后能立即看到之前的日志，随后再转入实时输出。
+//
+// 历史与实时**不重不漏**：快照与订阅由 AttachConsole 原子完成（见该处注释），
+// 因此同一行只会出现一次，且两步之间产生的行不会丢失。
+// 历史回放期间实时行堆在订阅通道里（consoleSubBuf 行），回放结束即被转发出去。
 func (s *Server) Console(stream pb.DaemonService_ConsoleServer) error {
 	var instanceID string
 
@@ -458,8 +462,11 @@ func (s *Server) Console(stream pb.DaemonService_ConsoleServer) error {
 		return fmt.Errorf("实例 %s 不存在", instanceID)
 	}
 
-	// 先订阅控制台输出（开始缓冲新输出），再回放历史，避免两者之间丢行
-	outCh, cancel := inst.Subscribe()
+	// 取历史快照与订阅实时输出必须**原子完成**：分开做时，两步之间的输出要么
+	// 进快照又进实时（控制台上显示两遍，即用户报的"控制台输出会输出两遍"），
+	// 要么两边都不进（永久丢行）。AttachConsole 在同一把 subMu 里完成这两件事，
+	// 而 broadcast 持的也是那把锁，于是不存在"夹在中间"的行 —— 详见其注释。
+	history, outCh, cancel := inst.AttachConsole(consoleHistoryLines)
 	defer cancel()
 
 	s.log.Info("控制台附加", "instance", instanceID)
@@ -468,7 +475,7 @@ func (s *Server) Console(stream pb.DaemonService_ConsoleServer) error {
 	_ = stream.Send(&pb.ConsoleFrame{Type: pb.ConsoleFrame_STATUS, InstanceId: instanceID, Data: "attached"})
 
 	// 回放最近的历史输出，使重连后能看到之前的日志
-	if history := inst.RecentOutput(consoleHistoryLines); len(history) > 0 {
+	if len(history) > 0 {
 		_ = stream.Send(&pb.ConsoleFrame{
 			Type:       pb.ConsoleFrame_OUTPUT,
 			InstanceId: instanceID,

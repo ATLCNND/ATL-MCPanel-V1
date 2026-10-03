@@ -1239,8 +1239,11 @@ export interface AnalysisRecord {
   cache_key: string
 }
 
-export async function listAnalysisHistory(instanceId: string): Promise<{ history: AnalysisRecord[]; limits: { per_min: number; per_day: number } }> {
-  return apiFetch(`/api/instances/${instanceId}/analysis`)
+export async function listAnalysisHistory(
+  instanceId: string,
+  signal?: AbortSignal,
+): Promise<{ history: AnalysisRecord[]; limits: { per_min: number; per_day: number } }> {
+  return apiFetch(`/api/instances/${instanceId}/analysis`, { signal })
 }
 
 export async function deleteAnalysisRecord(recordId: number) {
@@ -1541,6 +1544,54 @@ export async function setStartScript(
   return apiFetch(`/api/instances/${instanceId}/start-script`, {
     method: 'POST',
     body: JSON.stringify({ action, content }),
+  })
+}
+
+// ---- 实例资源上限（CPU / 内存 / 磁盘）----
+//
+// 这三个上限在建实例时由创建者（节点用户 / 管理员）声明，之后原来**没有任何入口**
+// 能改 —— 节点用户把内存上限留空（= 不限制），运营侧就再也收不回来了。
+// 后端见 internal/panel/httpapi/instancelimits.go。
+
+/**
+ * 资源上限的**部分更新**：只提交改动过的字段。
+ *
+ * 三个字段的 0 / 空串都是有意义的取值（都表示"不限制"），后端用指针区分
+ * "没传这个字段"与"显式设成 0 / 空"—— 所以这里千万不要为了"填满表单"
+ * 而把没动过的字段一起提交，那会把它们洗成不限制。
+ */
+export interface InstanceLimitsPayload {
+  /** CPU 配额百分比（100 = 1 核；0 = 不限制） */
+  cpu_quota?: number
+  /** cgroup 内存上限（如 "4G"；空串 = 不限制） */
+  mem_limit?: string
+  /** 实例目录软配额（MB，0 = 不限制） */
+  disk_limit_mb?: number
+}
+
+export interface InstanceLimitsResult {
+  /** 后端给的成文提示（已含"何时生效"），界面直接显示，不要另编文案 */
+  message: string
+  /** CPU / 内存这两项的补充说明（空 = 没有额外要提醒的）；见后端 limitsEnforceNote */
+  note?: string
+  /** 改后的三个值：界面据此回显，不必再拉一次实例列表 */
+  cpu_quota: number
+  mem_limit: string
+  disk_limit_mb: number
+  /**
+   * CPU / 内存上限有改动 → 要等实例**重新启动**才会被 Daemon 写进 cgroup；
+   * 磁盘配额由面板每分钟巡检，改完即生效（不受这个标志影响）。
+   */
+  restart_required: boolean
+}
+
+export async function setInstanceLimits(
+  instanceId: string,
+  payload: InstanceLimitsPayload,
+): Promise<InstanceLimitsResult> {
+  return apiFetch(`/api/instances/${encodeURIComponent(instanceId)}/limits`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
   })
 }
 

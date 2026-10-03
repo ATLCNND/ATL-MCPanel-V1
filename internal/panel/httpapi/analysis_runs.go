@@ -136,6 +136,13 @@ func clampPhenomenon(s string) string {
 // 纯本地渲染：不出网、不计限流、不写审计。
 func (s *Server) handleHelpPreview(w http.ResponseWriter, r *http.Request) {
 	instanceID := r.PathValue("id")
+	// 预览文本里带着实例的**元信息**（显示名/核心/Java/内存/运行方式），
+	// 所以它必须和别的实例接口走同一道门。此前这里只有 requireAuth：
+	// 任何登录用户拿任意 instance_id 都能读到别人实例的这些信息，
+	// 而且"实例不存在"与"权限不足"的差别还顺带成了 id 枚举的探测器。
+	if !s.requireInstanceLevel(w, r, instanceID, LevelViewer) {
+		return
+	}
 	var req struct {
 		Phenomenon string `json:"phenomenon"`
 	}
@@ -179,9 +186,29 @@ func (s *Server) handleInstanceAnalyse(w http.ResponseWriter, r *http.Request) {
 	if !s.requireInstanceLevel(w, r, instanceID, LevelOwner) {
 		return
 	}
+	// 总开关：第三方日志分析被关掉之后，这条链路上**任何**外发都不许发生。
+	//
+	// 为什么闸必须放在这里（而不是只靠 attemptLogShare 里那一句）：
+	// LogShare 那一步失败之后会自动**回退到 mclo.gs** —— 于是"管理员已经关掉
+	// 第三方分析"的部署里，日志（含未打码的 IP）仍然会被传到公开的 api.mclo.gs，
+	// 而且生成的分享链接是公开的。开关失效比没有开关更糟：用户会以为数据没出门。
+	// 措辞与 handleSetLogShareSettings 的提示保持一致（关的是上传入口，
+	// 已经传出去的副本仍然能删，见 handleLogShareDelete）。
+	if !s.LogShareEnabled() {
+		writeErr(w, http.StatusForbidden,
+			"第三方日志分析已被管理员关闭：日志不会上传到任何外部服务（已上传的云端副本仍可删除）")
+		return
+	}
 	var req struct {
-		Path       string `json:"path"`
-		FilterChat bool   `json:"filter_chat"`
+		Path string `json:"path"`
+		// FilterChat 用 *bool：**没传**（nil）按"过滤"处理。
+		//
+		// 为什么不能是 plain bool：界面上这个勾默认是开着的，配置与文档也都承诺
+		// "默认过滤玩家聊天"，但 bool 的零值是 false —— 任何不带这个字段的调用方
+		//（老客户端、脚本、手工 curl）都会被当成"用户主动要求不过滤"，
+		// 带着 <玩家名> 的聊天行就跟着日志一起上传了。
+		// 只有**显式**的 false 才算关闭。
+		FilterChat *bool  `json:"filter_chat"`
 		Agree      bool   `json:"agree"`
 		ProviderID int64  `json:"provider_id"`
 		// ProviderKind 按**类型**指定内置提供方（logshare / mclogs）。
@@ -204,6 +231,8 @@ func (s *Server) handleInstanceAnalyse(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "请选择要分析的日志文件")
 		return
 	}
+	// 没传 filter_chat = 保持"过滤"（见字段注释）；显式 false 才关闭
+	filterChat := filterChatEnabled(req.FilterChat)
 
 	cli, _, err := s.getDaemonClient(instanceID)
 	if err != nil {
@@ -242,7 +271,7 @@ func (s *Server) handleInstanceAnalyse(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 先做公共准备（读日志），失败就没必要往后走
-	prep, err := s.prepareAnalysis(cli, instanceID, req.Path, req.FilterChat, s.logShareCfg.MaxUploadBytes)
+	prep, err := s.prepareAnalysis(cli, instanceID, req.Path, filterChat, s.logShareCfg.MaxUploadBytes)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -856,8 +885,17 @@ func (s *Server) handleDeleteAnalysisRecord(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	s.execLogged(`UPDATE logshare_uploads SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?`, recordID)
-	s.audit(r, "analysis_delete", rec.InstanceID, fmt.Sprintf("删除云端副本 %s（%s）", rec.URL, rec.ProviderKind))
-	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "云端副本已删除"})
+	// 本地结论**必须一起删**，否则"删除我的数据"只做了一半：
+	// logshare_analyses.content 通常整段引用日志原文（玩家名、聊天内容、绝对路径），
+	// 只清远端副本等于"要求第三方删掉、自己在库里留一份"，而且此后每个
+	// collab（甚至只是打开历史接口的人）都还能读到它。
+	// 用 rec.CacheKey 定位那一行：LogShare 与 mclo.gs 就是远端日志 id，
+	// 自配平台是 local-<id>（而自配平台在上面已经返回"没有云端副本可删"了）。
+	s.execLogged(`DELETE FROM logshare_analyses WHERE instance_id = ? AND logshare_id = ?`,
+		rec.InstanceID, rec.CacheKey)
+	s.audit(r, "analysis_delete", rec.InstanceID,
+		fmt.Sprintf("删除云端副本 %s（%s，含本地结论）", rec.URL, rec.ProviderKind))
+	writeJSON(w, http.StatusOK, map[string]interface{}{"message": "云端副本与本地 AI 结论已删除"})
 }
 
 // ---- 小工具 ----

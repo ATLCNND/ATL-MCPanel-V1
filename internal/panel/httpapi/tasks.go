@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -13,6 +14,17 @@ import (
 	"github.com/ATLCNND/ATL-MCPanel/internal/panel/cron"
 	pb "github.com/ATLCNND/ATL-MCPanel/internal/proto/mcpanel"
 )
+
+// maxTasksPerInstance 单个实例允许的定时任务条数上限。
+//
+// 定时任务由实例归属者自由创建，而调度器每轮都要逐条解析并**同步**派发它们
+//（开机要等 JVM 起来，单条最长 3 分钟）。不设上限时，一批"每分钟一次"的任务
+// 就能把整张表堆满，并把一轮 RunOnce 拖过下一个 tick —— 到期自动停机与
+// 磁盘超限停机都排在任务派发之后，会被一起饿死，而它们恰恰是防止
+// "无限期免费占用"与"磁盘被写满"的最后一道。
+//
+// 50 条对正常用法（早开晚关 + 几条定时指令）已经绰绰有余。
+const maxTasksPerInstance = 50
 
 // 定时任务支持的动作用类型。
 //
@@ -166,6 +178,21 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		enabled = 0
 	}
 	userID := currentUserID(r)
+
+	// 条数上限：见 maxTasksPerInstance 的说明。
+	// 统计**含已禁用**的任务 —— 被禁用的行同样要占调度器每轮的解析开销，
+	// 也是用户留着"以后再用"的，不清理就不该再让新的进来。
+	var taskCount int
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM instance_tasks WHERE instance_id = ?`, instanceID).Scan(&taskCount); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if taskCount >= maxTasksPerInstance {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf(
+			"定时任务数量已达上限（每个实例最多 %d 条），请先删除不再需要的任务", maxTasksPerInstance))
+		return
+	}
 
 	res, err := s.db.Exec(`
 		INSERT INTO instance_tasks (instance_id, name, action, command, cron, enabled, created_by)
@@ -387,6 +414,16 @@ func (s *Server) RunInstanceTask(taskID int64) error {
 
 // execInstanceTask 把动作翻译成 Daemon 调用。
 func (s *Server) execInstanceTask(instanceID, action, command string) error {
+	// 到期拦截，与 HTTP 侧（handleInstanceAction）同一个口径。
+	//
+	// 少了这一道就等于留了第二条绕过到期的路：定时任务由实例归属者自己创建，
+	// 一条 `{"action":"start","cron":"* * * * *"}` 就能让到期实例每分钟被重新拉起来，
+	// 且完全不需要人守着 —— 比手动点「启动」更省事。stop/kill 不拦（见 expiryBlocksStart）。
+	if expiryBlocksStart(action) {
+		if ok, reason := s.instanceStartable(instanceID); !ok {
+			return errors.New(reason)
+		}
+	}
 	cli, _, err := s.getDaemonClient(instanceID)
 	if err != nil {
 		return fmt.Errorf("实例不存在或节点不可达: %w", err)

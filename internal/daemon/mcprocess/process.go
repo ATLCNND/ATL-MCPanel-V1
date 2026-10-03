@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ATLCNND/ATL-MCPanel/internal/common/safepath"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/container"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/javaruntime"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/runas"
@@ -366,6 +367,46 @@ func IsAlive(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }
 
+// consoleLogPath 返回实例控制台日志的路径，并确认它没有被软链接拐出实例目录。
+//
+// 为什么必须查这件事：实例目录的内容**完全由租户控制**（文件管理能建文件，
+// start.sh 与插件能建软链接），而 console.log 是 Daemon（root）自己打开来当
+// 服务端 stdout 的文件。把 `logs/console.log` 做成一个**悬空**软链接指向
+// `/etc/cron.d/atl-x` 时，启动前的 rotateBySize 会因 os.Stat 得到 ENOENT 而不轮转，
+// 随后的 os.OpenFile 则会**跟随**软链接、以 root 建出那个文件，并把实例打印的
+// crontab 写进去 —— cron 照单执行，租户就此拿到节点 root。
+// 读方向同样致命：指向 /etc/shadow 的软链接会把节点机密送回该实例的控制台。
+//
+// logs 目录本身也要一并检查：软链接的**目录**是同一个逃逸的上一级形态
+//（`logs -> /etc` 之后 `logs/console.log` 看起来仍在实例目录里）。
+func consoleLogPath(dir, instanceID string) (string, error) {
+	logsDir := filepath.Join(dir, "logs")
+	if _, err := safepath.ResolveWithin(dir, logsDir); err != nil {
+		slog.Warn("实例的 logs 目录不在实例目录内（疑似软链接逃逸），拒绝使用控制台日志",
+			"instance", instanceID, "dir", logsDir, "error", err)
+		return "", fmt.Errorf("日志目录 %s 不在实例目录内（疑似软链接逃逸）：%w", logsDir, err)
+	}
+	return filepath.Join(logsDir, "console.log"), nil
+}
+
+// openConsoleLogAppend 以追加方式打开控制台日志，并拒绝软链接目标。
+//
+// 用 O_NOFOLLOW 而不是 os.OpenFile：边界检查与真正打开之间总有一个窗口
+//（TOCTOU），租户可以在那一刻把目标换成软链接；O_NOFOLLOW 让内核在最后一段是
+// 软链接时直接返回 ELOOP，把这个窗口关掉（见 safepath.OpenNoFollow 的说明）。
+func openConsoleLogAppend(path, instanceID string) (*os.File, error) {
+	f, err := safepath.OpenNoFollow(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		if safepath.IsSymlinkRefusal(err) {
+			slog.Warn("控制台日志是软链接，已拒绝以 root 打开（疑似提权尝试）",
+				"instance", instanceID, "path", path)
+			return nil, fmt.Errorf("日志文件 %s 是软链接，拒绝写入", path)
+		}
+		return nil, err
+	}
+	return f, nil
+}
+
 // Start 启动实例进程（核心无关，支持自定义命令或默认 java -jar）。
 func (i *Instance) Start() error {
 	i.mu.Lock()
@@ -461,11 +502,19 @@ func (i *Instance) Start() error {
 
 	// 日志轮转：MC 的 stdout 直接写入该文件且进程持有 fd，
 	// 运行期间无法安全轮转，因此在每次启动前按大小滚动。
-	logPath := filepath.Join(i.Dir, "logs", "console.log")
+	logPath, err := consoleLogPath(i.Dir, i.ID)
+	if err != nil {
+		i.status = "error"
+		return err
+	}
 	rotateIfNeeded(logPath)
 
-	// 打开日志文件（追加）
-	lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	// 打开日志文件（追加）。
+	//
+	// 拒绝软链接目标（见 consoleLogPath 的说明）：这里失败就**不启动**，
+	// 绝不"没有控制台日志也照样起"—— 静默降级会让上面那条提权路径重新可用
+	//（实例打印的任意内容都会落进租户指定的文件里）。
+	lf, err := openConsoleLogAppend(logPath, i.ID)
 	if err != nil {
 		i.status = "error"
 		return fmt.Errorf("打开日志文件失败: %w", err)
@@ -827,6 +876,13 @@ func (i *Instance) Containerized() bool {
 //（崩溃现场往往就在里面），用容器启动时间则会把整段历史重放一遍。
 // 代价是边界上可能重复一两行 —— 比少一段现场划算。
 //
+// 注意这里重复的是**日志文件里**的行，与控制台附加时的重复是两回事：后者由
+// "快照 + 订阅"的那个窗口造成，已经用 AttachConsole 消掉了（见那里的说明）。
+// 本条路径的重复来自 `docker logs --since` 的**时间戳**精度（--since 是闭区间，
+// mtime 那一毫秒上的行会被重放），既不在控制台的临界区里、也无法靠加锁解决；
+// 它只影响"接管容器的那一瞬间"，且方向是"多一两行"而不是丢行，故保持现状。
+// 不要因为控制台不再重复了就把这段一起删掉 —— 两者互不相干。
+//
 // 返回 true 表示"现在有东西在采集输出"，false 表示没人采集
 //（调用方据此写"输出无法接续"的兜底说明）。错了不是致命错误，实例本身还是好的。
 func (i *Instance) EnsureContainerLogFollow() (bool, error) {
@@ -843,8 +899,14 @@ func (i *Instance) EnsureContainerLogFollow() (bool, error) {
 		return true, nil
 	}
 
-	logPath := filepath.Join(dir, "logs", "console.log")
-	lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	// 与 Start 同一套把关：docker 跟随进程的 stdout 也落在 console.log 上，
+	// 同样是"以 root 追加写"，因此软链接目标一律拒绝（失败只说明控制台接不上，
+	// 调用方会补一条说明并记日志，绝不会写到实例目录之外）。
+	logPath, err := consoleLogPath(dir, id)
+	if err != nil {
+		return false, err
+	}
+	lf, err := openConsoleLogAppend(logPath, id)
 	if err != nil {
 		return false, fmt.Errorf("打开控制台日志失败：%w", err)
 	}
@@ -975,8 +1037,14 @@ const (
 // 所以这里只广播**以换行结尾**的完整行，半行留在缓冲里等下一轮补齐；
 // 半行若长时间补不齐（服务端本来就不发换行），按上面的 idle 规则兜底推出。
 func (i *Instance) tailLog(path string) {
-	f, err := os.Open(path)
+	// O_NOFOLLOW：这条路径也可能来自接管（NewAdopted 直接用 dir 拼出来），
+	// 而 console.log 是租户随时可替换的软链接 —— 跟着它读就等于把节点上的文件
+	//（比如 /etc/shadow）当作控制台内容推送给该实例的所有观看者。
+	f, err := safepath.OpenNoFollow(path, os.O_RDONLY, 0)
 	if err != nil {
+		if safepath.IsSymlinkRefusal(err) {
+			slog.Warn("控制台日志是软链接，已拒绝以 root 读取", "instance", i.ID, "path", path)
+		}
 		return
 	}
 	defer f.Close()
@@ -1267,6 +1335,58 @@ func (i *Instance) Subscribe() (<-chan string, func()) {
 	}
 }
 
+// AttachConsole "取历史快照 + 订阅实时输出"合并成一步，专供控制台附加使用。
+//
+// 为什么需要它：这两件事分开做时，中间那段窗口里的输出**必然**要么丢、要么重 ——
+//
+//   - 先订阅再取快照（旧写法）：窗口里广播出去的那一行，快照读文件时会再读到一次，
+//     于是控制台上同一条日志显示两遍（用户报的"控制台输出会输出两遍"）；
+//   - 先取快照再订阅：窗口里的一行既不在快照里、也没进订阅通道，直接**永久消失**。
+//
+// 谁都不能少：丢一行比重复一行严重得多（崩溃现场往往就是那几行）。所以不靠"事后去重"
+// 来补救，而是把窗口本身消掉：快照与订阅都在 subMu 之内完成，而 broadcast 持的也是
+// subMu —— 于是这条路径与广播是互斥的，一行要么已经落进快照（在订阅之前读到），
+// 要么发生在我们挂上订阅之后（走实时通道），没有第三种可能。
+//
+// 为什么不去重文本（对比过的另外两条路）：
+//   - 比对内容：广播的是**行内容**，没有 id，而控制台里重复行是常态（心跳、
+//     "Done (3.2s)! For help..."、插件批量日志），按内容丢会把真实重复的输出也扔了，
+//     等于用"丢掉合法日志"换"少一次重复"，方向反了；
+//   - 加行号：要改 broadcast 的载荷类型与 Subscriber 的通道类型（string → 结构体），
+//     牵动所有订阅方，为了一个能用一把锁解决的问题不值得。
+//
+// 两件事的先后在锁内无所谓（都不再被打断），这里先挂订阅、后读快照，只是让
+// "订阅已生效"这件事在函数返回时已经成立，读代码时更容易看出窗口确实没了。
+//
+// 代价（必须写明）：这里持着 subMu 去读日志文件（最多 consoleTailMaxBytes = 512KB）。
+// 期间 broadcast 会阻塞，也就是**实时输出会等这次快照读完**。这是有意的取舍：
+// 读的是本地文件尾部、窗口是毫秒级，换来的是"既不丢也不重"；而反过来（锁外读文件）
+// 就等于把这个窗口重新打开。调用方因此必须尽快排空返回的通道（Console 里紧随其后
+// 就进入转发循环）。
+func (i *Instance) AttachConsole(maxLines int) (history []string, out <-chan string, cancel func()) {
+	sub := &consoleSub{ch: make(chan string, consoleSubBuf)}
+
+	i.subMu.Lock()
+	defer i.subMu.Unlock()
+	i.subs = append(i.subs, sub)
+	// RecentOutput 只读文件、不碰 subMu（也不碰 mu），因此这里再调它是安全的 ——
+	// 它内部只有阻塞的文件 IO，不存在反向取锁的路径。stdin 也重定向到同一个文件，
+	// 而文件的写入方（服务端进程与 tailLog）都不会去抢 subMu，所以不会互相卡住。
+	history = i.RecentOutput(maxLines)
+
+	return history, sub.ch, func() {
+		i.subMu.Lock()
+		defer i.subMu.Unlock()
+		for idx, s := range i.subs {
+			if s == sub {
+				i.subs = append(i.subs[:idx], i.subs[idx+1:]...)
+				close(s.ch)
+				break
+			}
+		}
+	}
+}
+
 // broadcast 向所有订阅者广播一行。
 //
 // 注意：使用独立的 subMu，绝不使用 mu —— 因为调用方可能正持有 mu
@@ -1278,6 +1398,10 @@ func (i *Instance) Subscribe() (<-chan string, func()) {
 // 表现是"用户关掉控制台页签，Daemon 崩了"。
 // 这里可以安心持锁，因为发送全都是非阻塞的（select + default）：
 // 没有任何一条路径会在持锁期间等待。
+//
+// 另有一条隐含约定：**广播与"快照 + 订阅"必须互斥**（见 AttachConsole），
+// 因此这里持的必须是同一把 subMu。这也是 subMu 至今只做非阻塞操作的又一个理由 ——
+// 一旦有人在这把锁里等待，控制台附加就会被实时输出挡住。
 func (i *Instance) broadcast(line string) {
 	i.subMu.Lock()
 	defer i.subMu.Unlock()
@@ -1306,14 +1430,25 @@ func (i *Instance) broadcast(line string) {
 
 // RecentOutput 返回最近 maxLines 行控制台输出，用于控制台重连时回放历史。
 // 只读取日志文件尾部（最多 consoleTailMaxBytes），避免大日志拖慢响应。
+//
+// 注意：它**不取 subMu**。单调用它是安全且自洽的（文件尾部本身就是"截止到读的那一刻"
+// 的快照），但不要拿它和 Subscribe 拼成"订阅 + 回放" —— 两步之间的窗口会让输出
+// 重复或丢失。控制台附加请用 AttachConsole，那里把两件事合并成了一次原子操作。
 func (i *Instance) RecentOutput(maxLines int) []string {
 	if maxLines <= 0 {
 		return nil
 	}
-	path := filepath.Join(i.Dir, "logs", "console.log")
-
-	f, err := os.Open(path)
+	// 与控制台日志的写入侧同一套检查：读方向同样是以 root 打开，
+	// 指向 /etc/shadow 的软链接会把节点机密送进控制台回放给协作者看。
+	path, err := consoleLogPath(i.Dir, i.ID)
 	if err != nil {
+		return nil
+	}
+	f, err := safepath.OpenNoFollow(path, os.O_RDONLY, 0)
+	if err != nil {
+		if safepath.IsSymlinkRefusal(err) {
+			slog.Warn("控制台日志是软链接，已拒绝以 root 读取", "instance", i.ID, "path", path)
+		}
 		return nil
 	}
 	defer f.Close()
@@ -1374,11 +1509,37 @@ func rotateIfNeeded(path string) {
 	rotateBySize(path, consoleLogMaxBytes, consoleLogKeep)
 }
 
+// symlinkInLogChain 检查日志文件本身与它的历史文件（console.log.1..N）里有没有软链接。
+//
+// 轮转要挨个 os.Stat / os.Rename / os.Remove 这一串文件，而它们**都跟随软链接**：
+// 租户放一个 `console.log.3 -> /etc/cron.d/x`，轮转就会以 root 删掉那个文件；
+// 而 `console.log.1` 指向 /etc/shadow 时，滚动过来的内容之后还会被当作控制台
+// 日志读出去。任一级是软链接就整体放弃轮转 —— 代价只是"日志不滚动"，远比让
+// 租户借轮转以 root 操作节点文件轻。
+func symlinkInLogChain(path string, keep int) (string, bool) {
+	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return path, true
+	}
+	for n := 1; n <= keep; n++ {
+		p := fmt.Sprintf("%s.%d", path, n)
+		if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			return p, true
+		}
+	}
+	return "", false
+}
+
 // rotateBySize 按指定上限滚动日志：console.log → console.log.1 → ... → 删除最旧。
 //
 // 只能在进程启动前调用：运行中的 Minecraft 持有 stdout 的文件描述符，
 // 此时重命名会导致其继续写入旧文件，控制台流将读到错误内容。
 func rotateBySize(path string, maxBytes int64, keep int) {
+	// 先挡住软链接（见 symlinkInLogChain）：这里的 Stat/Rename/Remove 都跟随软链接
+	if bad, found := symlinkInLogChain(path, keep); found {
+		slog.Warn("控制台日志（或其历史文件）是软链接，已跳过轮转（疑似提权尝试）",
+			"path", bad)
+		return
+	}
 	fi, err := os.Stat(path)
 	if err != nil || fi.Size() < maxBytes {
 		return
@@ -1463,6 +1624,23 @@ func (i *Instance) SetJavaVersion(v string) {
 	i.mu.Unlock()
 }
 
+// SetLimits 更新 CPU 配额与内存上限（下次启动生效）。
+//
+// 为什么只改字段、不试着作用到运行中的进程：这两个值最终是 Daemon 在启动时
+// 写进 cgroup 的（cpu.max / memory.max），而"运行中的进程改不了自己脚下的配额"
+// 是内核语义 —— 想在运行期改就得重建 cgroup 并重新挂载进程，代价与风险都远超
+// 收益。所以这里与 SetJavaVersion 一样，只保证"下一次启动按新值来"。
+//
+// memLimit 传的是**字面量**（"4G" / "512M"），换算成字节仍走 ParseMemBytes ——
+// 节点侧元数据里存的也是字面量，两边保持同一种表示，免得出现"内存里一份字节数、
+// 文件里一份字符串，改了一个忘了另一个"。
+func (i *Instance) SetLimits(cpuQuota int, memLimit string) {
+	i.mu.Lock()
+	i.CPUQuotaPercent = cpuQuota
+	i.MemLimitBytes = ParseMemBytes(memLimit)
+	i.mu.Unlock()
+}
+
 // renderCommand 替换启动命令模板中的占位符。
 // 支持：{jar} {max_mem} {min_mem} {java} {dir}
 func (i *Instance) renderCommand(tpl string) string {
@@ -1486,12 +1664,31 @@ func (i *Instance) renderCommand(tpl string) string {
 
 // ParseMemBytes 把 "3G" / "2048M" / "1.5G" 这类写法换算为字节数。
 // 解析失败返回 0（视为不限制），而不是报错 —— 配额解析失败不应阻止实例启动。
+//
+// ⚠️ 2026-10-02 修两处会导致"限额静默失效"的解析错误（做配额修改接口时发现）：
+//
+//  1. **不带单位一律按 M 算**：`"1073741824"` 被当成 1073741824 MB（≈1 PB），
+//     而内核、docker、cgroup 对纯数字一律按**字节**。差 1M 倍的结果不是报错，
+//     而是内存上限形同不存在 —— 用户以为填了 1G，实际拿到 1 PB。
+//  2. **`"512MB"` 解析失败后退化成 0 = 不限制**：原来的 switch 先判 M 后缀再判 B，
+//     于是 `512MB` 走 M 分支留下 `512B`，`ParseFloat("512B")` 失败 → 返回 0。
+//     0 在本项目里表示"不限制"，也就是说**用户设的上限被静默丢掉** ——
+//     这正是最不该出现的那种"改了却没变"。
+//
+// 现在的口径与 cgroup/内核一致：结尾的 B 只表示"单位到此结束"（512MB == 512M、
+// 512B == 512 字节），不带单位就是字节。面板侧的校验（instancelimits.go 的
+// memLimitRe）与这里是同一套语法，两边不会再对同一串字面量给出不同答案。
 func ParseMemBytes(s string) int64 {
+	orig := s
 	s = strings.TrimSpace(strings.ToUpper(s))
 	if s == "" {
 		return 0
 	}
-	mult := int64(1024 * 1024) // 默认按 M 处理
+	// 结尾的 B 先摘掉：它只表示单位结束，不改变数量级
+	if strings.HasSuffix(s, "B") {
+		s = strings.TrimSuffix(s, "B")
+	}
+	mult := int64(1) // 不带单位 = 字节（与内核/docker 一致）
 	switch {
 	case strings.HasSuffix(s, "G"):
 		mult = 1024 * 1024 * 1024
@@ -1503,13 +1700,16 @@ func ParseMemBytes(s string) int64 {
 		mult = 1024
 		s = strings.TrimSuffix(s, "K")
 	case strings.HasSuffix(s, "M"):
+		mult = 1024 * 1024
 		s = strings.TrimSuffix(s, "M")
-	case strings.HasSuffix(s, "B"):
-		s = strings.TrimSuffix(s, "B")
 	}
 	s = strings.TrimSpace(s)
 	f, err := strconv.ParseFloat(s, 64)
 	if err != nil || f <= 0 {
+		// 仍然返回 0（不阻止实例启动），但**留一条日志**：静默丢掉用户设的上限
+		// 是排查起来最费劲的一类问题（"我明明设了 512M"）。
+		slog.Warn("内存上限无法解析，本次按「不限制」处理（请检查 mem_limit 的写法）",
+			"value", orig)
 		return 0
 	}
 	return int64(f * float64(mult))

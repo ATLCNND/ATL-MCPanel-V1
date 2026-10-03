@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { MyProfile, getMyProfile, uploadAvatar, deleteMyAvatar } from '../api'
 import Avatar from './Avatar'
+import { parseServerTime } from '../time'
 import './AccountCard.css'
 
 /** 秒 → 「N 天」「N 小时」这类易读文本 */
@@ -70,8 +71,9 @@ export default function AccountCard({ onOpenSettings }: { onOpenSettings?: () =>
 
   // 首字母与"有没有图"的判断都交给 Avatar 组件了，这里不再自己算
   const online = fmtDuration(me?.total_online_seconds || 0)
+  // 注册时间是服务端给的无时区标记 UTC 串，必须走 parseServerTime（否则天数偶尔差 1）
   const days = me?.registered_at
-    ? Math.max(0, Math.floor((Date.now() - new Date(me.registered_at).getTime()) / 86400000))
+    ? Math.max(0, Math.floor((Date.now() - parseServerTime(me.registered_at).getTime()) / 86400000))
     : 0
 
   const status = me?.avatar_status || 'none'

@@ -29,7 +29,7 @@ func TestHashAndCheckPassword(t *testing.T) {
 
 func TestSignAndParseToken(t *testing.T) {
 	svc := NewService("test-secret-key")
-	token, err := svc.SignToken(42, "alice", "admin", time.Hour)
+	token, err := svc.SignToken(42, "alice", "admin", 7, time.Hour)
 	if err != nil {
 		t.Fatalf("签发失败: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestParseTokenRejectsWrongSecret(t *testing.T) {
 	issuer := NewService("secret-a")
 	verifier := NewService("secret-b")
 
-	token, _ := issuer.SignToken(1, "bob", "user", time.Hour)
+	token, _ := issuer.SignToken(1, "bob", "user", 0, time.Hour)
 	if _, err := verifier.ParseToken(token); err == nil {
 		t.Error("使用不同密钥签发的 token 必须校验失败")
 	}
@@ -57,7 +57,7 @@ func TestParseTokenRejectsWrongSecret(t *testing.T) {
 
 func TestParseTokenRejectsTampered(t *testing.T) {
 	svc := NewService("test-secret-key")
-	token, _ := svc.SignToken(1, "bob", "user", time.Hour)
+	token, _ := svc.SignToken(1, "bob", "user", 0, time.Hour)
 
 	// 篡改载荷（保留签名）应被拒绝
 	parts := strings.Split(token, ".")
@@ -71,7 +71,7 @@ func TestParseTokenRejectsTampered(t *testing.T) {
 
 	// 伪造角色提升：用不同 payload 但原签名
 	forged := NewService("test-secret-key")
-	fake, _ := forged.SignToken(1, "bob", "admin", time.Hour)
+	fake, _ := forged.SignToken(1, "bob", "admin", 0, time.Hour)
 	if fake == token {
 		t.Error("不同角色的 token 不应相同")
 	}
@@ -79,7 +79,7 @@ func TestParseTokenRejectsTampered(t *testing.T) {
 
 func TestParseTokenRejectsExpired(t *testing.T) {
 	svc := NewService("test-secret-key")
-	token, err := svc.SignToken(1, "carol", "user", -time.Minute) // 已过期
+	token, err := svc.SignToken(1, "carol", "user", 0, -time.Minute) // 已过期
 	if err != nil {
 		t.Fatalf("签发失败: %v", err)
 	}

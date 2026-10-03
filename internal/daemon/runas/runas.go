@@ -334,6 +334,11 @@ func (id *Identity) Credential() *syscall.Credential {
 // 只能保证"这次能跑"；文件管理、解压、恢复备份这些操作都会在运行期往目录里
 // 塞新文件，不跟着改属主，实例下次写到同一个文件时就会 permission denied ——
 // 表现是"面板里改完配置，服务器却说没权限"。
+//
+// 用 Lchown 语义（与 ChownTree 同一条规矩，见下面的注释）：实例目录里的一切
+// 都由租户控制，一个指向 /etc 的软链接会让 os.Chown **跟随**过去，把树外目录
+// 的属主改成实例用户 —— 那是提权，不是改属主。2026-10-01 安全审查发现这条
+// 与 ChownTree 不一致，已统一。
 func Chown(path string, id *Identity) {
 	if id == nil || path == "" {
 		return
@@ -341,7 +346,7 @@ func Chown(path string, id *Identity) {
 	if _, err := os.Lstat(path); err != nil {
 		return // 路径不存在等：不是错误
 	}
-	_ = os.Chown(path, int(id.UID), int(id.GID))
+	_ = os.Lchown(path, int(id.UID), int(id.GID))
 }
 
 // ChownTree 递归改属主（含目录本身）。

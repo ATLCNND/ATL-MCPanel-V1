@@ -597,6 +597,22 @@ var migrations = []migration{
 			`ALTER TABLE logshare_uploads ADD COLUMN errors INTEGER NOT NULL DEFAULT 0`,
 		},
 	},
+	{
+		Version: 23,
+		Name:    "users_token_version",
+		Statements: []string{
+			// 令牌版本号：JWT 里带上它，请求时与库里的值比对，不一致即失效。
+			//
+			// 为什么需要（2026-10-01 安全审查）：JWT 是**自证明**的，签发之后
+			// 面板无从撤销。原先令牌有效期 24 小时，于是"管理员把被盗账号删掉 /
+			// 重置密码"这个动作在最长 24 小时内**完全不生效** —— 攻击者继续用
+			// 旧令牌，甚至继续以 admin 身份操作。
+			//
+			// 改密码、被删号时把这个值 +1（删号那条同时靠"用户查不到"失效），
+			// 旧令牌立刻作废。
+			`ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0`,
+		},
+	},
 }
 
 // migrate 应用尚未执行的迁移。

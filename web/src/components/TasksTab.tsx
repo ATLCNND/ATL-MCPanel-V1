@@ -5,11 +5,13 @@ import {
 } from '../api'
 import ScheduledTasks from './ScheduledTasks'
 import ExpiryPanel from './ExpiryPanel'
+import { parseServerTime } from '../time'
 import './TasksTab.css'
 
 function fmtTime(s: string): string {
   if (!s) return '—'
-  const d = new Date(s)
+  // 服务端时间是无时区标记的 UTC，`new Date(s)` 会按本地时间解析 → 早一个时区差
+  const d = parseServerTime(s)
   if (isNaN(d.getTime())) return s
   return d.toLocaleString('zh-CN', { hour12: false })
 }
@@ -21,7 +23,7 @@ function fmtSize(n: number): string {
 /** 下次执行还有多久 */
 function untilNext(s: string): string {
   if (!s) return '—'
-  const d = new Date(s)
+  const d = parseServerTime(s)
   if (isNaN(d.getTime())) return s
   const sec = (d.getTime() - Date.now()) / 1000
   if (sec <= 0) return '即将执行'

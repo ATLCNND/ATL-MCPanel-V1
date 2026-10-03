@@ -29,7 +29,14 @@ RemainAfterExit=yes
 #   数据回来，与"服务端没开 enable-status"极像，很容易查错方向。
 #   限定 NEW 之后语义才对：容器主动发起的被挡，宿主发起的那条流的回程是
 #   ESTABLISHED，照常放行。
-ExecStart=/bin/bash -c 'iptables -C INPUT -i br-+ -m conntrack --ctstate NEW -j DROP 2>/dev/null || iptables -I INPUT -i br-+ -m conntrack --ctstate NEW -j DROP; iptables -C INPUT -i docker0 -m conntrack --ctstate NEW -j DROP 2>/dev/null || iptables -I INPUT -i docker0 -m conntrack --ctstate NEW -j DROP'
+# 2026-10-01 安全审查补充：原来只有 IPv4 一侧。
+#   实测（内测节点）：ip6tables 里 INPUT 是**全放行**且没有任何容器规则，
+#   而 docker 默认 bridge 的 EnableIPv6=false、容器也没有 IPv6 地址 ——
+#   所以现在**不可利用**。但这是"默认配置恰好安全"而不是"规则挡住了"：
+#   谁哪天在 /etc/docker/daemon.json 里打开 ipv6，容器就能绕开这层隔离直接连
+#   宿主上绑 :: 的服务。补上孪生规则，成本为零，ip6tables 不存在时自动跳过
+#   （CentOS 7 / Debian 装了 iptables 就都有）。
+ExecStart=/bin/bash -c 'iptables -C INPUT -i br-+ -m conntrack --ctstate NEW -j DROP 2>/dev/null || iptables -I INPUT -i br-+ -m conntrack --ctstate NEW -j DROP; iptables -C INPUT -i docker0 -m conntrack --ctstate NEW -j DROP 2>/dev/null || iptables -I INPUT -i docker0 -m conntrack --ctstate NEW -j DROP; if command -v ip6tables >/dev/null 2>&1; then ip6tables -C INPUT -i br-+ -m conntrack --ctstate NEW -j DROP 2>/dev/null || ip6tables -I INPUT -i br-+ -m conntrack --ctstate NEW -j DROP; ip6tables -C INPUT -i docker0 -m conntrack --ctstate NEW -j DROP 2>/dev/null || ip6tables -I INPUT -i docker0 -m conntrack --ctstate NEW -j DROP; fi'
 # 停止时**不删**规则：它们是安全控制，服务停了也不该把口子放开。
 ExecStop=/bin/true
 

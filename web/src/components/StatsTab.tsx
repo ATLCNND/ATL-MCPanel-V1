@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { InstanceRuntime, getInstanceRuntime, getInstanceStats, StatsResponse } from '../api'
+import { parseServerTime } from '../time'
 import './StatsTab.css'
 
 function fmtBytes(n: number): string {
@@ -71,8 +72,9 @@ function TrendChart({ title, points, color, fmt, unit }: {
       </div>
       {points.length > 1 && (
         <div className="st-xaxis">
-          <span>{new Date(points[0].at).toLocaleString('zh-CN', { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
-          <span>{new Date(points[points.length - 1].at).toLocaleString('zh-CN', { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+          {/* 采样点是服务端给的无时区标记 UTC 串，走 parseServerTime 才不会早 8 小时 */}
+          <span>{parseServerTime(points[0].at).toLocaleString('zh-CN', { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+          <span>{parseServerTime(points[points.length - 1].at).toLocaleString('zh-CN', { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
         </div>
       )}
     </div>

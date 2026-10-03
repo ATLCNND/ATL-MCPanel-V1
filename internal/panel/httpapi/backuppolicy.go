@@ -91,8 +91,18 @@ func (s *Server) handleListBackupPolicies(w http.ResponseWriter, r *http.Request
 		_ = json.Unmarshal([]byte(tiersJSON), &v.Tiers)
 		v.Describe = retention.Policy{ManualKeep: v.ManualKeep, Tiers: v.Tiers}.
 			Normalize().Describe()
-		_ = s.db.QueryRow(`SELECT COUNT(*) FROM backup_schedules WHERE policy_id = ?`, v.ID).Scan(&v.UsedBy)
 		list = append(list, v)
+	}
+	// 逐条统计"被多少实例引用"必须等 rows 关掉之后再做。
+	//
+	// 在遍历 *sql.Rows 的同时发新查询，等于**占着一条连接再要一条** ——
+	// 连接池一小就会互相等死（2026-10-01 那次面板整体卡死就是这个形状）。
+	// 正确写法见 filejobs.go 的 pumpJobs：收集 → Close → 再逐条处理。
+	// 显式 Close 之后 defer 的那次是个空操作，留着只是保险（避免以后加提前返回时忘关）。
+	rows.Close()
+	for i := range list {
+		_ = s.db.QueryRow(`SELECT COUNT(*) FROM backup_schedules WHERE policy_id = ?`, list[i].ID).
+			Scan(&list[i].UsedBy)
 	}
 	writeJSON(w, http.StatusOK, list)
 }

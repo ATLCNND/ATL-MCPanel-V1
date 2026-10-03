@@ -459,6 +459,9 @@ func (s *Server) Handler() http.Handler {
 	//         （实例 owner）能执行任意命令，若能自己关掉隔离，隔离就不成立。
 	mux.HandleFunc("GET /api/instances/{id}/container", s.requireAuth(s.handleGetContainer))
 	mux.HandleFunc("PUT /api/instances/{id}/container", s.requireAdmin(s.handleSetContainer))
+	// 资源上限（CPU / 内存 / 磁盘）：实例 owner / 该节点的节点用户 / 总管理员可改，
+	// 鉴权在 handler 内做（与改名、公网端口同一套判据，见 instancelimits.go）
+	mux.HandleFunc("PUT /api/instances/{id}/limits", s.requireAuth(s.handleSetInstanceLimits))
 
 	// 审计日志（仅 admin）
 	// 审计日志仅管理员可见
@@ -606,6 +609,13 @@ type loginReq struct {
 const dummyPasswordHash = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	// 请求体上限：登录只需要一个用户名与一个密码。
+	//
+	// 不设上限的话，一个 `{"username":"<2GB>"}` 会在**限流之前**被解码成
+	// 一个 Go 字符串（json 解码器要先把整个字符串物化出来），几个匿名请求
+	// 就能把面板的常驻内存吃干 —— 限流拦不住它，因为限流跑在解码之后。
+	// 64KB 对"用户名 + 密码"极其宽裕，不会误伤任何正常客户端。
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var req loginReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "无效的请求体")
@@ -639,9 +649,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		hash  string
 		role  string
 		state string
+		tv    int64
 	)
-	err := s.db.QueryRow(`SELECT id, password_hash, role, status FROM users WHERE username = ?`, req.Username).
-		Scan(&id, &hash, &role, &state)
+	err := s.db.QueryRow(
+		`SELECT id, password_hash, role, status, COALESCE(token_version,0) FROM users WHERE username = ?`,
+		req.Username).Scan(&id, &hash, &role, &state, &tv)
 	userExists := err == nil
 	if !userExists {
 		// 用户不存在时也要走一遍 bcrypt：否则"用户名不存在"会比"密码错误"
@@ -680,7 +692,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.userLimiter.Reset(userKey)
 	s.ipLimiter.Reset(ipKey)
 
-	token, err := s.auth.SignToken(id, req.Username, role, 24*time.Hour)
+	token, err := s.auth.SignToken(id, req.Username, role, tv, 24*time.Hour)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "签发令牌失败")
 		return

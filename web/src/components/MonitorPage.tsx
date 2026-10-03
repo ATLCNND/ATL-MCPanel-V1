@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { MonitorSummary, MonitorInstance, monitorNodes, monitorInstances } from '../api'
+import { parseServerTime } from '../time'
 import './MonitorPage.css'
 
 function fmtGB(bytes: number): string {
@@ -14,7 +15,8 @@ function fmtPct(part: number, total: number): number {
 
 function fmtAgo(s: string): string {
   if (!s) return '—'
-  const d = new Date(s)
+  // 服务端时间是无时区标记的 UTC，`new Date(s)` 会按本地时间解析 → 早一个时区差
+  const d = parseServerTime(s)
   if (isNaN(d.getTime())) return s
   const sec = (Date.now() - d.getTime()) / 1000
   if (sec < 60) return `${Math.max(0, Math.floor(sec))} 秒前`

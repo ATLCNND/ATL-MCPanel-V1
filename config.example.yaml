@@ -28,6 +28,14 @@ server:
   grpc_mtls: true
   pki_dir: "data/pki"       # CA 与证书目录（首次启动自动生成）
 
+  # 显式允许"明文 gRPC + 对外监听"这种危险组合（默认 false，即拒绝启动）。
+  #
+  # 关掉 grpc_mtls 且让 grpc_listen 监听所有网卡时，任何能连上 9090 的主机
+  # 都能伪造节点注册（覆盖别的节点 IP，进而让面板带着该节点的 SSH 凭据去连
+  # 攻击者的机器）与心跳。2026-10-01 安全审查后这种组合**直接拒绝启动**；
+  # 确实需要（例如临时排障）才改成 true，风险自负。
+  allow_insecure_grpc: false
+
   panel_frp_dir: "data/panel-frp"  # 面板自身穿透的工作目录
 
 daemon:
@@ -43,6 +51,12 @@ daemon:
   cert_file: ""
   key_file: ""
   ca_file: ""
+
+  # 显式允许"明文 gRPC + 对外监听"（默认 false）。
+  # tls=false 时 Daemon 的 DaemonService 完全是**无认证**的，绑在 ":9091" 上
+  # 等于把"控制本机所有实例"的能力交给任何能连上该端口的人；因此这种组合
+  # 会拒绝启动。单机调试请用 127.0.0.1:9091，不要打开这个开关。
+  allow_insecure_grpc: false
 
   # ---- 实例的运行身份（安全关键，别改成 root）----
   # 实例进程（java / start.sh 里的任何命令）以什么身份运行：

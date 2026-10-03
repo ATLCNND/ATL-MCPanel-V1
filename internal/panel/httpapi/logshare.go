@@ -10,6 +10,7 @@ import (
 	"path"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -127,9 +128,12 @@ func (s *Server) handleLogShareAnalyse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Path       string `json:"path"`
-		FilterChat bool   `json:"filter_chat"`
-		Agree      bool   `json:"agree"`
+		Path string `json:"path"`
+		// FilterChat 用 *bool：**没传**（nil）按"过滤"处理，只有显式 false 才关闭。
+		// 与 handleInstanceAnalyse 同一个道理：界面上的勾默认是开着的，
+		// 而 bool 的零值 false 会让"不带这个字段的调用方"变成不过滤。
+		FilterChat *bool `json:"filter_chat"`
+		Agree      bool  `json:"agree"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "无效请求体")
@@ -145,6 +149,7 @@ func (s *Server) handleLogShareAnalyse(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "请选择要分析的日志文件")
 		return
 	}
+	filterChat := filterChatEnabled(req.FilterChat)
 
 	cli, _, err := s.getDaemonClient(instanceID)
 	if err != nil {
@@ -177,7 +182,7 @@ func (s *Server) handleLogShareAnalyse(w http.ResponseWriter, r *http.Request) {
 
 	// 3. 过滤玩家聊天（默认开）
 	filtered := 0
-	if req.FilterChat {
+	if filterChat {
 		content, filtered = stripPlayerChat(content)
 	}
 
@@ -197,7 +202,7 @@ func (s *Server) handleLogShareAnalyse(w http.ResponseWriter, r *http.Request) {
 		if err != nil || strings.TrimSpace(extra) == "" {
 			return
 		}
-		if req.FilterChat {
+		if filterChat {
 			extra, _ = stripPlayerChat(extra)
 		}
 		files = append(files, logshare.UploadFile{Name: name, Content: extra})
@@ -369,6 +374,35 @@ func (s *Server) handleLogShareAI(w http.ResponseWriter, r *http.Request) {
 	logID := r.PathValue("logshare_id")
 	if logID == "" {
 		writeErr(w, http.StatusBadRequest, "缺少 logshare_id")
+		return
+	}
+	// logshare_id 必须**属于这个实例**：{id} 的授权只证明了"你能看这台实例"，
+	// 证明不了这个 id 就是这台实例上传的 —— 而对方的日志 id 是公开的
+	//（分享链接里就有）。少了这道绑定，任何有 collab 的人都能借自己的实例
+	// 去读**别人租户**那份日志的 AI 结论（口径与 handleLogShareDelete 一致）。
+	var one int
+	if err := s.db.QueryRow(
+		`SELECT 1 FROM logshare_uploads WHERE instance_id = ? AND logshare_id = ?`,
+		instanceID, logID).Scan(&one); err != nil {
+		writeErr(w, http.StatusNotFound, "没有这条上传记录（可能是别的实例上传的）")
+		return
+	}
+
+	// 已经有结论就先回放：这是"再看一次"最常见的路径，既不必再问一次对方，
+	// 也就不该计入限流额度（额度是给"对外部提供方的调用"计数的）。
+	if cached := strings.TrimSpace(s.cachedAnalysis(instanceID, logID)); cached != "" {
+		writeSSEAnswer(w, cached)
+		return
+	}
+
+	// 限流：这条路由进来就会**起一次上游 AI**。此前整个面板只有
+	// /api/instances/{id}/analyse 在计数，于是这里等于一个不限速的 AI 中转，
+	// 任何人都能借它把公益额度（或管理员配的 key）打光。
+	// 口径与 attemptProvider 处完全相同（同一把 key、同一种 429）。
+	if ok, wait, why := s.rateLimiter.Allow("u:" + strconv.FormatInt(currentUserID(r), 10)); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		writeErr(w, http.StatusTooManyRequests,
+			fmt.Sprintf("%s（约 %d 秒后可再试）", why, int(wait.Seconds())+1))
 		return
 	}
 
@@ -617,13 +651,15 @@ func (s *Server) runAIRun(run *aiRun, instanceID, logID, key string) {
 // handleLogShareDelete DELETE /api/instances/{id}/logshare/{logshare_id}
 //
 // 删除云端副本（隐私用）。**必须带 token**，所以要读库。
+//
+// 这里**刻意不检查** s.LogShareEnabled()：开关关掉的是"面板上的上传入口"，
+// 而删除是隐私方向的操作 —— 管理员关掉开关之后，用户更需要能把以前传出去的
+// 副本删干净。handleSetLogShareSettings 的提示也向用户承诺了
+// "已上传的云端副本仍可删除"，两处口径必须一致。
+// 客户端是常驻对象（见 NewServer），所以关掉开关后删除照样可用。
 func (s *Server) handleLogShareDelete(w http.ResponseWriter, r *http.Request) {
 	instanceID := r.PathValue("id")
 	if !s.requireInstanceLevel(w, r, instanceID, LevelOwner) {
-		return
-	}
-	if !s.LogShareEnabled() {
-		writeErr(w, http.StatusServiceUnavailable, "日志分析功能未启用")
 		return
 	}
 	logID := r.PathValue("logshare_id")
@@ -638,14 +674,23 @@ func (s *Server) handleLogShareDelete(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if err := s.logShare.Delete(ctx, logID, token); err != nil {
+		// 远端没删掉：**本地也不动**（口径与改动前一致）——把失败原样报出来，
+		// 免得用户以为"本地已经没留东西了"
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	_, _ = s.db.Exec(
 		`UPDATE logshare_uploads SET deleted_at = CURRENT_TIMESTAMP WHERE instance_id = ? AND logshare_id = ?`,
 		instanceID, logID)
-	s.audit(r, "logshare_delete", instanceID, logID)
-	writeJSON(w, http.StatusOK, map[string]string{"message": "云端副本已删除"})
+	// 本地结论**必须一起删**，否则"删除我的数据"只做了一半：
+	// logshare_analyses.content 通常整段引用日志原文（玩家名、聊天、绝对路径），
+	// 只清远端副本等于"让第三方删掉、自己在库里留一份"，此后每个能看这台实例的人
+	//（collab 就行）都还能从历史接口读到它。删除只有本地也生效才算数。
+	s.execLogged(
+		`DELETE FROM logshare_analyses WHERE instance_id = ? AND logshare_id = ?`,
+		instanceID, logID)
+	s.audit(r, "logshare_delete", instanceID, logID+"（含本地结论）")
+	writeJSON(w, http.StatusOK, map[string]string{"message": "云端副本与本地 AI 结论已删除"})
 }
 
 // handleLogShareHistory GET /api/instances/{id}/logshare
@@ -745,6 +790,16 @@ func (s *Server) readInstanceFileCapped(cli pb.DaemonServiceClient, instanceID, 
 	return buf.String(), total, nil
 }
 
+// filterChatEnabled 解析请求里的 filter_chat：**没传**就按"过滤"处理。
+//
+// 为什么需要这么一个函数（而不是每个 handler 各写一遍 `req.FilterChat == nil || *req.FilterChat`）：
+// 这条默认值是**隐私承诺**的一部分（config.example.yaml 与界面都写"默认过滤玩家聊天"），
+// 两处写法一旦漂移，就会出现"某个入口悄悄不过滤"——而那种偏差没有任何症状，
+// 只有日志里的玩家聊天被传出去时才看得到。默认值只有一处定义。
+func filterChatEnabled(v *bool) bool {
+	return v == nil || *v
+}
+
 // stripPlayerChat 去掉玩家聊天行，返回新内容与被过滤的行数。
 //
 // 只删"玩家发出的聊天"，不删加入/退出/成就等事件 —— 那些对诊断崩溃有用
@@ -779,7 +834,19 @@ func stripPlayerChat(content string) (string, int) {
 //
 // 用 <...> 作为判据是服务端自己的格式（所有核心都这么打），
 // 而不是靠关键词猜 —— 靠猜会把 `<` 出现在报错里的行也删掉。
-var chatLineRe = regexp.MustCompile(`(?:^|\]\s*)(?:\[Not Secure\]\s*)?<[^<>\n]{1,32}>\s`)
+//
+// ⚠️ 2026-10-01 修：原来的前缀是 `(?:^|\]\s*)`，要求 `]` 之后**只跟空白**就到
+// `<`，而服务端实际打的是
+//
+//	[10:01:10] [Server thread/INFO]: <Steve> 你好
+//
+// `]` 与 `<` 之间隔着 `: `（冒号+空格），于是**匹配不上** —— 结果就是配置与界面
+// 都承诺"默认过滤玩家聊天"，而绝大多数日志格式下一行都没被过滤，接口还如实报告
+// "过滤 0 行"，没有任何症状。这条默认值是隐私承诺的一部分，不能只是"看起来实现了"。
+// 现在把 `]:`（可选空白）也接受；`[Not Secure]` 那种变体继续支持。
+// `(?m)` 让 `^` 对**每一行**生效：没有时间戳的裸 `<名字> 内容` 可能出现在日志中间
+//（前面的行被轮转截断时就是这种形态），只在文本开头匹配会漏掉它们。
+var chatLineRe = regexp.MustCompile(`(?m)(?:^|\]:\s*|\]\s*)(?:\[Not Secure\]\s*)?<[^<>\n]{1,32}>\s`)
 
 func isChatLine(line string) bool {
 	return chatLineRe.MatchString(line)

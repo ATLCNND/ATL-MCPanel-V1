@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -74,8 +75,16 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 			v.LastSeenAgeS = int(time.Since(*lastSeen).Seconds())
 		}
 		v.Online = nodeOnline(v.Status, lastSeen)
-		_ = s.db.QueryRow(`SELECT COUNT(*) FROM instances WHERE node_id = ?`, v.ID).Scan(&v.Instances)
 		list = append(list, v)
+	}
+	// 逐节点统计实例数必须等 rows 关掉之后再做：在遍历 *sql.Rows 的同时发新查询
+	// 是"占着一条连接再要一条"，池一小就互相等死（2026-10-01 面板整体卡死就是这个形状）。
+	// 正确写法见 filejobs.go 的 pumpJobs：收集 → Close → 再逐条处理。
+	// 显式 Close 之后 defer 的那次是个空操作，留着只作保险。
+	rows.Close()
+	for i := range list {
+		_ = s.db.QueryRow(`SELECT COUNT(*) FROM instances WHERE node_id = ?`, list[i].ID).
+			Scan(&list[i].Instances)
 	}
 	writeJSON(w, http.StatusOK, list)
 }
@@ -299,7 +308,10 @@ func (s *Server) handleDeployNode(w http.ResponseWriter, r *http.Request) {
 		NodeID:       nv.Name,
 		PanelAddress: s.grpcAddressFor(nv.IP),
 		DaemonBinary: binData,
-		GRPCListen:   s.daemonGRPCListen,
+		// 按**这个节点**算监听地址：同机绑回环、跨机绑该节点的地址。
+		// 直接把配置里的 `:9091` 下发的话，每台节点的管理口都会监听所有网卡
+		//（2026-10-02 安全审查发现内测节点的 9091 从公网可达就是这个原因）。
+		GRPCListen: s.daemonListenFor(nv.IP),
 		ServiceName:  s.daemonServiceName,
 		// frpc 就在面板二进制旁边（面板包 bin/ 里带着）——有就一并下发，
 		// 让"给实例开公网端口"开箱可用；没有时跳过（穿透是可选能力）。
@@ -477,6 +489,54 @@ func readSiblingBinary(refPath, name string) []byte {
 		return nil
 	}
 	return b
+}
+
+// daemonListenFor 返回**该节点上** Daemon 应该绑定的 gRPC 监听地址。
+//
+// 为什么要按节点算，而不是把配置里的值原样下发（2026-10-02 安全审查）：
+// `server.daemon_grpc_listen` 的默认值是 `":9091"` —— 也就是**所有网卡**。
+// 一键部署会把它写进节点配置，于是每台节点的 Daemon 管理口都摆在公网上
+//（虽然要求 mTLS，但没有任何理由多开这个面）。实测内测节点上 `:::9091`
+// 从公网可达，就是因为这个默认值。
+//
+// 规则（既修掉默认值，又不覆盖管理员的显式选择）：
+//   - 配置里写的是**具体某个非回环地址**（如 `10.0.0.5:9091`）→ 原样使用，
+//     管理员明确指定了绑定哪块网卡，那是他的决定。
+//   - 否则：同机节点绑 `127.0.0.1:<端口>`（面板也是从回环连它的），
+//     跨机节点绑 `<节点IP>:<端口>` —— 只暴露在面板要连的那一个地址上。
+//   - 拿不到节点 IP 时退回 `:<端口>`（所有网卡），**并记一条告警**：
+//     这仍然比"部署失败"好，但值得让人看见。
+func (s *Server) daemonListenFor(nodeIP string) string {
+	port := s.daemonPortFromListen()
+	cfg := strings.TrimSpace(s.daemonGRPCListen)
+
+	// 配置里显式写了一个非回环的具体地址：尊重它
+	if cfg != "" && !strings.HasPrefix(cfg, ":") {
+		host := cfg
+		if i := strings.LastIndex(host, ":"); i >= 0 {
+			host = strings.Trim(host[:i], "[]")
+		}
+		if host != "" && !isLoopbackHost(host) {
+			return cfg
+		}
+	}
+
+	if isLocalNodeHost(nodeIP) {
+		// 注意 isLocalNodeHost 把**空地址**也当作本机，这是有意的：
+		// 拿不到节点 IP 时绑回环是安全的一侧（宁可部署后发现连不上，
+		// 也不要把管理口摆到所有网卡上）。
+		return "127.0.0.1:" + strconv.Itoa(port)
+	}
+	return net.JoinHostPort(strings.TrimSpace(nodeIP), strconv.Itoa(port))
+}
+
+// isLoopbackHost 判断主机名/地址是否只表示回环。
+func isLoopbackHost(host string) bool {
+	switch strings.ToLower(strings.TrimSpace(host)) {
+	case "127.0.0.1", "::1", "localhost":
+		return true
+	}
+	return false
 }
 
 // grpcAddressFor 返回**这个节点**该用来连面板 gRPC 的地址。

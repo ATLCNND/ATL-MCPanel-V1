@@ -5,11 +5,13 @@ import {
   getHelp, saveHelp,
 } from '../api'
 import MiniMarkdown from './MiniMarkdown'
+import { parseServerTime } from '../time'
 import './HelpPage.css'
 
 function fmtTime(s: string): string {
   if (!s) return '—'
-  const d = new Date(s)
+  // 服务端时间是无时区标记的 UTC，`new Date(s)` 会按本地时间解析 → 早一个时区差
+  const d = parseServerTime(s)
   if (isNaN(d.getTime())) return s
   return d.toLocaleString('zh-CN', { hour12: false })
 }

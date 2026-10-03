@@ -2,11 +2,13 @@ package grpcapi
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/ATLCNND/ATL-MCPanel/internal/common/safepath"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/runas"
 	pb "github.com/ATLCNND/ATL-MCPanel/internal/proto/mcpanel"
 )
@@ -73,15 +75,63 @@ func isProtectedName(dirRel, name string) bool {
 	return isProtectedPath(rel)
 }
 
+// errProtectedPath 解析后发现落在受保护文件上的统一拒绝。
+//
+// 单独做成 error 是为了让 resolvePath 能在**软链接解引用之后**再判一次
+// 受保护名单：`ln -s frpc.toml x && 读 x` 这种写法绕过了调用方开始时
+// 基于字面路径的那次检查。文案与 errProtected 一致，前端无需区分。
+var errProtectedPath = errors.New(errProtected)
+
 // resolvePath 解析实例相对路径为绝对路径，并防止目录穿越。
+//
+// **两道边界检查，缺一不可：**
+//
+//  1. 词法检查：Clean 掉 `..` 之后必须仍在实例目录内（净化而非拒绝，
+//     见 upload_path_test.go 锁住的那条不变量）。
+//  2. 真实路径检查：把路径里**已存在的那一段**用 EvalSymlinks 解析成真实
+//     路径，再查一次边界，并把解析结果换算回实例相对路径**重新过一遍受保护
+//     文件判定**。
+//
+// 只有第 1 步是不够的，而且这是一个真实的提权路径（2026-10-01 安全审查）：
+// 实例目录里的内容完全由租户控制 —— 文件管理能建文件，启动脚本、插件都能调
+// `Files.createSymbolicLink`。租户执行 `ln -s /etc/cron.d/x ./pwn` 之后，
+// 对 `pwn` 的读写会**穿过**那个纯词法检查落到实例目录之外，而 os.WriteFile /
+// os.ReadFile / os.Stat **都会跟随软链接**，于是：
+//
+//	POST /api/instances/<自己的实例>/file {"path":"pwn","content":"<crontab>"}
+//
+// 就等于以 Daemon 的身份（root）往节点上任意路径写文件；读同理，可以读到
+// 其它租户的 frp 凭据、节点上的 /etc/shadow 等。写操作另外用
+// safepath.OpenNoFollow（O_NOFOLLOW）把"检查之后、写之前"被换成软链接的窗口关掉。
+//
+// 真实路径那一段逻辑与 Daemon 里其它几处（控制台日志、解压、备份恢复、
+// server.properties 回写）完全一样，所以统一放在 internal/common/safepath，
+// 避免再出现"修了一处、漏了三处"的情况。
 func resolvePath(instanceDir, rel string) (string, error) {
 	rel = filepath.Clean("/" + strings.TrimPrefix(rel, "/"))
 	abs := filepath.Join(instanceDir, rel)
-	// 确保在实例目录内
-	base, _ := filepath.Abs(instanceDir)
-	target, _ := filepath.Abs(abs)
-	if !strings.HasPrefix(target, base+string(filepath.Separator)) && target != base {
+	// 第 1 道：词法边界
+	base, err := filepath.Abs(instanceDir)
+	if err != nil {
 		return "", os.ErrPermission
+	}
+	target, err := filepath.Abs(abs)
+	if err != nil {
+		return "", os.ErrPermission
+	}
+	// 第 2 道：解析软链接后的真实路径边界
+	if _, err := safepath.ResolveWithin(base, target); err != nil {
+		if errors.Is(err, safepath.ErrEscape) {
+			return "", os.ErrPermission
+		}
+		return "", err
+	}
+	// 软链接可以指向实例目录**内部**的受保护文件（frpc.toml / instance.json 等），
+	// 那种情况没有越界，但同样必须挡住，否则一行 `ln -s` 就绕过了保护名单。
+	if r, ok := safepath.RelWithin(base, target); ok && r != "." {
+		if isProtectedPath(r) {
+			return "", errProtectedPath
+		}
 	}
 	return target, nil
 }
@@ -203,7 +253,22 @@ func (s *Server) WriteFile(ctx context.Context, req *pb.WriteFileRequest) (*pb.O
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return &pb.OperationResponse{Success: false, Error: err.Error()}, nil
 	}
-	if err := os.WriteFile(target, []byte(req.Content), 0o644); err != nil {
+	// 用 O_NOFOLLOW 打开：resolvePath 检查过边界，但从检查到这里的这段时间里
+	// 目标有可能被换成软链接（TOCTOU）。内核层面拒绝跟随最后一段，才真正封死
+	// "租户用软链接把 root 的写入引到实例目录之外"这条路。
+	f, err := safepath.OpenNoFollow(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		if safepath.IsSymlinkRefusal(err) {
+			return &pb.OperationResponse{Success: false,
+				Error: "目标是一个软链接，出于安全考虑不允许通过文件管理写入"}, nil
+		}
+		return &pb.OperationResponse{Success: false, Error: err.Error()}, nil
+	}
+	if _, err := f.Write([]byte(req.Content)); err != nil {
+		f.Close()
+		return &pb.OperationResponse{Success: false, Error: err.Error()}, nil
+	}
+	if err := f.Close(); err != nil {
 		return &pb.OperationResponse{Success: false, Error: err.Error()}, nil
 	}
 	// 交给实例的运行用户：root 写出来的文件属主是 root，而真正要读写它的

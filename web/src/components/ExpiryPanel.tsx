@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Instance, setInstanceExpiry } from '../api'
+import { parseServerTime } from '../time'
 import './ExpiryPanel.css'
 
 /**
@@ -33,7 +34,8 @@ export default function ExpiryPanel({ instanceId, inst, onChanged }: {
     if (!inst) return
     setAutostop(inst.expiry_autostop !== false)
     if (!inst.expires_at) { setInput(''); return }
-    const d = new Date(inst.expires_at)
+    // 服务端时间是无时区标记的 UTC，`new Date(s)` 会按本地时间解析 → 早一个时区差
+    const d = parseServerTime(inst.expires_at)
     if (isNaN(d.getTime())) { setInput(''); return }
     const pad = (n: number) => String(n).padStart(2, '0')
     setInput(
@@ -72,7 +74,7 @@ export default function ExpiryPanel({ instanceId, inst, onChanged }: {
 
   const st = inst?.expiry_state || 'none'
   const fmtAt = (s?: string) =>
-    s ? new Date(s).toLocaleString('zh-CN', { hour12: false }) : ''
+    s ? parseServerTime(s).toLocaleString('zh-CN', { hour12: false }) : ''
 
   const stateText =
     st === 'expired' ? `已到期（${fmtAt(inst?.expires_at)}）`

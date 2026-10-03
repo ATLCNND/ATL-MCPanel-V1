@@ -102,6 +102,13 @@ type ServerConfig struct {
 	// GRPCMTLS 要求 Daemon 使用由面板 CA 签发的客户端证书接入（双向认证）。
 	// 生产环境应保持开启；关闭仅用于从明文平滑迁移。
 	GRPCMTLS bool `yaml:"grpc_mtls"`
+	// AllowInsecureGRPC 显式允许"明文 gRPC + 对外监听"这种危险组合。
+	//
+	// 2026-10-01 安全审查：`grpc_mtls: false` + `grpc_listen: ":9090"` 意味着
+	// 任何能连上 9090 的主机都能伪造节点注册/心跳（见 internal/panel/grpcapi）。
+	// 现在这种组合**直接拒绝启动**，要跑必须显式打开这个开关 —— 让风险在配置
+	// 里留下痕迹，而不是只写一行 WARN 日志。
+	AllowInsecureGRPC bool `yaml:"allow_insecure_grpc"`
 	// PKIDir CA 与签发证书的存放目录
 	PKIDir string `yaml:"pki_dir"`
 
@@ -139,6 +146,13 @@ type DaemonConfig struct {
 	CertFile     string `yaml:"cert_file"`
 	KeyFile      string `yaml:"key_file"`
 	CAFile       string `yaml:"ca_file"`
+
+	// AllowInsecureGRPC 显式允许"明文 gRPC + 对外监听"。
+	//
+	// 默认拒绝：tls=false 时 Daemon 的 DaemonService 是**完全无认证**的，
+	// 绑在 `:9091` 上等于把"控制本机所有实例"的能力交给任何能连上该端口的人
+	//（2026-10-01 安全审查）。单机调试请用 127.0.0.1:9091。
+	AllowInsecureGRPC bool `yaml:"allow_insecure_grpc"`
 
 	// CgroupRoot cgroup v2 资源限制的根目录（空则用 /sys/fs/cgroup/atlmcpanel）。
 	// 用于给实例施加 CPU 配额；不可用时自动降级为不限制。
@@ -345,6 +359,23 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// IsLoopbackListen 判断监听地址是否**只**绑定回环。
+//
+// 注意 `:9090` / `0.0.0.0:9090` / 空主机名都表示"所有网卡"，必须判成 false ——
+// 不能因为"空主机名就是本机"的直觉放行它们，那正是明文 gRPC 对外暴露的写法。
+func IsLoopbackListen(addr string) bool {
+	host := strings.TrimSpace(addr)
+	if i := strings.LastIndex(host, ":"); i >= 0 {
+		host = host[:i]
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	switch strings.ToLower(host) {
+	case "127.0.0.1", "::1", "localhost":
+		return true
+	}
+	return false
+}
+
 // applyDefaults 填充默认值。
 func (c *Config) applyDefaults() {
 	if c.Server.Listen == "" {
@@ -373,7 +404,14 @@ func (c *Config) applyDefaults() {
 		c.Server.DaemonServiceName = "atlmcpanel-daemon"
 	}
 	if c.Server.DaemonGRPCListen == "" {
-		c.Server.DaemonGRPCListen = ":9091"
+		// 默认回环，**不是** ":9091"（2026-10-02 安全审查）：
+		// 这个值会被一键部署写进节点配置，作为 Daemon 管理口的监听地址。
+		// 写成 ":9091" 等于每台节点的管理口都监听所有网卡 —— 实测内测节点
+		// 就是这样从公网可达的（虽然有 mTLS 兜底，但没有理由多开这个面）。
+		// 现在默认回环；跨机节点由 handleDeployNode 按该节点的 IP 生成
+		// "只绑那一个地址"的监听串（见 httpapi.daemonListenFor），
+		// 管理员显式写了具体非回环地址时仍然尊重配置。
+		c.Server.DaemonGRPCListen = "127.0.0.1:9091"
 	}
 	if c.DB.Driver == "" {
 		c.DB.Driver = "sqlite3"

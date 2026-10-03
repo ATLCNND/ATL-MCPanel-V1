@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"testing"
 )
@@ -231,6 +232,46 @@ func TestPortUsage_CountsOwnedInstances(t *testing.T) {
 // ---------------------------------------------------------------------------
 // HTTP 端到端
 // ---------------------------------------------------------------------------
+
+// TestDaemonTunnelStatus_BoundedToCallerScope 端口页的实时状态**只能问本实例**。
+//
+// 原来那个 helper 取的是「全表所有实例」的 DISTINCT instance_id，逐个实例
+// 发一次 gRPC（而且没有超时、用 context.Background()）。于是一个 viewer 打开
+// 端口页，面板就会向**所有租户**的实例各发一次调用：请求成本与面板里有多少
+// 实例成正比，一个挂死的节点还能永久占住 goroutine 与连接。
+//
+// 这里盯住两件事：范围必须能被收窄，且 nil（全部）与空范围**不是一回事**。
+func TestDaemonTunnelStatus_BoundedToCallerScope(t *testing.T) {
+	srv, _ := newTestServer(t)
+	frpsID := seedFrps(t, srv, "10.0.0.4", 25565, 25600)
+	for _, id := range []string{"inst1", "inst2"} {
+		seedInstance(t, srv, id, 1)
+	}
+	seedTunnel(t, srv, "inst1-tcp-25565", "inst1", frpsID, 25565)
+	seedTunnel(t, srv, "inst2-tcp-25566", "inst2", frpsID, 25566)
+
+	// ① 指定范围：就是它，不多问一台
+	if got := srv.tunnelInstanceIDs([]string{"inst1"}); len(got) != 1 || got[0] != "inst1" {
+		t.Errorf("指定范围时应只返回该实例，实际 %v", got)
+	}
+
+	// ② 空范围 = "谁都不问"。若这里退化成全表，跨租户扇出就回来了
+	if got := srv.tunnelInstanceIDs([]string{}); len(got) != 0 {
+		t.Errorf("空范围不该退化成全表，实际 %v", got)
+	}
+
+	// ③ nil = 全部（只有总管理员的 /api/tunnels 用这种口径）
+	if got := srv.tunnelInstanceIDs(nil); len(got) != 2 {
+		t.Errorf("nil 范围应取全表（2 台），实际 %v", got)
+	}
+
+	// ④ 请求已被取消：整轮扇出立刻收手（不会再去问任何实例）
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if out := srv.daemonTunnelStatusByInstance(ctx, []string{"inst1", "inst2"}); len(out) != 0 {
+		t.Errorf("请求已取消时应放弃扇出，实际 %v", out)
+	}
+}
 
 // TestAddPort_PlainUserAsOwnerSucceeds 走完整的 HTTP 路径：
 // 普通用户被授权为 owner + 拿到配额 → 能给自己那台实例开端口。

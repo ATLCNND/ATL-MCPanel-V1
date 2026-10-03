@@ -19,6 +19,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ATLCNND/ATL-MCPanel/internal/common/safepath"
 )
 
 // Report 进度回调。done/total 为字节数（total 为 0 表示未知）。
@@ -200,6 +202,13 @@ func compressZip(ctx context.Context, out io.Writer, src, dst string, filter Fil
 			}
 			return nil
 		}
+		// 软链接**不打进包**：filepath.Walk 用的是 Lstat，fi 是链接本身，
+		// 但下面 copyFile 里的 os.Open 会**跟随**链接读目标内容 —— 实例里一个
+		// `ln -s /etc/shadow x` 就能把实例目录外的文件塞进压缩包让租户下载。
+		// 与 Copy 的处理保持一致（见 copyTree 里的同一条注释）。
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
 
 		hdr, err := zip.FileInfoHeader(fi)
 		if err != nil {
@@ -262,6 +271,10 @@ func compressTar(ctx context.Context, out io.Writer, src, dst string, filter Fil
 			if fi.IsDir() {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		// 同 compressZip：软链接不打进包，否则 copyFile 会跟随它读到实例目录之外。
+		if fi.Mode()&os.ModeSymlink != 0 {
 			return nil
 		}
 
@@ -410,8 +423,13 @@ func extractGzipSingle(ctx context.Context, f *os.File, dst, srcName string, fil
 	if err != nil {
 		return err
 	}
-	out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	// 同样拒绝软链接目标：把 x.gz 解成 x 时，实例目录里预先放好的
+	// `x -> /etc/cron.d/pwn`（悬空或已存在）都能让 root 顺着它写出去。
+	out, err := safepath.OpenNoFollow(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
+		if safepath.IsSymlinkRefusal(err) {
+			return fmt.Errorf("目标 %s 是软链接，已拒绝写入", outName)
+		}
 		return err
 	}
 	defer out.Close()
@@ -503,9 +521,14 @@ func extractZip(ctx context.Context, src, dst string, filter Filter, report Repo
 		if perm == 0 {
 			perm = 0o644
 		}
-		out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm)
+		// O_NOFOLLOW：边界检查与实际打开之间还有一个窗口，租户可以在那一刻把
+		// 目标换成软链接；内核在最后一段是软链接时直接返回 ELOOP，把窗口关掉。
+		out, err := safepath.OpenNoFollow(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm)
 		if err != nil {
 			rc.Close()
+			if safepath.IsSymlinkRefusal(err) {
+				return fmt.Errorf("目标 %s 是软链接，已拒绝写入", f.Name)
+			}
 			return err
 		}
 		n, err := io.Copy(out, io.LimitReader(rc, maxExtractBytes-done+1))
@@ -579,8 +602,12 @@ func extractTar(ctx context.Context, f *os.File, dst string, gz bool, filter Fil
 			if perm == 0 {
 				perm = 0o644
 			}
-			out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm)
+			// 同 extractZip：拒绝以软链接为目标写入（O_NOFOLLOW）
+			out, err := safepath.OpenNoFollow(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm)
 			if err != nil {
+				if safepath.IsSymlinkRefusal(err) {
+					return fmt.Errorf("目标 %s 是软链接，已拒绝写入", hdr.Name)
+				}
 				return err
 			}
 			n, err := io.Copy(out, io.LimitReader(tr, maxExtractBytes-done+1))
@@ -605,6 +632,13 @@ func extractTar(ctx context.Context, f *os.File, dst string, gz bool, filter Fil
 // 这里**逐段**校验而不是先 filepath.Clean：Clean 会把 "a/../b" 折叠成 "b"，
 // 看起来"安全"了，实际却把越界条目悄悄放进目标目录；
 // 而 ".." 出现在中间段与出现在开头段的语义完全不同，必须显式拒绝。
+//
+// 三道检查缺一不可（前两道是词法的，第三道才挡得住软链接）：
+//  1. 逐段拒绝 ".." / ":" / NUL，并限制层级；
+//  2. 拼出来的绝对路径必须落在 dst 内（前缀比较）；
+//  3. **真实路径**比较：实例目录里的目录项完全由租户控制，`d/evil -> /etc/cron.d`
+//     这样的目录软链接会让条目 `evil/rce` 的词法路径看起来仍在 dst 内，实际却
+//     写到 cron 目录（Daemon 是 root）。所以还要解析软链接再查一次边界。
 func safeJoin(dst, name string) (string, error) {
 	name = strings.ReplaceAll(name, "\\", "/")
 	name = strings.TrimPrefix(name, "/")
@@ -640,6 +674,13 @@ func safeJoin(dst, name string) (string, error) {
 	base, _ := filepath.Abs(dst)
 	abs, _ := filepath.Abs(target)
 	if abs != base && !strings.HasPrefix(abs, base+string(filepath.Separator)) {
+		return "", fmt.Errorf("压缩包内含越界路径（%s）", name)
+	}
+
+	// 第三道：真实路径（解析软链接）边界检查，越界时按同样的口径拒绝。
+	// 返回值只用来看成败：这里仍返回词法拼出来的 abs，避免把"解析后的路径"
+	// 悄悄换给调用方（解包产物落在哪，行为应与修复前完全一致）。
+	if _, err := safepath.ResolveWithin(base, abs); err != nil {
 		return "", fmt.Errorf("压缩包内含越界路径（%s）", name)
 	}
 	return abs, nil

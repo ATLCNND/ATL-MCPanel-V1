@@ -5,6 +5,7 @@ import {
   streamAnalysisAI, listAnalysisHistory, previewHelpText,
 } from '../api'
 import MiniMarkdown from './MiniMarkdown'
+import { parseServerTime, formatServerTime } from '../time'
 import './LogShareTab.css'
 
 /**
@@ -46,7 +47,10 @@ function formatTime(ts: number): string {
 
 function fmtExpire(s: string): string {
   if (!s) return '—'
-  const d = new Date(s.replace(' ', 'T'))
+  // 必须走 parseServerTime：服务端给的是"无时区标记的 UTC 字符串"，
+  // 直接 new Date() 会按本地时间解析 → UTC+8 的用户看到的时间早 8 小时
+  //（分析记录整页都受影响，2026-10-02 用户反馈"时间似乎有问题"）。
+  const d = parseServerTime(s)
   if (isNaN(d.getTime())) return s
   // 自配平台那条路没有云端副本，落库时 Expires 是 Go 的零值，
   // 序列化出来就是 0001-01-01 —— 直接显示会变成"约 -74 万天后"，属于典型的描述误区。
@@ -311,6 +315,25 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
     }
   }
 
+  /**
+   * SSE 结束后回查一次落库结论 —— 这是"分析完显示无结果"的兜底。
+   *
+   * 为什么需要（2026-10-02 用户反馈）：分析是**后台跑**的，跑完会把结论写进
+   * logshare_analyses。而这一路的实时流偶尔会拿不到内容（反代/浏览器把 SSE 缓冲住、
+   * 页签切走、或者分析在上面的 startStream 订阅之前就已经结束）。那几种情况下
+   * 前台就只剩一个空答案，用户必须手动点「分析历史」再点开那条记录才看得到 ——
+   * 而结论其实一直都在库里。这里主动取一次，把"要点两下"变成"直接就看到了"。
+   */
+  const pullStoredAnswer = async (recordId: number, signal: AbortSignal) => {
+    try {
+      const r = await listAnalysisHistory(instanceId, signal)
+      const rec = r.history?.find((x) => x.id === recordId)
+      if (!rec?.analysis) return
+      // 已经有内容就不要覆盖（用户可能正在看流式结果）
+      setAnswer((a) => (a ? a : rec.analysis || a))
+    } catch { /* 回查失败不影响主流程：用户还能从「分析历史」里打开 */ }
+  }
+
   /** 拉取 AI 流（或回放已缓存的结论） */
   const startStream = (recordId: number) => {
     abortRef.current?.abort()
@@ -333,7 +356,11 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
       else if (ev.event === 'done') setAnalysing(false)
     }, ac.signal)
       .catch((e: any) => { if (e.name !== 'AbortError') setStreamErr(e.message) })
-      .finally(() => setAnalysing(false))
+      .finally(() => {
+        setAnalysing(false)
+        // 只有在这条流仍然是"当前那条"时才回查（用户可能已经切到别的记录了）
+        if (abortRef.current === ac && !ac.signal.aborted) void pullStoredAnswer(recordId, ac.signal)
+      })
   }
 
   const openRecord = (rec: AnalysisRecord) => {
@@ -504,7 +531,8 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
                   <div className="ls-hist-head">
                     <span className="ls-prov-tag">{KIND_LABEL[h.provider_kind] || h.provider_kind}</span>
                     <span className="mono">{h.source_path}</span>
-                    <span className="ls-hist-time">{h.created_at}</span>
+                    {/* 这里原来直接渲染服务端原串（UTC，无时区标记），用户看到的时间比实际早 8 小时 */}
+                    <span className="ls-hist-time">{formatServerTime(h.created_at)}</span>
                   </div>
                   <div className="ls-hist-meta">
                     {formatSize(h.size)} · {h.lines} 行

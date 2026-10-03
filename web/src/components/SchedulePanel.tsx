@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import { ScheduleConfig, BackupPolicy, getSchedule, setSchedule, listBackupPolicies, listBackups, BackupItem } from '../api'
 import BackupPolicies from './BackupPolicies'
+import { parseServerTime } from '../time'
 import './SchedulePanel.css'
 
 function fmtTime(s: string): string {
   if (!s) return '—'
-  const d = new Date(s)
+  // 服务端时间是无时区标记的 UTC，`new Date(s)` 会按本地时间解析 → 早一个时区差
+  const d = parseServerTime(s)
   if (isNaN(d.getTime())) return s
   return d.toLocaleString('zh-CN')
 }

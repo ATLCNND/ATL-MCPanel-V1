@@ -95,6 +95,13 @@ service DaemonService {
   // 而 instance.json 在节点侧是**只读虚拟映射**（它是被 root 信任的元数据，
   // 不能让实例用户改写），所以只能在 Daemon 里改。
   rpc SetInstanceJava(SetInstanceJavaRequest) returns (OperationResponse);
+  // 修改实例的 CPU / 内存上限（与 SetInstanceJava 同一类问题：这两个值原先也只在
+  // 建实例时写进 instance.json，之后面板改不了）。
+  //
+  // ⚠️ 它们由 Daemon 在**实例启动时**写进 cgroup（cpu.max / memory.max），
+  // 所以对**正在运行**的实例来说，改完要重启才生效 —— 面板会在界面上明说这一点。
+  // 磁盘配额不走这里：那是面板自己的调度器巡检的，与 Daemon 无关。
+  rpc SetInstanceLimits(SetInstanceLimitsRequest) returns (OperationResponse);
   rpc ListJars(ListJarsRequest) returns (ListJarsResponse);
 
   // 备份/回滚
@@ -354,6 +361,21 @@ message SetInstanceJarRequest {
 message SetInstanceJavaRequest {
   string instance_id = 1;
   string java_version = 2;
+}
+
+// SetInstanceLimitsRequest 修改实例的 CPU / 内存上限。
+//
+// 与建实例时（CreateInstanceRequest 的 cpu_quota / mem_limit）同语义：
+//   cpu_quota：CPU 配额百分比，100 = 1 核，**0 = 不限制**
+//   mem_limit：cgroup memory.max，如 "4G"，**空串 = 不限制**
+//
+// 两个字段都是**全量覆盖**（不是"只改传了的那个"）：面板把当前想生效的值一起发过来，
+// 这样不会出现"只发了一个字段、另一个被当成 0 把限制清掉"这种歧义。
+// 想只改其中一个时，面板会先用库里的旧值补齐另一个。
+message SetInstanceLimitsRequest {
+  string instance_id = 1;
+  int32 cpu_quota = 2;
+  string mem_limit = 3;
 }
 
 message ListJarsRequest {

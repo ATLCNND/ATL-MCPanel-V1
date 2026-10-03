@@ -4,6 +4,7 @@ import {
   listInstanceTasks, createInstanceTask, updateInstanceTask, deleteInstanceTask, runInstanceTask,
   listJobs, cancelJob,
 } from '../api'
+import { parseServerTime } from '../time'
 import './ScheduledTasks.css'
 
 const ACTIONS: { key: TaskAction; label: string; hint: string; destructive?: boolean }[] = [
@@ -48,7 +49,8 @@ function buildCron(freq: Freq, hh: string, mm: string, dow: string, dom: string,
 
 function fmtTime(s: string): string {
   if (!s) return '—'
-  const d = new Date(s)
+  // 服务端时间是无时区标记的 UTC，`new Date(s)` 会按本地时间解析 → 早一个时区差
+  const d = parseServerTime(s)
   if (isNaN(d.getTime())) return s
   return d.toLocaleString('zh-CN', { hour12: false })
 }
@@ -56,7 +58,7 @@ function fmtTime(s: string): string {
 /** 距离某个时刻还有多久。 */
 function until(s: string): string {
   if (!s) return ''
-  const d = new Date(s)
+  const d = parseServerTime(s)
   if (isNaN(d.getTime())) return ''
   const sec = (d.getTime() - Date.now()) / 1000
   if (sec <= 0) return '即将执行'

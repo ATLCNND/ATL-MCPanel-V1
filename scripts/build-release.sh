@@ -116,6 +116,15 @@ PKG_DOCS_NODE="DEPLOYMENT.md MTLS.md CERTIFICATES.md"
 # 现在的规则：优先用带架构后缀的那份；退回 dist/frpc 时**先验架构**，
 # 不匹配就**不复制**并给出显式警告 —— 宁可不带（用户能自己放），
 # 也不带一个在目标机器上根本跑不起来的二进制。
+#
+# 另外固定**校验和**（2026-10-01 安全审查 M8）：frpc 会被一键部署以 root
+# 装到每台节点的 /usr/local/bin，而它本身是从上游 release 下载的 ——
+# 只验架构的话，"下载到被篡改/掉包的二进制"和"包装脚本被换过"都发现不了，
+# 而且发出去之后没法回溯。升级 frp 时改这里的两行哈希即可（构建会失败，
+# 提醒你确认新二进制的来源）。
+FRPC_SHA256_amd64="0bb98b7a69ce8ee23bc60fec1664f22040a2d44032296e03c8b6573a5d28dd0b"
+FRPC_SHA256_arm64="252587be8d586ee6c9ad6349d5046898fa89b6642497deec6d6e138494bdc902"
+
 copy_frpc() {
   local arch="$1" dest="$2" why="$3"
   local f="dist/frpc-linux-${arch}"
@@ -131,8 +140,24 @@ copy_frpc() {
     echo "       请把 ${arch} 的 frpc 放到 dist/frpc-linux-${arch} 后重跑。" >&2
     return 0
   fi
-  cp "$f" "$dest/frpc"
-  echo "    含 frpc $(du -h "$f" | cut -f1)（$why）"
+  # 校验和：对不上就**拒绝打包**，而不是警告后照发 ——
+  # 一个被替换过的 frpc 装到所有节点上就是全网 root 代码执行。
+  local want_sha expect
+  if [ "$arch" = "arm64" ]; then expect="$FRPC_SHA256_arm64"; else expect="$FRPC_SHA256_amd64"; fi
+  if [ -z "$expect" ]; then
+    echo "    ⚠️ 未固定 ${arch} 的 frpc 校验和，跳过校验（请在 build-release.sh 里补上）" >&2
+  else
+    want_sha=$(sha256sum "$f" | awk '{print $1}')
+    if [ "$want_sha" != "$expect" ]; then
+      echo "    ❌ $f 的 SHA-256 与脚本里固定的值不一致，**拒绝打包**：" >&2
+      echo "       期望 $expect" >&2
+      echo "       实际 $want_sha" >&2
+      echo "       若确实是要升级 frp，请核对上游发布页的校验值后更新 build-release.sh 里的常量。" >&2
+      return 1
+    fi
+  fi
+  cp "$f" "$dest/frpc" || return 1
+  echo "    含 frpc $(du -h "$f" | cut -f1)（$why，sha256 校验通过）"
 }
 
 make_pkg() {
@@ -152,7 +177,8 @@ make_pkg() {
     [ -f "$srcbin/dsh-daemon" ] && cp "$srcbin/dsh-daemon" "$out/bin/"
     # frpc 也要放一份：一键部署会把"面板二进制旁边"的 frpc 一并下发到节点
     # （见 httpapi/nodes.go 的 readSiblingBinary），这样穿透开箱可用。
-    copy_frpc "$arch" "$out/bin" "供一键部署下发"
+    # 校验和不符时 copy_frpc 返回 1 —— 必须中止整包，不能"少一个文件照样发"。
+    copy_frpc "$arch" "$out/bin" "供一键部署下发" || return 1
     cp -r web/dist "$out/web-dist"
   else
     cp "$srcbin/dsh-daemon" "$out/bin/"
@@ -162,7 +188,9 @@ make_pkg() {
     # frpstest.go），节点上没有 frpc 时"穿透"整块不可用；而"自己去 GitHub 下 frp 再解压"
     # 对用户是纯粹的额外负担 —— 节点包本来就带运行时镜像了，多带一个 frpc 最省事。
     # 找不到时只提示、不算失败：穿透是可选能力。
-    copy_frpc "$arch" "$out/bin" "穿透客户端"
+    # 但**校验和不符**要中止整包（copy_frpc 返回 1）—— 那是"二进制来源存疑"，
+    # 和一个被替换过的 frpc 装到所有节点上是两码事。
+    copy_frpc "$arch" "$out/bin" "穿透客户端" || return 1
     # 容器隔离防火墙规则随节点包分发：它是**容器化可用的前提**（容器能访问宿主
     # 服务就等于没隔离），且必须由 systemd 在 docker 之后落地，不能只写在文档里。
     cp deploy/systemd/atl-container-firewall.service "$out/deploy/systemd/" 2>/dev/null || true

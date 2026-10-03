@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/ATLCNND/ATL-MCPanel/internal/common/safepath"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/fileops"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/jobqueue"
 	pb "github.com/ATLCNND/ATL-MCPanel/internal/proto/mcpanel"
@@ -387,16 +388,25 @@ func (s *Server) UploadFile(stream pb.DaemonService_UploadFileServer) error {
 	// 以及"多个实例同时上传、每个都没超自己的配额，却把节点磁盘写满"。
 	// 这里是保护**整台机器**的最后一道：磁盘满了，所有实例都会出问题
 	//（服务端存不了档、日志写不下去），比一次上传失败严重得多。
-	if first.Total > 0 {
-		if free, err := freeBytes(dir); err == nil {
-			if !enoughSpace(free, first.Total) {
-				return fmt.Errorf("节点磁盘剩余空间不足：本次需要 %s，当前可用 %s（已预留 %s 余量）",
-					humanSize(first.Total), humanSize(free), humanSize(uploadFreeMargin))
-			}
+	//
+	// 这道检查**不再以"声明了 Total"为前提**：以前是 `if first.Total > 0`，
+	// 而分块传输（Transfer-Encoding: chunked）时 Total 恒为 -1，于是"没声明长度"
+	// 的上传正好绕过整台机器的最后一道保护 —— 面板侧同样会因为 size<=0 提前放行，
+	// 两道闸门同时失效，只剩 256MB 单文件上限，反复传就能把节点磁盘写满。
+	// 长度未知时按 need = 0 算：意思是"这次上传至少不能去动那 1GB 余量"，
+	// 把余量已经不足的节点挡在外面；按块写入过程中的 ENOSPC 仍会正常报错。
+	if free, err := freeBytes(dir); err == nil {
+		need := first.Total
+		if need < 0 {
+			need = 0
 		}
-		// 读不到就不拦（例如某些文件系统 Statfs 失败）：不能因为一次探测失败
-		// 就把上传功能整体挡住，写入过程中的 ENOSPC 仍会正常报错。
+		if !enoughSpace(free, need) {
+			return fmt.Errorf("节点磁盘剩余空间不足：本次需要 %s，当前可用 %s（已预留 %s 余量）",
+				humanSize(need), humanSize(free), humanSize(uploadFreeMargin))
+		}
 	}
+	// 读不到就不拦（例如某些文件系统 Statfs 失败）：不能因为一次探测失败
+	// 就把上传功能整体挡住，写入过程中的 ENOSPC 仍会正常报错。
 	// 父目录按需创建（上传到 plugins/ 这类子目录时常见）
 	if parent := filepath.Dir(target); parent != dir {
 		if err := os.MkdirAll(parent, 0o755); err != nil {
@@ -659,6 +669,28 @@ type profileEntry struct {
 	Expires string `json:"expires"`
 }
 
+// defaultWorldName 默认的世界目录名（server.properties 里没有 level-name 时的取值，
+// 也是服务端自己的默认值）。
+const defaultWorldName = "world"
+
+// validWorldName 判断 level-name 能不能当**目录名**用。
+//
+// 这个值完全由租户控制（server.properties 就在实例目录里，文件管理随手可改），
+// 而它会被拼成 `<实例目录>/<level-name>/stats` 之后由 root 去 ReadDir/ReadFile。
+// 于是 `level-name=../<别人的实例>/world` 就能让玩家总览接口去枚举、解析别人的
+// `world/stats/*.json`（玩家名、UUID、游戏时长）并把结果返回 —— 跨租户的信息
+// 泄露。所以含路径分隔符、含 ".." 或本身就是绝对路径的值一概不认，
+// 由调用方退回 defaultWorldName。
+func validWorldName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	if filepath.IsAbs(name) || strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
+		return false
+	}
+	return true
+}
+
 // GetPlayerOverview 汇总「所有曾经进过服的玩家」。
 //
 // 数据来源与取舍：
@@ -678,14 +710,21 @@ func (s *Server) GetPlayerOverview(ctx context.Context, req *pb.InstanceRequest)
 	resp := &pb.PlayerOverviewResponse{Success: true}
 
 	// 世界目录名与白名单开关都来自 server.properties；缺省 world
-	resp.WorldName = "world"
+	resp.WorldName = defaultWorldName
 	if b, err := os.ReadFile(filepath.Join(dir, "server.properties")); err == nil {
 		for _, line := range strings.Split(string(b), "\n") {
 			line = strings.TrimSpace(line)
 			switch {
 			case strings.HasPrefix(line, "level-name="):
 				if v := strings.TrimSpace(strings.TrimPrefix(line, "level-name=")); v != "" {
-					resp.WorldName = v
+					if validWorldName(v) {
+						resp.WorldName = v
+					} else {
+						// 非法就按默认值处理（WorldName 已经是 defaultWorldName），
+						// 不报错：这个接口是只读总览，为一个坏配置项整体失败没有意义
+						s.log.Warn("server.properties 里的 level-name 不是合法目录名，按默认值处理",
+							"instance", req.InstanceId, "level_name", v)
+					}
 				}
 			case strings.HasPrefix(line, "white-list="):
 				resp.WhitelistEnabled = strings.HasSuffix(line, "=true")
@@ -794,34 +833,49 @@ func (s *Server) GetPlayerOverview(ctx context.Context, req *pb.InstanceRequest)
 
 	// 3) world/stats/<uuid>.json：游戏时长 + 是否真正进过世界
 	statsDir := filepath.Join(dir, resp.WorldName, "stats")
-	if entries, err := os.ReadDir(statsDir); err == nil {
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-				continue
-			}
-			uuid := strings.TrimSuffix(e.Name(), ".json")
-			b, err := os.ReadFile(filepath.Join(statsDir, e.Name()))
-			if err != nil {
-				continue
-			}
-			var ps playerStats
-			if json.Unmarshal(b, &ps) != nil {
-				continue
-			}
-			ticks := ps.Stats.Custom["minecraft:play_time"]
-			if ticks == 0 {
-				// 1.12 及更早版本用 play_one_minute（单位是 tick，不是分钟）
-				ticks = ps.Stats.Custom["minecraft:play_one_minute"]
-			}
-			a := ensure(uuid, "")
-			a.hasData = true
-			// play_time 单位是 tick（20 tick/秒）
-			a.play = ticks / 20
-			if info, err := e.Info(); err == nil {
-				a.lastSeen = info.ModTime().Unix()
-			}
-			if a.source == "" {
-				a.source = "stats"
+	// level-name 上面已经按"能不能当目录名"校验过，这里再查一次**真实路径**：
+	// 租户还能把自己的 world 目录做成指向别人 world 的软链接，绕开上一条。
+	//
+	// 越界时**不读统计**（而不是退回默认路径再去读）：默认路径往往与刚才那条
+	// 完全一样（`world -> <别人的实例>/world` 正是这种写法），退回等于什么都没挡。
+	// WorldName 仍退回默认值，保持响应的形状不变。
+	worldOK := true
+	if _, err := safepath.ResolveWithin(dir, statsDir); err != nil {
+		s.log.Warn("实例内的世界目录疑似软链接逃逸，跳过玩家统计",
+			"instance", req.InstanceId, "world", resp.WorldName, "error", err)
+		resp.WorldName = defaultWorldName
+		worldOK = false
+	}
+	if worldOK {
+		if entries, err := os.ReadDir(statsDir); err == nil {
+			for _, e := range entries {
+				if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+					continue
+				}
+				uuid := strings.TrimSuffix(e.Name(), ".json")
+				b, err := os.ReadFile(filepath.Join(statsDir, e.Name()))
+				if err != nil {
+					continue
+				}
+				var ps playerStats
+				if json.Unmarshal(b, &ps) != nil {
+					continue
+				}
+				ticks := ps.Stats.Custom["minecraft:play_time"]
+				if ticks == 0 {
+					// 1.12 及更早版本用 play_one_minute（单位是 tick，不是分钟）
+					ticks = ps.Stats.Custom["minecraft:play_one_minute"]
+				}
+				a := ensure(uuid, "")
+				a.hasData = true
+				// play_time 单位是 tick（20 tick/秒）
+				a.play = ticks / 20
+				if info, err := e.Info(); err == nil {
+					a.lastSeen = info.ModTime().Unix()
+				}
+				if a.source == "" {
+					a.source = "stats"
+				}
 			}
 		}
 	}

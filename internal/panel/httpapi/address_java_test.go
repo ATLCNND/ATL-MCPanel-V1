@@ -117,6 +117,46 @@ func TestGrpcListenIsLoopback(t *testing.T) {
 	}
 }
 
+// 一键部署下发给节点的监听地址必须是**按节点算出来的**，不能把配置里的
+// ":9091"（所有网卡）原样写过去 —— 2026-10-02 安全审查发现内测节点的
+// Daemon 管理口就是这样暴露在公网上的（`ss -ltnp` 显示 `:::9091`）。
+func TestDaemonListenFor(t *testing.T) {
+	// 默认配置（回环）时：同机节点给回环，跨机节点绑该节点自己的地址
+	s := &Server{daemonGRPCListen: "127.0.0.1:9091"}
+	if got := s.daemonListenFor("127.0.0.1"); got != "127.0.0.1:9091" {
+		t.Errorf("同机节点应绑回环，实际 %q", got)
+	}
+	if got := s.daemonListenFor("10.0.0.9"); got != "10.0.0.9:9091" {
+		t.Errorf("跨机节点应只绑它自己的地址，实际 %q", got)
+	}
+	// IPv6 要加方括号（否则 "::1:9091" 这种串根本没法解析）
+	if got := s.daemonListenFor("fd00::5"); got != "[fd00::5]:9091" {
+		t.Errorf("IPv6 节点地址应加方括号，实际 %q", got)
+	}
+	// 空的配置（老配置里可能没有这一项）同样不能退化成所有网卡
+	s2 := &Server{}
+	if got := s2.daemonListenFor("10.0.0.9"); got != "10.0.0.9:9091" {
+		t.Errorf("未配置时应按节点地址生成，实际 %q", got)
+	}
+	// 拿不到节点地址时要退到**回环**而不是所有网卡：宁可用户部署完发现连不上
+	// （一眼能看出来、改配置即可），也不要把管理口默默摆到所有网卡上
+	//（那正是这次审查里发现的暴露方式，而且没人会注意到）。
+	if got := s2.daemonListenFor(""); got != "127.0.0.1:9091" {
+		t.Errorf("节点地址为空时应退到回环（而不是所有网卡），实际 %q", got)
+	}
+	// 配置里**显式**写了某个非回环地址：尊重管理员的选择（他可能在多网卡机器上
+	// 指定了具体那一块），不要自作主张改成节点 IP。
+	s3 := &Server{daemonGRPCListen: "10.1.2.3:19091"}
+	if got := s3.daemonListenFor("10.0.0.9"); got != "10.1.2.3:19091" {
+		t.Errorf("显式配置的非回环地址应原样使用，实际 %q", got)
+	}
+	// 端口取自配置（不是写死 9091）
+	s4 := &Server{daemonGRPCListen: "127.0.0.1:29091"}
+	if got := s4.daemonListenFor("10.0.0.9"); got != "10.0.0.9:29091" {
+		t.Errorf("端口应沿用配置，实际 %q", got)
+	}
+}
+
 // JDK 取值：空串表示"自动"，属于合法输入，不能被当成"没填"拒掉。
 func TestSetJavaValidation(t *testing.T) {
 	// 这里只测面板侧的输入校验（真正落盘在 Daemon 侧）。

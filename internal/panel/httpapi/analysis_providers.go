@@ -143,15 +143,21 @@ func (s *Server) listProviders(userID int64) ([]analysis.Provider, error) {
 // 为什么不入库：它们的可用性由代码与配置决定（LogShare 的开关、mclo.gs 的固定地址），
 // 落成数据库行只会带来"管理员误删之后功能静默消失"这类问题。
 // 顺序配置里可以用类型名（logshare / mclogs）引用它们。
+//
+// mclo.gs 的启用状态**跟着同一个运行时开关走**（原来是写死的 true）：
+// 两者都是"把日志发给外部公开服务"，开关叫「第三方日志分析」就该同时管住它们 ——
+// 写死 true 的后果是管理员关掉之后，链上仍然留着 mclo.gs 这个兜底，
+// 日志（含未打码的 IP）照旧被传到 api.mclo.gs：开关形同虚设。
 func (s *Server) builtinProviders() []analysis.Provider {
+	thirdPartyOn := s.LogShareEnabled()
 	return []analysis.Provider{
 		{
-			ID: 0, Name: "LogShare", Kind: analysis.KindLogShare, Enabled: s.LogShareEnabled(),
+			ID: 0, Name: "LogShare", Kind: analysis.KindLogShare, Enabled: thirdPartyOn,
 			TimeoutSec: s.logShareCfg.TimeoutSeconds,
 			BaseURL:    s.logShareCfg.SiteURL,
 		},
 		{
-			ID: 0, Name: "mclo.gs", Kind: analysis.KindMclogs, Enabled: true,
+			ID: 0, Name: "mclo.gs", Kind: analysis.KindMclogs, Enabled: thirdPartyOn,
 			BaseURL: "https://api.mclo.gs",
 		},
 	}
@@ -227,6 +233,26 @@ type providerPayload struct {
 // 的责任揽到平台上，而他们本来也没有运维自助的需求。
 func canManageProviders(r *http.Request) bool {
 	return isAdmin(r) || isNodeUser(r)
+}
+
+// canManageProvider 判断调用者能否修改 / 删除 / 自检**某一条**提供方。
+//
+// ownerID == 0 是**全局**提供方（所有人的链里都会走到它，key 是管理员填的）。
+// 原来的判据是 `ownerID != 0 && ownerID != 调用者 && !isAdmin` —— 第一个条件
+// 把所有全局项短路放行了，于是任何节点用户都能改掉全局提供方的 base_url /
+// model / prompt，再点一次「测试连接」，面板就会拿**解密后的 API Key**
+// 去请求他填的地址（凭据就这么被搬走）。
+//
+// 所以判据写成"自己拥有的，或总管理员"：全局项按"属于总管理员"处理。
+// 私有项仍然只有本人（或总管理员）能动。
+func canManageProvider(ownerID, callerID int64, admin bool) bool {
+	if admin {
+		return true
+	}
+	if ownerID == 0 {
+		return false // 全局提供方只归总管理员
+	}
+	return ownerID == callerID
 }
 
 // handleListAnalysisProviders GET /api/analysis/providers
@@ -348,7 +374,7 @@ func (s *Server) handleUpdateAnalysisProvider(w http.ResponseWriter, r *http.Req
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
 	}
-	if cur.OwnerID != 0 && cur.OwnerID != currentUserID(r) && !isAdmin(r) {
+	if !canManageProvider(cur.OwnerID, currentUserID(r), isAdmin(r)) {
 		writeErr(w, http.StatusForbidden, "只能修改自己的提供方")
 		return
 	}
@@ -410,7 +436,7 @@ func (s *Server) handleDeleteAnalysisProvider(w http.ResponseWriter, r *http.Req
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
 	}
-	if cur.OwnerID != 0 && cur.OwnerID != currentUserID(r) && !isAdmin(r) {
+	if !canManageProvider(cur.OwnerID, currentUserID(r), isAdmin(r)) {
 		writeErr(w, http.StatusForbidden, "只能删除自己的提供方")
 		return
 	}
@@ -456,6 +482,13 @@ func (s *Server) handleTestAnalysisProvider(w http.ResponseWriter, r *http.Reque
 	p, err := s.providerByID(id, "", currentUserID(r))
 	if err != nil {
 		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	// 自检会把**解密后的 API Key** 发到这个提供方配置的地址，所以它和"修改"
+	// 是同一类权力 —— 能改全局项的只有总管理员，能触发自检的也只能是他。
+	// 少了这一条，"改不了全局项"就被绕过成"照样能让面板拿 key 出去"。
+	if !canManageProvider(p.OwnerID, currentUserID(r), isAdmin(r)) {
+		writeErr(w, http.StatusForbidden, "只能测试自己的提供方（全局提供方只有总管理员可以测试）")
 		return
 	}
 	st := s.analysisSettings()

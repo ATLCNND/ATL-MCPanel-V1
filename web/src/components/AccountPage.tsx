@@ -6,6 +6,7 @@ import {
   renameUser, updateCurrentUsername,
 } from '../api'
 import Avatar from './Avatar'
+import { parseServerTime } from '../time'
 import './AccountPage.css'
 
 /** 字节 → 易读文本 */
@@ -220,8 +221,9 @@ export default function AccountPage({ onLogout }: { onLogout: () => void }) {
 
   // 首字母交给 Avatar 组件；avatar_status 仍要用来显示"审核中/被驳回"提示
   const avatarStatus = me?.avatar_status || 'none'
+  // 注册时间是服务端给的无时区标记 UTC 串，必须走 parseServerTime（否则天数偶尔差 1）
   const days = me?.registered_at
-    ? Math.max(0, Math.floor((Date.now() - new Date(me.registered_at).getTime()) / 86400000))
+    ? Math.max(0, Math.floor((Date.now() - parseServerTime(me.registered_at).getTime()) / 86400000))
     : 0
 
   return (

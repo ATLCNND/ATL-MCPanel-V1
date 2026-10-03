@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { AlertItem, listAlerts, resolveAlert } from '../api'
+import { parseServerTime } from '../time'
 import './AlertsModal.css'
 
 const KIND_LABEL: Record<string, string> = {
@@ -11,7 +12,7 @@ const KIND_LABEL: Record<string, string> = {
 
 function fmtTime(s: string): string {
   if (!s) return '—'
-  const d = new Date(s.replace(' ', 'T') + (s.includes('Z') || s.includes('+') ? '' : 'Z'))
+  const d = parseServerTime(s)
   if (isNaN(d.getTime())) return s
   return d.toLocaleString('zh-CN')
 }

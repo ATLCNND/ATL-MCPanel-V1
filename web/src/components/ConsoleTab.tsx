@@ -79,6 +79,17 @@ interface BufferedLine {
 }
 
 /**
+ * "尚未收到换行的半行"。
+ *
+ * `shown` 记的是**已经写进终端**的字符数 —— 没有它就会重复输出，见 onFrame。
+ */
+interface PendingLine {
+  level: Level
+  text: string
+  shown: number
+}
+
+/**
  * 本地保留的行数上限。
  *
  * 与 xterm 的 scrollback 取同一个数量级：留得比终端能显示的更多没有意义
@@ -112,7 +123,7 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
   // 想在切换筛选时**连历史一起**过滤（而不是只影响之后的新行），
   // 就必须能重放 —— 切筛选时清屏，再把符合条件的行重新写一遍。
   const bufRef = useRef<BufferedLine[]>([])
-  const pendingRef = useRef<BufferedLine | null>(null)
+  const pendingRef = useRef<PendingLine | null>(null)
 
   /** 是否显示某级别的行 */
   const visible = (lv: Level, f: Filter) => f === 'all' || f === lv
@@ -170,26 +181,45 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
      * 不带换行的内容（进度条、交互式提示），那一行会分几片到达。合并时**沿用
      * 第一片的级别** —— 级别标记（行首的 [WARN]/[ERROR] 配色）出现在第一片，
      * 后续分片本来就没有标记，若按分片各自的级别算，同一行会被归到两个级别。
+     *
+     * ⚠️ 2026-10-02 修「输出两遍」：合并之后**只能写新到的那一段**。
+     * 原来的写法是把合并结果整行写出去，而半行在前一片到达时已经写过一次，
+     * 于是 `partial` + `more\n` 在屏幕上变成 `partialpartialmore`（前缀重复）。
+     * 这不是理论问题：Daemon 的 tailLog 会把"攒了一会儿还没换行的残行"先 flush
+     * 出来（见 mcprocess.process.go 的 flushPending），容器化的实例输出又是按
+     * chunk 到达的，所以长行、进度条、日志尾部回放都会命中。
+     * `shown` 就是为此存在的：记住"这个前缀已经写过了"。
      */
     const onFrame = (f: ConsoleFrame) => {
       const data = f.data ?? ''
       if (!data) return
-      const lv = pendingRef.current ? pendingRef.current.level : f.level
-      const text = (pendingRef.current?.text ?? '') + data
+      const prev = pendingRef.current
+      const lv = prev ? prev.level : f.level
+      const text = (prev?.text ?? '') + data
 
       // 按换行切分：除最后一段外都是完整行
       const parts = text.split('\n')
       const tail = parts.pop() ?? ''
       let grew = false
+      // 已经写出去的字符数，只对**第一段**有意义（后面的段落整段都是新的）
+      let written = prev?.shown ?? 0
       for (let i = 0; i < parts.length; i++) {
         const line = parts[i] + '\n'
+        const out = i === 0 ? line.slice(written) : line
         bufRef.current.push({ level: lv, text: line })
-        if (visible(lv, filterRef.current)) t.write(line)
+        if (out && visible(lv, filterRef.current)) t.write(out)
         grew = true
       }
-      // 还有没带换行的残句：留在 pending 里继续等它的后续分片
-      pendingRef.current = tail ? { level: lv, text: tail } : null
-      if (pendingRef.current && visible(lv, filterRef.current)) t.write(tail)
+      if (parts.length > 0) written = 0
+
+      // 还有没带换行的残句：只写新到的那一段，并记住已经写到哪
+      if (tail) {
+        const delta = tail.slice(written)
+        if (delta && visible(lv, filterRef.current)) t.write(delta)
+        pendingRef.current = { level: lv, text: tail, shown: tail.length }
+      } else {
+        pendingRef.current = null
+      }
 
       if (grew) {
         if (bufRef.current.length > BUFFER_MAX) {
@@ -302,8 +332,24 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
 
   const sendCommand = () => {
     const ws = wsRef.current
-    if (ws && ws.readyState === WebSocket.OPEN && input.trim()) {
-      ws.send(input + '\n')
+    const cmd = input.trim()
+    if (ws && ws.readyState === WebSocket.OPEN && cmd) {
+      ws.send(cmd + '\n')
+      // 本地回显：**服务端不会把控制台输入回显到 stdout**（Minecraft 只记录
+      // 命令产生的输出，不记录输入本身），所以"发了什么"必须由前端自己写出来 ——
+      // 否则用户敲完一条命令，屏幕上什么都没有，会以为面板没收到
+      //（2026-10-02 用户反馈"没显示输入的指令"）。
+      // 走 bufRef 一起进缓冲：切换级别筛选时重放也能看到自己发过的命令。
+      const line = { level: 'info' as Level, text: '\x1b[90m› ' + cmd + '\x1b[0m\n' }
+      bufRef.current.push(line)
+      if (bufRef.current.length > BUFFER_MAX) {
+        bufRef.current.splice(0, bufRef.current.length - BUFFER_MAX)
+      }
+      if (filterRef.current === 'all' || filterRef.current === 'info') {
+        term.current?.write(line.text)
+      }
+      recount()
+      term.current?.scrollToBottom()
       setInput('')
     }
   }

@@ -392,11 +392,24 @@ func (d *Daemon) Run() error {
 		grpc.MaxSendMsgSize(grpclimits.MaxMessageBytes),
 	}
 	if d.cfg.TLS {
-		tlsCfg, err := pki.ServerTLSConfigFromFiles(d.cfg.CAFile, d.cfg.CertFile, d.cfg.KeyFile)
+		// 只接受**面板**的客户端证书（CN 固定），而不是"任何由本 CA 签发的证书"。
+		//
+		// 2026-10-01 安全审查：原先只要证书链通过就放行，于是任何一个节点都能
+		// 拿自己的节点证书去调用**另一个节点**的 Daemon gRPC（同一套 CA），
+		// 横向控制别人机器上的实例。Daemon 的这一面只应该被面板调用。
+		tlsCfg, err := pki.ServerTLSConfigFromFilesForPeer(
+			d.cfg.CAFile, d.cfg.CertFile, d.cfg.KeyFile, pki.PanelGRPCServerName)
 		if err != nil {
 			return fmt.Errorf("构造 Daemon gRPC mTLS 配置失败: %w", err)
 		}
 		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(tlsCfg)))
+	} else if !config.IsLoopbackListen(d.cfg.GRPCListen) && !d.cfg.AllowInsecureGRPC {
+		// 明文 + 对外监听 = 任何人都能控制这台机器上的所有实例。
+		// 以前只是一条告警，现在直接拒绝启动（要恢复旧行为就显式写
+		// daemon.allow_insecure_grpc: true，配置里必须留下痕迹）。
+		return fmt.Errorf("拒绝以明文 gRPC 对外提供服务：grpc_listen=%q 且 tls=false。"+
+			"请开启 mTLS（tls: true + 证书），或把它改成 127.0.0.1:9091，"+
+			"或显式设置 daemon.allow_insecure_grpc: true 承担风险", d.cfg.GRPCListen)
 	}
 	grpcSrv := grpc.NewServer(serverOpts...)
 	pb.RegisterDaemonServiceServer(grpcSrv, grpcapi.NewServer(d.cfg, d.reg, d.log, d.stats, d.frp))
@@ -407,6 +420,15 @@ func (d *Daemon) Run() error {
 	}
 	go func() {
 		d.log.Info("Daemon gRPC 服务启动", "addr", d.cfg.GRPCListen, "mtls", d.cfg.TLS)
+		// 绑在非回环地址上时多记一条提示。这不是错误（跨机部署本来就得这样，
+		// 而且 mTLS 会强制校验面板证书），但它代表"管理口暴露在网络里"这个事实，
+		// 值得在日志里显式出现一次 —— 2026-10-02 的审查里，内测节点的 9091
+		// 从公网可达这件事一直没人注意到，就是默认值 ":9091" 的后果。
+		if !config.IsLoopbackListen(d.cfg.GRPCListen) {
+			d.log.Warn("Daemon gRPC 监听在非回环地址上：请确保只有面板能访问该端口"+
+				"（防火墙只放行面板 IP，或改绑内网地址）",
+				"addr", d.cfg.GRPCListen, "mtls", d.cfg.TLS)
+		}
 		if err := grpcSrv.Serve(lis); err != nil {
 			d.log.Error("Daemon gRPC 退出", "error", err)
 		}

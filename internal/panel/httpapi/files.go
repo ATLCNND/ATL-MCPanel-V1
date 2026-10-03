@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	pb "github.com/ATLCNND/ATL-MCPanel/internal/proto/mcpanel"
@@ -82,23 +83,49 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"path": path, "content": resp.Content, "size": resp.Size})
 }
 
+// maxWriteFileBytes 单次「保存文件」请求体的上限（8 MiB）。
+//
+// 这是**文本编辑器**用的接口：真正要编辑的配置/脚本都在几百 KB 以内，
+// 8 MiB 已经很宽裕。不设上限的话，一个 {"content":"<几个 GB>"} 会先被
+// 解码成一个 Go 字符串（整份内容物化进内存，而这里没有任何配额预检），
+// 面板的常驻内存就被一个 owner 级用户的一条请求吃掉了。
+//
+// 大文件走上传接口（handleUploadFile，那边另有体积与磁盘配额预检，且是流式的）。
+const maxWriteFileBytes = 8 << 20
+
 // handleWriteFile POST /api/instances/{id}/file
 func (s *Server) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 	instanceID := r.PathValue("id")
 	if !s.requireInstanceLevel(w, r, instanceID, LevelOwner) {
 		return
 	}
+	// 请求体上限：见 maxWriteFileBytes 的注释（在此之前没有任何地方限制它）
+	r.Body = http.MaxBytesReader(w, r.Body, maxWriteFileBytes)
 	var req struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeErr(w, http.StatusRequestEntityTooLarge,
+				"文件内容过大：单次保存上限 "+humanBytes(maxWriteFileBytes)+"，更大的文件请用上传")
+			return
+		}
 		writeErr(w, http.StatusBadRequest, "无效请求体")
 		return
 	}
 	cli, _, err := s.getDaemonClient(instanceID)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "实例不存在")
+		return
+	}
+	// 写入前同样做磁盘配额预检：编辑保存也是在往实例目录里写数据，
+	// 没有理由比上传更宽松（uploadPrecheck 与上传、上传前预检共用同一套口径，
+	// 免得出现"预检说行、真写却被拒"）。请求体此时已经读完，
+	// 所以这里拒绝不会像上传那样让客户端看到 connection reset。
+	if ok, reason := s.uploadPrecheck(r.Context(), cli, instanceID, r.ContentLength); !ok {
+		writeErr(w, http.StatusRequestEntityTooLarge, reason)
 		return
 	}
 	resp, err := cli.WriteFile(context.Background(), &pb.WriteFileRequest{InstanceId: instanceID, Path: req.Path, Content: req.Content})

@@ -380,8 +380,225 @@ func TestHelpPreviewEndpoint(t *testing.T) {
 	}
 }
 
-// mkUser 建一个用户并拿到**带正确角色**的令牌。
+// 提供方归属：**全局提供方只有总管理员能动**。
 //
+// 原判据是 `OwnerID != 0 && OwnerID != 调用者 && !isAdmin`，而全局提供方的
+// owner_id 恰好是 0 —— 第一个条件直接把这道检查短路掉了。于是节点用户
+// 可以改掉全局提供方的 base_url，再点一次「测试连接」，面板就会拿
+// **解密后的 API Key** 去请求他填的地址：凭据被搬走，全程不需要管理员权限。
+//
+// 这也是"既有测试只跑了管理员那条路"漏掉它的原因（见 TestAnalysisProviderPermissions）。
+func TestAnalysisGlobalProviderOnlyAdminCanManage(t *testing.T) {
+	srv, ts := newTestServer(t)
+	admin := loginAs(t, ts, "adm8", "adm8-pass-1234")
+	nodeUser := mkUser(t, srv, ts, admin, "nu8", "nu8-pass-1234", RoleNodeUser)
+
+	const globalBase = "https://api.deepseek.com/v1"
+	code, body := doJSON(t, ts, "POST", "/api/analysis/providers", admin, map[string]interface{}{
+		"name": "全局平台", "kind": "openai", "base_url": globalBase,
+		"model": "m1", "api_key": "sk-global-key-1234", "global": true,
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("管理员建全局提供方失败：%d %v", code, body)
+	}
+	globalID := int64(body["id"].(float64))
+
+	// (a) 节点用户改**自己的**提供方：照旧可用（这半边不能被这道新检查误伤）
+	code, body = doJSON(t, ts, "POST", "/api/analysis/providers", nodeUser, map[string]interface{}{
+		"name": "我的平台", "kind": "openai", "base_url": globalBase,
+		"model": "m1", "api_key": "sk-own-key-1234",
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("节点用户建自己的提供方失败：%d %v", code, body)
+	}
+	ownID := int64(body["id"].(float64))
+	if code, body := doJSON(t, ts, "PUT", "/api/analysis/providers/"+itoa(ownID), nodeUser,
+		map[string]interface{}{
+			"name": "我的平台", "kind": "openai", "base_url": globalBase,
+			"model": "m2", "api_key": "",
+		}); code != http.StatusOK {
+		t.Fatalf("节点用户应能改自己的提供方，实际 %d %v", code, body)
+	}
+
+	// (b) 改全局提供方：403（改的就是 base_url —— 攻击的第一步）
+	if code, _ := doJSON(t, ts, "PUT", "/api/analysis/providers/"+itoa(globalID), nodeUser,
+		map[string]interface{}{
+			"name": "全局平台", "kind": "openai", "base_url": "https://attacker.example/v1",
+			"model": "m1",
+		}); code != http.StatusForbidden {
+		t.Fatalf("节点用户改全局提供方应 403，实际 %d", code)
+	}
+	// 库里的 base_url 必须一个字都没变（否则随后的自检就会把 key 发出去）
+	var gotBase string
+	if err := srv.db.QueryRow(`SELECT base_url FROM analysis_providers WHERE id = ?`, globalID).
+		Scan(&gotBase); err != nil {
+		t.Fatal(err)
+	}
+	if gotBase != globalBase {
+		t.Fatalf("全局提供方的 base_url 被改掉了：%q", gotBase)
+	}
+
+	// (c) 删全局提供方：403，且它仍然在
+	if code, _ := doJSON(t, ts, "DELETE", "/api/analysis/providers/"+itoa(globalID), nodeUser, nil); code != http.StatusForbidden {
+		t.Fatalf("节点用户删全局提供方应 403，实际 %d", code)
+	}
+	var n int
+	if err := srv.db.QueryRow(`SELECT COUNT(1) FROM analysis_providers WHERE id = ?`, globalID).
+		Scan(&n); err != nil || n != 1 {
+		t.Fatalf("全局提供方应仍然存在：n=%d err=%v", n, err)
+	}
+
+	// (d) 自检同样是"能碰到凭据"的动作（它会把解密后的 key 发到这个地址）
+	if code, _ := doJSON(t, ts, "POST", "/api/analysis/providers/"+itoa(globalID)+"/test", nodeUser, nil); code != http.StatusForbidden {
+		t.Fatalf("节点用户自检全局提供方应 403，实际 %d", code)
+	}
+
+	// 管理员不受影响（这里只改配置，不触发自检 —— 自检会真的出网）
+	if code, _ := doJSON(t, ts, "PUT", "/api/analysis/providers/"+itoa(globalID), admin,
+		map[string]interface{}{
+			"name": "全局平台", "kind": "openai", "base_url": globalBase,
+			"model": "m3", "api_key": "",
+		}); code != http.StatusOK {
+		t.Fatalf("管理员应能改全局提供方，实际 %d", code)
+	}
+}
+
+// 求助预览也必须过实例权限：预览文本里带着实例的显示名/核心/Java/内存/运行方式。
+//
+// 这条路原来只有 requireAuth，于是任何登录用户拿任意 instance_id 都能把别人
+// 实例的这些信息读出来，而且"实例不存在"与"实例存在"的差别还顺带成了
+// id 枚举的探测器（对不存在的 id 给 404、对存在的给 200）。
+func TestHelpPreviewRequiresInstanceAccess(t *testing.T) {
+	srv, ts := newTestServer(t)
+	admin := loginAs(t, ts, "adm11", "adm11-pass-1234")
+	outsider := mkUser(t, srv, ts, admin, "pl11", "pl11-pass-1234", RoleUser)
+	seedInstance(t, srv, "prev02", 1)
+
+	// ① 毫无授权的普通用户：403，而且响应里不能带那段文本
+	code, body := doJSON(t, ts, "POST", "/api/instances/prev02/analysis/help-preview", outsider,
+		map[string]interface{}{"phenomenon": "想偷看"})
+	if code != http.StatusForbidden {
+		t.Fatalf("无授权用户不该拿到预览，实际 %d body=%v", code, body)
+	}
+	if txt, _ := body["text"].(string); txt != "" {
+		t.Errorf("403 的响应体里不该带预览文本：%q", txt)
+	}
+
+	// ② 授权 viewer 之后可以（预览是本实例内的只读渲染，不需要 owner）
+	assignLevel(t, srv, "prev02", uidOf(t, srv, "pl11"), LevelViewer)
+	if code, body := doJSON(t, ts, "POST", "/api/instances/prev02/analysis/help-preview", outsider,
+		map[string]interface{}{"phenomenon": "启动 30 秒后崩溃"}); code != http.StatusOK {
+		t.Fatalf("viewer 应能预览，实际 %d body=%v", code, body)
+	}
+
+	// ③ 不存在的实例仍是 404（原来的存在性检查没有被这道门替代掉）
+	if code, _ := doJSON(t, ts, "POST", "/api/instances/prev02-none/analysis/help-preview", admin,
+		map[string]interface{}{}); code != http.StatusNotFound {
+		t.Errorf("不存在的实例应 404，实际 %d", code)
+	}
+}
+
+// 总开关（第三方日志分析）关掉之后，/analyse 必须**一个字节都不外发**。
+//
+// 为什么单列一条：开关叫"第三方日志分析"，但链上还有 mclo.gs 这个兜底 ——
+// 它的 Enabled 原来是写死的 true，于是管理员关掉开关之后，LogShare 那一步
+// 失败就会回退到 mclo.gs，日志（含未打码的 IP）照旧被传到公开的 api.mclo.gs，
+// 而且生成的分享链接是公开的。"关了还在传"比没有开关更糟：
+// 用户会以为数据没出门，于是照传不误。
+func TestAnalyseBlockedWhenThirdPartyDisabled(t *testing.T) {
+	srv, ts := newTestServer(t)
+	admin := loginAs(t, ts, "adm12", "adm12-pass-1234")
+	seedInstance(t, srv, "sw01", 1)
+
+	// 管理员关掉总开关（运行时设置，优先级高于 config.yaml）
+	if code, body := doJSON(t, ts, "PUT", "/api/logshare/settings", admin,
+		map[string]interface{}{"enabled": false}); code != http.StatusOK {
+		t.Fatalf("关闭总开关失败：%d %v", code, body)
+	}
+
+	// ① 两个内置提供方都要跟着关掉（尤其 mclo.gs），链里不能再有第三方
+	code, raw := call(t, ts, "GET", "/api/analysis/providers", admin, nil)
+	if code != http.StatusOK {
+		t.Fatalf("读提供方列表失败：%d", code)
+	}
+	// 解析形状与 TestAnalysisChainExposed 一致：两个"展开"字段在前、简单字段在后 ——
+	// 这样每个字段各自成一个对齐块，不会和 gofmt 的列对齐打架
+	var list struct {
+		Builtin []struct {
+			Kind    string `json:"kind"`
+			Name    string `json:"name"`
+			Enabled bool   `json:"enabled"`
+		} `json:"builtin"`
+		Chain []struct {
+			Kind string `json:"kind"`
+		} `json:"chain"`
+		LogShareOn bool `json:"logshare_on"`
+	}
+	if err := json.Unmarshal(raw, &list); err != nil {
+		t.Fatalf("解析失败：%v（%s）", err, string(raw))
+	}
+	if list.LogShareOn {
+		t.Error("开关已关闭，logshare_on 仍为 true")
+	}
+	if len(list.Builtin) != 2 {
+		t.Fatalf("应有两个内置提供方，实际 %d", len(list.Builtin))
+	}
+	for _, b := range list.Builtin {
+		if b.Enabled {
+			t.Errorf("开关关闭时内置提供方 %s(%s) 不该是启用的", b.Name, b.Kind)
+		}
+	}
+	if len(list.Chain) != 0 {
+		t.Errorf("开关关闭时链里不该还有第三方提供方：%v", list.Chain)
+	}
+
+	// ② 分析接口直接拒绝 —— 而且要在读日志/连节点之前就拒绝
+	code, body := doJSON(t, ts, "POST", "/api/instances/sw01/analyse", admin,
+		map[string]interface{}{"path": "/logs/latest.log", "agree": true})
+	if code != http.StatusForbidden {
+		t.Fatalf("开关关闭时发起分析应 403，实际 %d body=%v", code, body)
+	}
+	if msg, _ := body["error"].(string); !strings.Contains(msg, "关闭") {
+		t.Errorf("拒绝原因应说明功能已被管理员关闭，实际 %q", msg)
+	}
+}
+
+// filter_chat 的默认值必须是"过滤"：字段没传（nil）时按开启处理。
+//
+// 这是**隐私承诺**的一部分（config.example.yaml 与界面上的勾都写"默认开启"），
+// 而 bool 的零值是 false —— 用 plain bool 接的话，任何不带该字段的调用方
+//（脚本、老客户端、手工 curl）都会被当成"主动要求不过滤"，日志里的玩家聊天
+// 就跟着一起上传了。
+func TestFilterChatDefaultsOn(t *testing.T) {
+	if !filterChatEnabled(nil) {
+		t.Fatal("filter_chat 没传时必须按「过滤」处理，否则玩家聊天会被上传")
+	}
+	on, off := true, false
+	if !filterChatEnabled(&on) {
+		t.Error("显式 true 应过滤")
+	}
+	if filterChatEnabled(&off) {
+		t.Error("只有显式 false 才允许关掉过滤")
+	}
+
+	// 与两个 handler 里的用法完全一致：解析出 filterChat 之后就是"过滤 / 不过滤"一个分支。
+	// 这里用带 `[Not Secure]` 的那一种形态（见 stripPlayerChat 的注释），
+	// 断言的是"没传字段时确实走进了过滤这一步"，而不是过滤正则自己的覆盖面。
+	const log = "[10:01:10] [Server thread/INFO]: [Not Secure] <Steve> 你好\n" +
+		"[10:01:11] [Server thread/INFO]: Done (3.2s)!\n"
+	content, filtered := log, 0
+	if filterChatEnabled(nil) {
+		content, filtered = stripPlayerChat(content)
+	}
+	if filtered != 1 || strings.Contains(content, "<Steve>") {
+		t.Errorf("默认应过滤掉 1 行玩家聊天，实际 filtered=%d content=%q", filtered, content)
+	}
+	if !strings.Contains(content, "Done (3.2s)!") {
+		t.Error("非聊天行必须保留（过滤只针对玩家发言）")
+	}
+}
+
+// mkUser 建一个用户并拿到**带正确角色**的令牌。
 // 两个坑（都是跑出来才发现的）：
 //  1. `POST /api/users` 用非管理员令牌会被拒 —— 只有库里的**第一个**用户能自助注册；
 //  2. 注册接口**不认 role=nodeuser**（非 admin 一律落成 user），角色只能建完再改，

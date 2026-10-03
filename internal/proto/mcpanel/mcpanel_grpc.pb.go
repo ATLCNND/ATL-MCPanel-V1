@@ -59,6 +59,7 @@ const (
 	DaemonService_UploadJar_FullMethodName              = "/mcpanel.DaemonService/UploadJar"
 	DaemonService_SetInstanceJar_FullMethodName         = "/mcpanel.DaemonService/SetInstanceJar"
 	DaemonService_SetInstanceJava_FullMethodName        = "/mcpanel.DaemonService/SetInstanceJava"
+	DaemonService_SetInstanceLimits_FullMethodName      = "/mcpanel.DaemonService/SetInstanceLimits"
 	DaemonService_ListJars_FullMethodName               = "/mcpanel.DaemonService/ListJars"
 	DaemonService_Backup_FullMethodName                 = "/mcpanel.DaemonService/Backup"
 	DaemonService_Restore_FullMethodName                = "/mcpanel.DaemonService/Restore"
@@ -145,6 +146,13 @@ type DaemonServiceClient interface {
 	// 而 instance.json 在节点侧是**只读虚拟映射**（它是被 root 信任的元数据，
 	// 不能让实例用户改写），所以只能在 Daemon 里改。
 	SetInstanceJava(ctx context.Context, in *SetInstanceJavaRequest, opts ...grpc.CallOption) (*OperationResponse, error)
+	// 修改实例的 CPU / 内存上限（与 SetInstanceJava 同一类问题：这两个值原先也只在
+	// 建实例时写进 instance.json，之后面板改不了）。
+	//
+	// ⚠️ 它们由 Daemon 在**实例启动时**写进 cgroup（cpu.max / memory.max），
+	// 所以对**正在运行**的实例来说，改完要重启才生效 —— 面板会在界面上明说这一点。
+	// 磁盘配额不走这里：那是面板自己的调度器巡检的，与 Daemon 无关。
+	SetInstanceLimits(ctx context.Context, in *SetInstanceLimitsRequest, opts ...grpc.CallOption) (*OperationResponse, error)
 	ListJars(ctx context.Context, in *ListJarsRequest, opts ...grpc.CallOption) (*ListJarsResponse, error)
 	// 备份/回滚
 	Backup(ctx context.Context, in *BackupRequest, opts ...grpc.CallOption) (*BackupResponse, error)
@@ -602,6 +610,16 @@ func (c *daemonServiceClient) SetInstanceJava(ctx context.Context, in *SetInstan
 	return out, nil
 }
 
+func (c *daemonServiceClient) SetInstanceLimits(ctx context.Context, in *SetInstanceLimitsRequest, opts ...grpc.CallOption) (*OperationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OperationResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SetInstanceLimits_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) ListJars(ctx context.Context, in *ListJarsRequest, opts ...grpc.CallOption) (*ListJarsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListJarsResponse)
@@ -767,6 +785,13 @@ type DaemonServiceServer interface {
 	// 而 instance.json 在节点侧是**只读虚拟映射**（它是被 root 信任的元数据，
 	// 不能让实例用户改写），所以只能在 Daemon 里改。
 	SetInstanceJava(context.Context, *SetInstanceJavaRequest) (*OperationResponse, error)
+	// 修改实例的 CPU / 内存上限（与 SetInstanceJava 同一类问题：这两个值原先也只在
+	// 建实例时写进 instance.json，之后面板改不了）。
+	//
+	// ⚠️ 它们由 Daemon 在**实例启动时**写进 cgroup（cpu.max / memory.max），
+	// 所以对**正在运行**的实例来说，改完要重启才生效 —— 面板会在界面上明说这一点。
+	// 磁盘配额不走这里：那是面板自己的调度器巡检的，与 Daemon 无关。
+	SetInstanceLimits(context.Context, *SetInstanceLimitsRequest) (*OperationResponse, error)
 	ListJars(context.Context, *ListJarsRequest) (*ListJarsResponse, error)
 	// 备份/回滚
 	Backup(context.Context, *BackupRequest) (*BackupResponse, error)
@@ -910,6 +935,9 @@ func (UnimplementedDaemonServiceServer) SetInstanceJar(context.Context, *SetInst
 }
 func (UnimplementedDaemonServiceServer) SetInstanceJava(context.Context, *SetInstanceJavaRequest) (*OperationResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetInstanceJava not implemented")
+}
+func (UnimplementedDaemonServiceServer) SetInstanceLimits(context.Context, *SetInstanceLimitsRequest) (*OperationResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetInstanceLimits not implemented")
 }
 func (UnimplementedDaemonServiceServer) ListJars(context.Context, *ListJarsRequest) (*ListJarsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListJars not implemented")
@@ -1636,6 +1664,24 @@ func _DaemonService_SetInstanceJava_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_SetInstanceLimits_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetInstanceLimitsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SetInstanceLimits(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SetInstanceLimits_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SetInstanceLimits(ctx, req.(*SetInstanceLimitsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_ListJars_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListJarsRequest)
 	if err := dec(in); err != nil {
@@ -1944,6 +1990,10 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetInstanceJava",
 			Handler:    _DaemonService_SetInstanceJava_Handler,
+		},
+		{
+			MethodName: "SetInstanceLimits",
+			Handler:    _DaemonService_SetInstanceLimits_Handler,
 		},
 		{
 			MethodName: "ListJars",

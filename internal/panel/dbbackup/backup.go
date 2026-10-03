@@ -71,6 +71,12 @@ func (m *Manager) Backup() (string, error) {
 	if err := os.MkdirAll(m.dir, 0o700); err != nil {
 		return "", fmt.Errorf("创建备份目录失败: %w", err)
 	}
+	// 目录已存在时 MkdirAll 不会改权限，而备份目录可能配在**另一块盘**上
+	// （config.example.yaml 里就是这么建议的），历史上可能是 0755。
+	// 备份里含明文节点 SSH 凭据，必须是 0700（2026-10-01 安全审查 M3）。
+	if err := os.Chmod(m.dir, 0o700); err != nil {
+		return "", fmt.Errorf("收紧备份目录权限失败: %w", err)
+	}
 
 	name := filePrefix + time.Now().Format(timeLayout) + fileSuffix
 	dst := filepath.Join(m.dir, name)
@@ -82,12 +88,20 @@ func (m *Manager) Backup() (string, error) {
 	}
 
 	// VACUUM INTO 需要目标文件不存在；语句参数化以兼容路径中的引号
+	// 注意：SQLite 建出来的文件权限跟随进程 umask（常见 0644），必须显式收紧 ——
+	// 备份是**整个库的副本**，比运行中的库更危险（库里至少还有 db.go 每次启动
+	// chmod 0600 兜着）。
 	if _, err := m.db.Exec(`VACUUM INTO ?`, dst); err != nil {
 		// 兼容不支持参数绑定的驱动：退化为转义后的字面量
 		escaped := strings.ReplaceAll(dst, "'", "''")
 		if _, err2 := m.db.Exec(fmt.Sprintf(`VACUUM INTO '%s'`, escaped)); err2 != nil {
 			return "", fmt.Errorf("备份数据库失败: %w", err)
 		}
+	}
+	if err := os.Chmod(dst, 0o600); err != nil {
+		// 备份本身已经写出来了，但权限没收紧：宁可报失败让管理员看见，
+		// 也不要留一个"看起来成功、内容却对所有本机用户可读"的备份。
+		return "", fmt.Errorf("收紧备份文件权限失败（备份内容已生成: %s）: %w", dst, err)
 	}
 
 	m.mu.Lock()

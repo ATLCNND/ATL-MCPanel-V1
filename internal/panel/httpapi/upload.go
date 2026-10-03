@@ -65,6 +65,13 @@ func (s *Server) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 	// 所以界面必须先调 /upload-check 再发 —— 这里的检查是防竞态的第二道。
 	if ok, reason := s.uploadPrecheck(ctx, cli, instanceID, r.ContentLength); !ok {
 		drainBody(r, drainBeforeReject)
+		// 长度未知（ContentLength 为负）要回 400 而不是 413：413 会把人引向
+		// "文件太大"，而真正的原因是这次请求没声明 Content-Length，
+		// 用户再怎么改文件大小也没用。
+		if r.ContentLength < 0 {
+			writeErr(w, http.StatusBadRequest, reason)
+			return
+		}
 		writeErr(w, http.StatusRequestEntityTooLarge, reason)
 		return
 	}
@@ -225,16 +232,33 @@ func (s *Server) handleUploadCheck(w http.ResponseWriter, r *http.Request) {
 //
 // **一处实现、两处调用**（预检接口与上传本身），避免两边判断口径漂移 ——
 // 那种"预检说可以、真传却被拒"的不一致比不预检更让人困惑。
+//
+// 长度未知（分块传输）也在这里拒绝，不再"未知就先放行"：见下面 size < 0 处的说明。
 func (s *Server) uploadPrecheck(ctx context.Context, cli pb.DaemonServiceClient,
 	instanceID string, size int64) (bool, string) {
 
 	if size > grpclimits.MaxUploadBytes {
 		return false, "文件过大：单文件上限 " + humanBytes(grpclimits.MaxUploadBytes)
 	}
-	if size <= 0 {
-		return true, "" // 大小未知（分块传输）：交给 Daemon 边传边判
+	// size < 0 = **长度未知**：Transfer-Encoding: chunked 时 r.ContentLength 恒为 -1。
+	//
+	// 这里以前是 `if size <= 0 { return true, "" }`（"大小未知就交给 Daemon 边传边判"），
+	// 后果是下面两道闸门被**一起**跳过：磁盘配额要算"已用 + 本次"、节点剩余空间要算
+	// "可用 - 本次"，两个都必须知道本次体积。于是分块上传只受 Daemon 的 256MB
+	// 单文件上限约束 —— 而单文件上限拦不住"反复传"：租户能在调度器下一轮检查前
+	// 把节点磁盘写满，**受害的是同节点的其他租户**，还有面板自己的 SQLite WAL
+	// 与 Daemon 的日志。
+	//
+	// 所以长度未知一律拒绝，而不是"未知就先放行"。浏览器的上传路径必然带
+	// Content-Length（0 表示请求体确实一个字节都没有），正常上传不受影响。
+	if size < 0 {
+		return false, "无法确定上传体积：请求未声明 Content-Length（分块传输）。" +
+			"请使用界面上的文件上传，或改为携带 Content-Length 的请求。"
 	}
 
+	// 注意这里**不再**对 size == 0 提前放行：0 是"确实是空文件"，体积账算出来是
+	// "不需要新增空间"，但节点余量已经低于预留值时同样不该再往里写。
+	//
 	// 实例的磁盘**软配额**：面板自己的库里有这个值，但要做减法得知道已用量，
 	// 那只有 Daemon 知道（GetInstanceRuntime 的 disk_used/disk_free）。
 	limitMB, ok := s.instanceDiskLimitMB(instanceID)

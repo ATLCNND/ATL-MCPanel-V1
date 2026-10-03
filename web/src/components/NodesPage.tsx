@@ -5,11 +5,13 @@ import {
   restartDaemon, daemonLogs, getPKI, getNodeCert,
   listNodeResources, uploadNodeResource, deleteNodeResource,
 } from '../api'
+import { parseServerTime } from '../time'
 import './NodesPage.css'
 
 function fmtTime(s: string): string {
   if (!s) return '—'
-  const d = new Date(s)
+  // 服务端时间是无时区标记的 UTC，`new Date(s)` 会按本地时间解析 → 早一个时区差
+  const d = parseServerTime(s)
   if (isNaN(d.getTime())) return s
   const diff = (Date.now() - d.getTime()) / 1000
   if (diff < 60) return `${Math.floor(diff)} 秒前`
@@ -179,7 +181,7 @@ export default function NodesPage() {
               {pki.grpc_mtls ? 'mTLS 已启用' : 'mTLS 未启用'}
             </span>
             <span className="muted">CA：{pki.subject}</span>
-            <span className="muted">到期：{new Date(pki.not_after).toLocaleDateString('zh-CN')}</span>
+            <span className="muted">到期：{parseServerTime(pki.not_after).toLocaleDateString('zh-CN')}</span>
             {!pki.grpc_mtls && <span className="err-text">建议在 config.yaml 中设置 server.grpc_mtls: true</span>}
           </div>
         )}

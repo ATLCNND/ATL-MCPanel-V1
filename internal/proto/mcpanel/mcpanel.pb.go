@@ -1626,6 +1626,76 @@ func (x *SetInstanceJavaRequest) GetJavaVersion() string {
 	return ""
 }
 
+// SetInstanceLimitsRequest 修改实例的 CPU / 内存上限。
+//
+// 与建实例时（CreateInstanceRequest 的 cpu_quota / mem_limit）同语义：
+//
+//	cpu_quota：CPU 配额百分比，100 = 1 核，**0 = 不限制**
+//	mem_limit：cgroup memory.max，如 "4G"，**空串 = 不限制**
+//
+// 两个字段都是**全量覆盖**（不是"只改传了的那个"）：面板把当前想生效的值一起发过来，
+// 这样不会出现"只发了一个字段、另一个被当成 0 把限制清掉"这种歧义。
+// 想只改其中一个时，面板会先用库里的旧值补齐另一个。
+type SetInstanceLimitsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	InstanceId    string                 `protobuf:"bytes,1,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	CpuQuota      int32                  `protobuf:"varint,2,opt,name=cpu_quota,json=cpuQuota,proto3" json:"cpu_quota,omitempty"`
+	MemLimit      string                 `protobuf:"bytes,3,opt,name=mem_limit,json=memLimit,proto3" json:"mem_limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetInstanceLimitsRequest) Reset() {
+	*x = SetInstanceLimitsRequest{}
+	mi := &file_mcpanel_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetInstanceLimitsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetInstanceLimitsRequest) ProtoMessage() {}
+
+func (x *SetInstanceLimitsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_mcpanel_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetInstanceLimitsRequest.ProtoReflect.Descriptor instead.
+func (*SetInstanceLimitsRequest) Descriptor() ([]byte, []int) {
+	return file_mcpanel_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *SetInstanceLimitsRequest) GetInstanceId() string {
+	if x != nil {
+		return x.InstanceId
+	}
+	return ""
+}
+
+func (x *SetInstanceLimitsRequest) GetCpuQuota() int32 {
+	if x != nil {
+		return x.CpuQuota
+	}
+	return 0
+}
+
+func (x *SetInstanceLimitsRequest) GetMemLimit() string {
+	if x != nil {
+		return x.MemLimit
+	}
+	return ""
+}
+
 type ListJarsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	InstanceId    string                 `protobuf:"bytes,1,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
@@ -1635,7 +1705,7 @@ type ListJarsRequest struct {
 
 func (x *ListJarsRequest) Reset() {
 	*x = ListJarsRequest{}
-	mi := &file_mcpanel_proto_msgTypes[19]
+	mi := &file_mcpanel_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1647,7 +1717,7 @@ func (x *ListJarsRequest) String() string {
 func (*ListJarsRequest) ProtoMessage() {}
 
 func (x *ListJarsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[19]
+	mi := &file_mcpanel_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1660,7 +1730,7 @@ func (x *ListJarsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListJarsRequest.ProtoReflect.Descriptor instead.
 func (*ListJarsRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{19}
+	return file_mcpanel_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ListJarsRequest) GetInstanceId() string {
@@ -1682,7 +1752,7 @@ type JarInfo struct {
 
 func (x *JarInfo) Reset() {
 	*x = JarInfo{}
-	mi := &file_mcpanel_proto_msgTypes[20]
+	mi := &file_mcpanel_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1694,7 +1764,7 @@ func (x *JarInfo) String() string {
 func (*JarInfo) ProtoMessage() {}
 
 func (x *JarInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[20]
+	mi := &file_mcpanel_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1707,7 +1777,7 @@ func (x *JarInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JarInfo.ProtoReflect.Descriptor instead.
 func (*JarInfo) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{20}
+	return file_mcpanel_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *JarInfo) GetFilename() string {
@@ -1750,7 +1820,7 @@ type ListJarsResponse struct {
 
 func (x *ListJarsResponse) Reset() {
 	*x = ListJarsResponse{}
-	mi := &file_mcpanel_proto_msgTypes[21]
+	mi := &file_mcpanel_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1762,7 +1832,7 @@ func (x *ListJarsResponse) String() string {
 func (*ListJarsResponse) ProtoMessage() {}
 
 func (x *ListJarsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[21]
+	mi := &file_mcpanel_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1775,7 +1845,7 @@ func (x *ListJarsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListJarsResponse.ProtoReflect.Descriptor instead.
 func (*ListJarsResponse) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{21}
+	return file_mcpanel_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ListJarsResponse) GetSuccess() bool {
@@ -1817,7 +1887,7 @@ type BackupRequest struct {
 
 func (x *BackupRequest) Reset() {
 	*x = BackupRequest{}
-	mi := &file_mcpanel_proto_msgTypes[22]
+	mi := &file_mcpanel_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1829,7 +1899,7 @@ func (x *BackupRequest) String() string {
 func (*BackupRequest) ProtoMessage() {}
 
 func (x *BackupRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[22]
+	mi := &file_mcpanel_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1842,7 +1912,7 @@ func (x *BackupRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupRequest.ProtoReflect.Descriptor instead.
 func (*BackupRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{22}
+	return file_mcpanel_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *BackupRequest) GetInstanceId() string {
@@ -1877,7 +1947,7 @@ type BackupResponse struct {
 
 func (x *BackupResponse) Reset() {
 	*x = BackupResponse{}
-	mi := &file_mcpanel_proto_msgTypes[23]
+	mi := &file_mcpanel_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1889,7 +1959,7 @@ func (x *BackupResponse) String() string {
 func (*BackupResponse) ProtoMessage() {}
 
 func (x *BackupResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[23]
+	mi := &file_mcpanel_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1902,7 +1972,7 @@ func (x *BackupResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupResponse.ProtoReflect.Descriptor instead.
 func (*BackupResponse) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{23}
+	return file_mcpanel_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *BackupResponse) GetSuccess() bool {
@@ -1936,7 +2006,7 @@ type RestoreRequest struct {
 
 func (x *RestoreRequest) Reset() {
 	*x = RestoreRequest{}
-	mi := &file_mcpanel_proto_msgTypes[24]
+	mi := &file_mcpanel_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1948,7 +2018,7 @@ func (x *RestoreRequest) String() string {
 func (*RestoreRequest) ProtoMessage() {}
 
 func (x *RestoreRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[24]
+	mi := &file_mcpanel_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1961,7 +2031,7 @@ func (x *RestoreRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RestoreRequest.ProtoReflect.Descriptor instead.
 func (*RestoreRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{24}
+	return file_mcpanel_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *RestoreRequest) GetInstanceId() string {
@@ -1991,7 +2061,7 @@ type BackupInfo struct {
 
 func (x *BackupInfo) Reset() {
 	*x = BackupInfo{}
-	mi := &file_mcpanel_proto_msgTypes[25]
+	mi := &file_mcpanel_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2003,7 +2073,7 @@ func (x *BackupInfo) String() string {
 func (*BackupInfo) ProtoMessage() {}
 
 func (x *BackupInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[25]
+	mi := &file_mcpanel_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2016,7 +2086,7 @@ func (x *BackupInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackupInfo.ProtoReflect.Descriptor instead.
 func (*BackupInfo) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{25}
+	return file_mcpanel_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *BackupInfo) GetBackupId() string {
@@ -2063,7 +2133,7 @@ type ListBackupsRequest struct {
 
 func (x *ListBackupsRequest) Reset() {
 	*x = ListBackupsRequest{}
-	mi := &file_mcpanel_proto_msgTypes[26]
+	mi := &file_mcpanel_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2075,7 +2145,7 @@ func (x *ListBackupsRequest) String() string {
 func (*ListBackupsRequest) ProtoMessage() {}
 
 func (x *ListBackupsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[26]
+	mi := &file_mcpanel_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2088,7 +2158,7 @@ func (x *ListBackupsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackupsRequest.ProtoReflect.Descriptor instead.
 func (*ListBackupsRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{26}
+	return file_mcpanel_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ListBackupsRequest) GetInstanceId() string {
@@ -2109,7 +2179,7 @@ type ListBackupsResponse struct {
 
 func (x *ListBackupsResponse) Reset() {
 	*x = ListBackupsResponse{}
-	mi := &file_mcpanel_proto_msgTypes[27]
+	mi := &file_mcpanel_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2121,7 +2191,7 @@ func (x *ListBackupsResponse) String() string {
 func (*ListBackupsResponse) ProtoMessage() {}
 
 func (x *ListBackupsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[27]
+	mi := &file_mcpanel_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2134,7 +2204,7 @@ func (x *ListBackupsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListBackupsResponse.ProtoReflect.Descriptor instead.
 func (*ListBackupsResponse) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{27}
+	return file_mcpanel_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ListBackupsResponse) GetSuccess() bool {
@@ -2168,7 +2238,7 @@ type DeleteBackupRequest struct {
 
 func (x *DeleteBackupRequest) Reset() {
 	*x = DeleteBackupRequest{}
-	mi := &file_mcpanel_proto_msgTypes[28]
+	mi := &file_mcpanel_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2180,7 +2250,7 @@ func (x *DeleteBackupRequest) String() string {
 func (*DeleteBackupRequest) ProtoMessage() {}
 
 func (x *DeleteBackupRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[28]
+	mi := &file_mcpanel_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2193,7 +2263,7 @@ func (x *DeleteBackupRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteBackupRequest.ProtoReflect.Descriptor instead.
 func (*DeleteBackupRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{28}
+	return file_mcpanel_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *DeleteBackupRequest) GetInstanceId() string {
@@ -2229,7 +2299,7 @@ type TunnelRequest struct {
 
 func (x *TunnelRequest) Reset() {
 	*x = TunnelRequest{}
-	mi := &file_mcpanel_proto_msgTypes[29]
+	mi := &file_mcpanel_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2241,7 +2311,7 @@ func (x *TunnelRequest) String() string {
 func (*TunnelRequest) ProtoMessage() {}
 
 func (x *TunnelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[29]
+	mi := &file_mcpanel_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2254,7 +2324,7 @@ func (x *TunnelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TunnelRequest.ProtoReflect.Descriptor instead.
 func (*TunnelRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{29}
+	return file_mcpanel_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *TunnelRequest) GetInstanceId() string {
@@ -2343,7 +2413,7 @@ type ListTunnelsRequest struct {
 
 func (x *ListTunnelsRequest) Reset() {
 	*x = ListTunnelsRequest{}
-	mi := &file_mcpanel_proto_msgTypes[30]
+	mi := &file_mcpanel_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2355,7 +2425,7 @@ func (x *ListTunnelsRequest) String() string {
 func (*ListTunnelsRequest) ProtoMessage() {}
 
 func (x *ListTunnelsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[30]
+	mi := &file_mcpanel_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2368,7 +2438,7 @@ func (x *ListTunnelsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTunnelsRequest.ProtoReflect.Descriptor instead.
 func (*ListTunnelsRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{30}
+	return file_mcpanel_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ListTunnelsRequest) GetInstanceId() string {
@@ -2393,7 +2463,7 @@ type TunnelInfo struct {
 
 func (x *TunnelInfo) Reset() {
 	*x = TunnelInfo{}
-	mi := &file_mcpanel_proto_msgTypes[31]
+	mi := &file_mcpanel_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2405,7 +2475,7 @@ func (x *TunnelInfo) String() string {
 func (*TunnelInfo) ProtoMessage() {}
 
 func (x *TunnelInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[31]
+	mi := &file_mcpanel_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2418,7 +2488,7 @@ func (x *TunnelInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TunnelInfo.ProtoReflect.Descriptor instead.
 func (*TunnelInfo) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{31}
+	return file_mcpanel_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *TunnelInfo) GetTunnelId() string {
@@ -2479,7 +2549,7 @@ type ListTunnelsResponse struct {
 
 func (x *ListTunnelsResponse) Reset() {
 	*x = ListTunnelsResponse{}
-	mi := &file_mcpanel_proto_msgTypes[32]
+	mi := &file_mcpanel_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2491,7 +2561,7 @@ func (x *ListTunnelsResponse) String() string {
 func (*ListTunnelsResponse) ProtoMessage() {}
 
 func (x *ListTunnelsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[32]
+	mi := &file_mcpanel_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2504,7 +2574,7 @@ func (x *ListTunnelsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTunnelsResponse.ProtoReflect.Descriptor instead.
 func (*ListTunnelsResponse) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{32}
+	return file_mcpanel_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ListTunnelsResponse) GetTunnels() []*TunnelInfo {
@@ -2529,7 +2599,7 @@ type TestFrpsRequest struct {
 
 func (x *TestFrpsRequest) Reset() {
 	*x = TestFrpsRequest{}
-	mi := &file_mcpanel_proto_msgTypes[33]
+	mi := &file_mcpanel_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2541,7 +2611,7 @@ func (x *TestFrpsRequest) String() string {
 func (*TestFrpsRequest) ProtoMessage() {}
 
 func (x *TestFrpsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[33]
+	mi := &file_mcpanel_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2554,7 +2624,7 @@ func (x *TestFrpsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TestFrpsRequest.ProtoReflect.Descriptor instead.
 func (*TestFrpsRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{33}
+	return file_mcpanel_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *TestFrpsRequest) GetHost() string {
@@ -2613,7 +2683,7 @@ type TestFrpsResponse struct {
 
 func (x *TestFrpsResponse) Reset() {
 	*x = TestFrpsResponse{}
-	mi := &file_mcpanel_proto_msgTypes[34]
+	mi := &file_mcpanel_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2625,7 +2695,7 @@ func (x *TestFrpsResponse) String() string {
 func (*TestFrpsResponse) ProtoMessage() {}
 
 func (x *TestFrpsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[34]
+	mi := &file_mcpanel_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2638,7 +2708,7 @@ func (x *TestFrpsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TestFrpsResponse.ProtoReflect.Descriptor instead.
 func (*TestFrpsResponse) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{34}
+	return file_mcpanel_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *TestFrpsResponse) GetSuccess() bool {
@@ -2717,7 +2787,7 @@ type FileInfo struct {
 
 func (x *FileInfo) Reset() {
 	*x = FileInfo{}
-	mi := &file_mcpanel_proto_msgTypes[35]
+	mi := &file_mcpanel_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2729,7 +2799,7 @@ func (x *FileInfo) String() string {
 func (*FileInfo) ProtoMessage() {}
 
 func (x *FileInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[35]
+	mi := &file_mcpanel_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2742,7 +2812,7 @@ func (x *FileInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FileInfo.ProtoReflect.Descriptor instead.
 func (*FileInfo) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{35}
+	return file_mcpanel_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *FileInfo) GetName() string {
@@ -2790,7 +2860,7 @@ type ListFilesRequest struct {
 
 func (x *ListFilesRequest) Reset() {
 	*x = ListFilesRequest{}
-	mi := &file_mcpanel_proto_msgTypes[36]
+	mi := &file_mcpanel_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2802,7 +2872,7 @@ func (x *ListFilesRequest) String() string {
 func (*ListFilesRequest) ProtoMessage() {}
 
 func (x *ListFilesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[36]
+	mi := &file_mcpanel_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2815,7 +2885,7 @@ func (x *ListFilesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListFilesRequest.ProtoReflect.Descriptor instead.
 func (*ListFilesRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{36}
+	return file_mcpanel_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ListFilesRequest) GetInstanceId() string {
@@ -2843,7 +2913,7 @@ type ListFilesResponse struct {
 
 func (x *ListFilesResponse) Reset() {
 	*x = ListFilesResponse{}
-	mi := &file_mcpanel_proto_msgTypes[37]
+	mi := &file_mcpanel_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2855,7 +2925,7 @@ func (x *ListFilesResponse) String() string {
 func (*ListFilesResponse) ProtoMessage() {}
 
 func (x *ListFilesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[37]
+	mi := &file_mcpanel_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2868,7 +2938,7 @@ func (x *ListFilesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListFilesResponse.ProtoReflect.Descriptor instead.
 func (*ListFilesResponse) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{37}
+	return file_mcpanel_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ListFilesResponse) GetSuccess() bool {
@@ -2902,7 +2972,7 @@ type ReadFileRequest struct {
 
 func (x *ReadFileRequest) Reset() {
 	*x = ReadFileRequest{}
-	mi := &file_mcpanel_proto_msgTypes[38]
+	mi := &file_mcpanel_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2914,7 +2984,7 @@ func (x *ReadFileRequest) String() string {
 func (*ReadFileRequest) ProtoMessage() {}
 
 func (x *ReadFileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[38]
+	mi := &file_mcpanel_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2927,7 +2997,7 @@ func (x *ReadFileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadFileRequest.ProtoReflect.Descriptor instead.
 func (*ReadFileRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{38}
+	return file_mcpanel_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ReadFileRequest) GetInstanceId() string {
@@ -2956,7 +3026,7 @@ type ReadFileResponse struct {
 
 func (x *ReadFileResponse) Reset() {
 	*x = ReadFileResponse{}
-	mi := &file_mcpanel_proto_msgTypes[39]
+	mi := &file_mcpanel_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2968,7 +3038,7 @@ func (x *ReadFileResponse) String() string {
 func (*ReadFileResponse) ProtoMessage() {}
 
 func (x *ReadFileResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[39]
+	mi := &file_mcpanel_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2981,7 +3051,7 @@ func (x *ReadFileResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadFileResponse.ProtoReflect.Descriptor instead.
 func (*ReadFileResponse) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{39}
+	return file_mcpanel_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *ReadFileResponse) GetSuccess() bool {
@@ -3023,7 +3093,7 @@ type WriteFileRequest struct {
 
 func (x *WriteFileRequest) Reset() {
 	*x = WriteFileRequest{}
-	mi := &file_mcpanel_proto_msgTypes[40]
+	mi := &file_mcpanel_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3035,7 +3105,7 @@ func (x *WriteFileRequest) String() string {
 func (*WriteFileRequest) ProtoMessage() {}
 
 func (x *WriteFileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[40]
+	mi := &file_mcpanel_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3048,7 +3118,7 @@ func (x *WriteFileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteFileRequest.ProtoReflect.Descriptor instead.
 func (*WriteFileRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{40}
+	return file_mcpanel_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *WriteFileRequest) GetInstanceId() string {
@@ -3082,7 +3152,7 @@ type FileRequest struct {
 
 func (x *FileRequest) Reset() {
 	*x = FileRequest{}
-	mi := &file_mcpanel_proto_msgTypes[41]
+	mi := &file_mcpanel_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3094,7 +3164,7 @@ func (x *FileRequest) String() string {
 func (*FileRequest) ProtoMessage() {}
 
 func (x *FileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[41]
+	mi := &file_mcpanel_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3107,7 +3177,7 @@ func (x *FileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FileRequest.ProtoReflect.Descriptor instead.
 func (*FileRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{41}
+	return file_mcpanel_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *FileRequest) GetInstanceId() string {
@@ -3134,7 +3204,7 @@ type MkdirRequest struct {
 
 func (x *MkdirRequest) Reset() {
 	*x = MkdirRequest{}
-	mi := &file_mcpanel_proto_msgTypes[42]
+	mi := &file_mcpanel_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3146,7 +3216,7 @@ func (x *MkdirRequest) String() string {
 func (*MkdirRequest) ProtoMessage() {}
 
 func (x *MkdirRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[42]
+	mi := &file_mcpanel_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3159,7 +3229,7 @@ func (x *MkdirRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MkdirRequest.ProtoReflect.Descriptor instead.
 func (*MkdirRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{42}
+	return file_mcpanel_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *MkdirRequest) GetInstanceId() string {
@@ -3187,7 +3257,7 @@ type RenameFileRequest struct {
 
 func (x *RenameFileRequest) Reset() {
 	*x = RenameFileRequest{}
-	mi := &file_mcpanel_proto_msgTypes[43]
+	mi := &file_mcpanel_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3199,7 +3269,7 @@ func (x *RenameFileRequest) String() string {
 func (*RenameFileRequest) ProtoMessage() {}
 
 func (x *RenameFileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[43]
+	mi := &file_mcpanel_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3212,7 +3282,7 @@ func (x *RenameFileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenameFileRequest.ProtoReflect.Descriptor instead.
 func (*RenameFileRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{43}
+	return file_mcpanel_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *RenameFileRequest) GetInstanceId() string {
@@ -3249,7 +3319,7 @@ type CopyFileRequest struct {
 
 func (x *CopyFileRequest) Reset() {
 	*x = CopyFileRequest{}
-	mi := &file_mcpanel_proto_msgTypes[44]
+	mi := &file_mcpanel_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3261,7 +3331,7 @@ func (x *CopyFileRequest) String() string {
 func (*CopyFileRequest) ProtoMessage() {}
 
 func (x *CopyFileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[44]
+	mi := &file_mcpanel_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3274,7 +3344,7 @@ func (x *CopyFileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CopyFileRequest.ProtoReflect.Descriptor instead.
 func (*CopyFileRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{44}
+	return file_mcpanel_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *CopyFileRequest) GetInstanceId() string {
@@ -3324,7 +3394,7 @@ type SearchFilesRequest struct {
 
 func (x *SearchFilesRequest) Reset() {
 	*x = SearchFilesRequest{}
-	mi := &file_mcpanel_proto_msgTypes[45]
+	mi := &file_mcpanel_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3336,7 +3406,7 @@ func (x *SearchFilesRequest) String() string {
 func (*SearchFilesRequest) ProtoMessage() {}
 
 func (x *SearchFilesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[45]
+	mi := &file_mcpanel_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3349,7 +3419,7 @@ func (x *SearchFilesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchFilesRequest.ProtoReflect.Descriptor instead.
 func (*SearchFilesRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{45}
+	return file_mcpanel_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *SearchFilesRequest) GetInstanceId() string {
@@ -3390,7 +3460,7 @@ type DownloadFileRequest struct {
 
 func (x *DownloadFileRequest) Reset() {
 	*x = DownloadFileRequest{}
-	mi := &file_mcpanel_proto_msgTypes[46]
+	mi := &file_mcpanel_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3402,7 +3472,7 @@ func (x *DownloadFileRequest) String() string {
 func (*DownloadFileRequest) ProtoMessage() {}
 
 func (x *DownloadFileRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[46]
+	mi := &file_mcpanel_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3415,7 +3485,7 @@ func (x *DownloadFileRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DownloadFileRequest.ProtoReflect.Descriptor instead.
 func (*DownloadFileRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{46}
+	return file_mcpanel_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *DownloadFileRequest) GetInstanceId() string {
@@ -3445,7 +3515,7 @@ type FileChunk struct {
 
 func (x *FileChunk) Reset() {
 	*x = FileChunk{}
-	mi := &file_mcpanel_proto_msgTypes[47]
+	mi := &file_mcpanel_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3457,7 +3527,7 @@ func (x *FileChunk) String() string {
 func (*FileChunk) ProtoMessage() {}
 
 func (x *FileChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[47]
+	mi := &file_mcpanel_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3470,7 +3540,7 @@ func (x *FileChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FileChunk.ProtoReflect.Descriptor instead.
 func (*FileChunk) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{47}
+	return file_mcpanel_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *FileChunk) GetData() []byte {
@@ -3507,7 +3577,7 @@ type UploadChunk struct {
 
 func (x *UploadChunk) Reset() {
 	*x = UploadChunk{}
-	mi := &file_mcpanel_proto_msgTypes[48]
+	mi := &file_mcpanel_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3519,7 +3589,7 @@ func (x *UploadChunk) String() string {
 func (*UploadChunk) ProtoMessage() {}
 
 func (x *UploadChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[48]
+	mi := &file_mcpanel_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3532,7 +3602,7 @@ func (x *UploadChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadChunk.ProtoReflect.Descriptor instead.
 func (*UploadChunk) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{48}
+	return file_mcpanel_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *UploadChunk) GetInstanceId() string {
@@ -3585,7 +3655,7 @@ type UploadResult struct {
 
 func (x *UploadResult) Reset() {
 	*x = UploadResult{}
-	mi := &file_mcpanel_proto_msgTypes[49]
+	mi := &file_mcpanel_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3597,7 +3667,7 @@ func (x *UploadResult) String() string {
 func (*UploadResult) ProtoMessage() {}
 
 func (x *UploadResult) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[49]
+	mi := &file_mcpanel_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3610,7 +3680,7 @@ func (x *UploadResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadResult.ProtoReflect.Descriptor instead.
 func (*UploadResult) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{49}
+	return file_mcpanel_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *UploadResult) GetSuccess() bool {
@@ -3655,7 +3725,7 @@ type SubmitJobRequest struct {
 
 func (x *SubmitJobRequest) Reset() {
 	*x = SubmitJobRequest{}
-	mi := &file_mcpanel_proto_msgTypes[50]
+	mi := &file_mcpanel_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3667,7 +3737,7 @@ func (x *SubmitJobRequest) String() string {
 func (*SubmitJobRequest) ProtoMessage() {}
 
 func (x *SubmitJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[50]
+	mi := &file_mcpanel_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3680,7 +3750,7 @@ func (x *SubmitJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitJobRequest.ProtoReflect.Descriptor instead.
 func (*SubmitJobRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{50}
+	return file_mcpanel_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *SubmitJobRequest) GetJobId() string {
@@ -3737,7 +3807,7 @@ type SubmitJobResponse struct {
 
 func (x *SubmitJobResponse) Reset() {
 	*x = SubmitJobResponse{}
-	mi := &file_mcpanel_proto_msgTypes[51]
+	mi := &file_mcpanel_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3749,7 +3819,7 @@ func (x *SubmitJobResponse) String() string {
 func (*SubmitJobResponse) ProtoMessage() {}
 
 func (x *SubmitJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[51]
+	mi := &file_mcpanel_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3762,7 +3832,7 @@ func (x *SubmitJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitJobResponse.ProtoReflect.Descriptor instead.
 func (*SubmitJobResponse) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{51}
+	return file_mcpanel_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *SubmitJobResponse) GetSuccess() bool {
@@ -3803,7 +3873,7 @@ type JobRequest struct {
 
 func (x *JobRequest) Reset() {
 	*x = JobRequest{}
-	mi := &file_mcpanel_proto_msgTypes[52]
+	mi := &file_mcpanel_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3815,7 +3885,7 @@ func (x *JobRequest) String() string {
 func (*JobRequest) ProtoMessage() {}
 
 func (x *JobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[52]
+	mi := &file_mcpanel_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3828,7 +3898,7 @@ func (x *JobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JobRequest.ProtoReflect.Descriptor instead.
 func (*JobRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{52}
+	return file_mcpanel_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *JobRequest) GetJobId() string {
@@ -3864,7 +3934,7 @@ type JobStatus struct {
 
 func (x *JobStatus) Reset() {
 	*x = JobStatus{}
-	mi := &file_mcpanel_proto_msgTypes[53]
+	mi := &file_mcpanel_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3876,7 +3946,7 @@ func (x *JobStatus) String() string {
 func (*JobStatus) ProtoMessage() {}
 
 func (x *JobStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[53]
+	mi := &file_mcpanel_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3889,7 +3959,7 @@ func (x *JobStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JobStatus.ProtoReflect.Descriptor instead.
 func (*JobStatus) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{53}
+	return file_mcpanel_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *JobStatus) GetJobId() string {
@@ -3987,7 +4057,7 @@ type PlayerOverviewEntry struct {
 
 func (x *PlayerOverviewEntry) Reset() {
 	*x = PlayerOverviewEntry{}
-	mi := &file_mcpanel_proto_msgTypes[54]
+	mi := &file_mcpanel_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3999,7 +4069,7 @@ func (x *PlayerOverviewEntry) String() string {
 func (*PlayerOverviewEntry) ProtoMessage() {}
 
 func (x *PlayerOverviewEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[54]
+	mi := &file_mcpanel_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4012,7 +4082,7 @@ func (x *PlayerOverviewEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlayerOverviewEntry.ProtoReflect.Descriptor instead.
 func (*PlayerOverviewEntry) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{54}
+	return file_mcpanel_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *PlayerOverviewEntry) GetUuid() string {
@@ -4100,7 +4170,7 @@ type PlayerOverviewResponse struct {
 
 func (x *PlayerOverviewResponse) Reset() {
 	*x = PlayerOverviewResponse{}
-	mi := &file_mcpanel_proto_msgTypes[55]
+	mi := &file_mcpanel_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4112,7 +4182,7 @@ func (x *PlayerOverviewResponse) String() string {
 func (*PlayerOverviewResponse) ProtoMessage() {}
 
 func (x *PlayerOverviewResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[55]
+	mi := &file_mcpanel_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4125,7 +4195,7 @@ func (x *PlayerOverviewResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlayerOverviewResponse.ProtoReflect.Descriptor instead.
 func (*PlayerOverviewResponse) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{55}
+	return file_mcpanel_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *PlayerOverviewResponse) GetSuccess() bool {
@@ -4187,7 +4257,7 @@ type CommandRequest struct {
 
 func (x *CommandRequest) Reset() {
 	*x = CommandRequest{}
-	mi := &file_mcpanel_proto_msgTypes[56]
+	mi := &file_mcpanel_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4199,7 +4269,7 @@ func (x *CommandRequest) String() string {
 func (*CommandRequest) ProtoMessage() {}
 
 func (x *CommandRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[56]
+	mi := &file_mcpanel_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4212,7 +4282,7 @@ func (x *CommandRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandRequest.ProtoReflect.Descriptor instead.
 func (*CommandRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{56}
+	return file_mcpanel_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *CommandRequest) GetInstanceId() string {
@@ -4238,7 +4308,7 @@ type EmptyRequest struct {
 
 func (x *EmptyRequest) Reset() {
 	*x = EmptyRequest{}
-	mi := &file_mcpanel_proto_msgTypes[57]
+	mi := &file_mcpanel_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4250,7 +4320,7 @@ func (x *EmptyRequest) String() string {
 func (*EmptyRequest) ProtoMessage() {}
 
 func (x *EmptyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[57]
+	mi := &file_mcpanel_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4263,7 +4333,7 @@ func (x *EmptyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EmptyRequest.ProtoReflect.Descriptor instead.
 func (*EmptyRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{57}
+	return file_mcpanel_proto_rawDescGZIP(), []int{58}
 }
 
 type ResourceInfo struct {
@@ -4280,7 +4350,7 @@ type ResourceInfo struct {
 
 func (x *ResourceInfo) Reset() {
 	*x = ResourceInfo{}
-	mi := &file_mcpanel_proto_msgTypes[58]
+	mi := &file_mcpanel_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4292,7 +4362,7 @@ func (x *ResourceInfo) String() string {
 func (*ResourceInfo) ProtoMessage() {}
 
 func (x *ResourceInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[58]
+	mi := &file_mcpanel_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4305,7 +4375,7 @@ func (x *ResourceInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResourceInfo.ProtoReflect.Descriptor instead.
 func (*ResourceInfo) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{58}
+	return file_mcpanel_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *ResourceInfo) GetName() string {
@@ -4355,7 +4425,7 @@ type ListResourcesResponse struct {
 
 func (x *ListResourcesResponse) Reset() {
 	*x = ListResourcesResponse{}
-	mi := &file_mcpanel_proto_msgTypes[59]
+	mi := &file_mcpanel_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4367,7 +4437,7 @@ func (x *ListResourcesResponse) String() string {
 func (*ListResourcesResponse) ProtoMessage() {}
 
 func (x *ListResourcesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[59]
+	mi := &file_mcpanel_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4380,7 +4450,7 @@ func (x *ListResourcesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListResourcesResponse.ProtoReflect.Descriptor instead.
 func (*ListResourcesResponse) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{59}
+	return file_mcpanel_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *ListResourcesResponse) GetSuccess() bool {
@@ -4422,7 +4492,7 @@ type UploadResourceRequest struct {
 
 func (x *UploadResourceRequest) Reset() {
 	*x = UploadResourceRequest{}
-	mi := &file_mcpanel_proto_msgTypes[60]
+	mi := &file_mcpanel_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4434,7 +4504,7 @@ func (x *UploadResourceRequest) String() string {
 func (*UploadResourceRequest) ProtoMessage() {}
 
 func (x *UploadResourceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[60]
+	mi := &file_mcpanel_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4447,7 +4517,7 @@ func (x *UploadResourceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadResourceRequest.ProtoReflect.Descriptor instead.
 func (*UploadResourceRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{60}
+	return file_mcpanel_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *UploadResourceRequest) GetFilename() string {
@@ -4481,7 +4551,7 @@ type DeleteResourceRequest struct {
 
 func (x *DeleteResourceRequest) Reset() {
 	*x = DeleteResourceRequest{}
-	mi := &file_mcpanel_proto_msgTypes[61]
+	mi := &file_mcpanel_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4493,7 +4563,7 @@ func (x *DeleteResourceRequest) String() string {
 func (*DeleteResourceRequest) ProtoMessage() {}
 
 func (x *DeleteResourceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[61]
+	mi := &file_mcpanel_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4506,7 +4576,7 @@ func (x *DeleteResourceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteResourceRequest.ProtoReflect.Descriptor instead.
 func (*DeleteResourceRequest) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{61}
+	return file_mcpanel_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *DeleteResourceRequest) GetName() string {
@@ -4535,7 +4605,7 @@ type JavaRuntimeInfo struct {
 
 func (x *JavaRuntimeInfo) Reset() {
 	*x = JavaRuntimeInfo{}
-	mi := &file_mcpanel_proto_msgTypes[62]
+	mi := &file_mcpanel_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4547,7 +4617,7 @@ func (x *JavaRuntimeInfo) String() string {
 func (*JavaRuntimeInfo) ProtoMessage() {}
 
 func (x *JavaRuntimeInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[62]
+	mi := &file_mcpanel_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4560,7 +4630,7 @@ func (x *JavaRuntimeInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JavaRuntimeInfo.ProtoReflect.Descriptor instead.
 func (*JavaRuntimeInfo) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{62}
+	return file_mcpanel_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *JavaRuntimeInfo) GetLabel() string {
@@ -4604,7 +4674,7 @@ type ListJavaRuntimesResponse struct {
 
 func (x *ListJavaRuntimesResponse) Reset() {
 	*x = ListJavaRuntimesResponse{}
-	mi := &file_mcpanel_proto_msgTypes[63]
+	mi := &file_mcpanel_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4616,7 +4686,7 @@ func (x *ListJavaRuntimesResponse) String() string {
 func (*ListJavaRuntimesResponse) ProtoMessage() {}
 
 func (x *ListJavaRuntimesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_mcpanel_proto_msgTypes[63]
+	mi := &file_mcpanel_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4629,7 +4699,7 @@ func (x *ListJavaRuntimesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListJavaRuntimesResponse.ProtoReflect.Descriptor instead.
 func (*ListJavaRuntimesResponse) Descriptor() ([]byte, []int) {
-	return file_mcpanel_proto_rawDescGZIP(), []int{63}
+	return file_mcpanel_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *ListJavaRuntimesResponse) GetSuccess() bool {
@@ -4824,7 +4894,12 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\x16SetInstanceJavaRequest\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12!\n" +
-	"\fjava_version\x18\x02 \x01(\tR\vjavaVersion\"2\n" +
+	"\fjava_version\x18\x02 \x01(\tR\vjavaVersion\"u\n" +
+	"\x18SetInstanceLimitsRequest\x12\x1f\n" +
+	"\vinstance_id\x18\x01 \x01(\tR\n" +
+	"instanceId\x12\x1b\n" +
+	"\tcpu_quota\x18\x02 \x01(\x05R\bcpuQuota\x12\x1b\n" +
+	"\tmem_limit\x18\x03 \x01(\tR\bmemLimit\"2\n" +
 	"\x0fListJarsRequest\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\"e\n" +
@@ -5085,7 +5160,7 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\x124\n" +
 	"\bruntimes\x18\x03 \x03(\v2\x18.mcpanel.JavaRuntimeInfoR\bruntimes\x12\x1a\n" +
-	"\bfallback\x18\x04 \x01(\tR\bfallback2\xc2\x1a\n" +
+	"\bfallback\x18\x04 \x01(\tR\bfallback2\x96\x1b\n" +
 	"\rDaemonService\x12?\n" +
 	"\bRegister\x12\x18.mcpanel.RegisterRequest\x1a\x19.mcpanel.RegisterResponse\x123\n" +
 	"\x04Ping\x12\x14.mcpanel.PingRequest\x1a\x15.mcpanel.PingResponse\x12L\n" +
@@ -5130,7 +5205,8 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\tSetConfig\x12\x16.mcpanel.ConfigRequest\x1a\x17.mcpanel.ConfigResponse\x12B\n" +
 	"\tUploadJar\x12\x19.mcpanel.UploadJarRequest\x1a\x1a.mcpanel.OperationResponse\x12L\n" +
 	"\x0eSetInstanceJar\x12\x1e.mcpanel.SetInstanceJarRequest\x1a\x1a.mcpanel.OperationResponse\x12N\n" +
-	"\x0fSetInstanceJava\x12\x1f.mcpanel.SetInstanceJavaRequest\x1a\x1a.mcpanel.OperationResponse\x12?\n" +
+	"\x0fSetInstanceJava\x12\x1f.mcpanel.SetInstanceJavaRequest\x1a\x1a.mcpanel.OperationResponse\x12R\n" +
+	"\x11SetInstanceLimits\x12!.mcpanel.SetInstanceLimitsRequest\x1a\x1a.mcpanel.OperationResponse\x12?\n" +
 	"\bListJars\x12\x18.mcpanel.ListJarsRequest\x1a\x19.mcpanel.ListJarsResponse\x129\n" +
 	"\x06Backup\x12\x16.mcpanel.BackupRequest\x1a\x17.mcpanel.BackupResponse\x12>\n" +
 	"\aRestore\x12\x17.mcpanel.RestoreRequest\x1a\x1a.mcpanel.OperationResponse\x12H\n" +
@@ -5154,7 +5230,7 @@ func file_mcpanel_proto_rawDescGZIP() []byte {
 }
 
 var file_mcpanel_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_mcpanel_proto_msgTypes = make([]protoimpl.MessageInfo, 64)
+var file_mcpanel_proto_msgTypes = make([]protoimpl.MessageInfo, 65)
 var file_mcpanel_proto_goTypes = []any{
 	(ConsoleFrame_Type)(0),              // 0: mcpanel.ConsoleFrame.Type
 	(*OperationResponse)(nil),           // 1: mcpanel.OperationResponse
@@ -5176,61 +5252,62 @@ var file_mcpanel_proto_goTypes = []any{
 	(*UploadJarRequest)(nil),            // 17: mcpanel.UploadJarRequest
 	(*SetInstanceJarRequest)(nil),       // 18: mcpanel.SetInstanceJarRequest
 	(*SetInstanceJavaRequest)(nil),      // 19: mcpanel.SetInstanceJavaRequest
-	(*ListJarsRequest)(nil),             // 20: mcpanel.ListJarsRequest
-	(*JarInfo)(nil),                     // 21: mcpanel.JarInfo
-	(*ListJarsResponse)(nil),            // 22: mcpanel.ListJarsResponse
-	(*BackupRequest)(nil),               // 23: mcpanel.BackupRequest
-	(*BackupResponse)(nil),              // 24: mcpanel.BackupResponse
-	(*RestoreRequest)(nil),              // 25: mcpanel.RestoreRequest
-	(*BackupInfo)(nil),                  // 26: mcpanel.BackupInfo
-	(*ListBackupsRequest)(nil),          // 27: mcpanel.ListBackupsRequest
-	(*ListBackupsResponse)(nil),         // 28: mcpanel.ListBackupsResponse
-	(*DeleteBackupRequest)(nil),         // 29: mcpanel.DeleteBackupRequest
-	(*TunnelRequest)(nil),               // 30: mcpanel.TunnelRequest
-	(*ListTunnelsRequest)(nil),          // 31: mcpanel.ListTunnelsRequest
-	(*TunnelInfo)(nil),                  // 32: mcpanel.TunnelInfo
-	(*ListTunnelsResponse)(nil),         // 33: mcpanel.ListTunnelsResponse
-	(*TestFrpsRequest)(nil),             // 34: mcpanel.TestFrpsRequest
-	(*TestFrpsResponse)(nil),            // 35: mcpanel.TestFrpsResponse
-	(*FileInfo)(nil),                    // 36: mcpanel.FileInfo
-	(*ListFilesRequest)(nil),            // 37: mcpanel.ListFilesRequest
-	(*ListFilesResponse)(nil),           // 38: mcpanel.ListFilesResponse
-	(*ReadFileRequest)(nil),             // 39: mcpanel.ReadFileRequest
-	(*ReadFileResponse)(nil),            // 40: mcpanel.ReadFileResponse
-	(*WriteFileRequest)(nil),            // 41: mcpanel.WriteFileRequest
-	(*FileRequest)(nil),                 // 42: mcpanel.FileRequest
-	(*MkdirRequest)(nil),                // 43: mcpanel.MkdirRequest
-	(*RenameFileRequest)(nil),           // 44: mcpanel.RenameFileRequest
-	(*CopyFileRequest)(nil),             // 45: mcpanel.CopyFileRequest
-	(*SearchFilesRequest)(nil),          // 46: mcpanel.SearchFilesRequest
-	(*DownloadFileRequest)(nil),         // 47: mcpanel.DownloadFileRequest
-	(*FileChunk)(nil),                   // 48: mcpanel.FileChunk
-	(*UploadChunk)(nil),                 // 49: mcpanel.UploadChunk
-	(*UploadResult)(nil),                // 50: mcpanel.UploadResult
-	(*SubmitJobRequest)(nil),            // 51: mcpanel.SubmitJobRequest
-	(*SubmitJobResponse)(nil),           // 52: mcpanel.SubmitJobResponse
-	(*JobRequest)(nil),                  // 53: mcpanel.JobRequest
-	(*JobStatus)(nil),                   // 54: mcpanel.JobStatus
-	(*PlayerOverviewEntry)(nil),         // 55: mcpanel.PlayerOverviewEntry
-	(*PlayerOverviewResponse)(nil),      // 56: mcpanel.PlayerOverviewResponse
-	(*CommandRequest)(nil),              // 57: mcpanel.CommandRequest
-	(*EmptyRequest)(nil),                // 58: mcpanel.EmptyRequest
-	(*ResourceInfo)(nil),                // 59: mcpanel.ResourceInfo
-	(*ListResourcesResponse)(nil),       // 60: mcpanel.ListResourcesResponse
-	(*UploadResourceRequest)(nil),       // 61: mcpanel.UploadResourceRequest
-	(*DeleteResourceRequest)(nil),       // 62: mcpanel.DeleteResourceRequest
-	(*JavaRuntimeInfo)(nil),             // 63: mcpanel.JavaRuntimeInfo
-	(*ListJavaRuntimesResponse)(nil),    // 64: mcpanel.ListJavaRuntimesResponse
+	(*SetInstanceLimitsRequest)(nil),    // 20: mcpanel.SetInstanceLimitsRequest
+	(*ListJarsRequest)(nil),             // 21: mcpanel.ListJarsRequest
+	(*JarInfo)(nil),                     // 22: mcpanel.JarInfo
+	(*ListJarsResponse)(nil),            // 23: mcpanel.ListJarsResponse
+	(*BackupRequest)(nil),               // 24: mcpanel.BackupRequest
+	(*BackupResponse)(nil),              // 25: mcpanel.BackupResponse
+	(*RestoreRequest)(nil),              // 26: mcpanel.RestoreRequest
+	(*BackupInfo)(nil),                  // 27: mcpanel.BackupInfo
+	(*ListBackupsRequest)(nil),          // 28: mcpanel.ListBackupsRequest
+	(*ListBackupsResponse)(nil),         // 29: mcpanel.ListBackupsResponse
+	(*DeleteBackupRequest)(nil),         // 30: mcpanel.DeleteBackupRequest
+	(*TunnelRequest)(nil),               // 31: mcpanel.TunnelRequest
+	(*ListTunnelsRequest)(nil),          // 32: mcpanel.ListTunnelsRequest
+	(*TunnelInfo)(nil),                  // 33: mcpanel.TunnelInfo
+	(*ListTunnelsResponse)(nil),         // 34: mcpanel.ListTunnelsResponse
+	(*TestFrpsRequest)(nil),             // 35: mcpanel.TestFrpsRequest
+	(*TestFrpsResponse)(nil),            // 36: mcpanel.TestFrpsResponse
+	(*FileInfo)(nil),                    // 37: mcpanel.FileInfo
+	(*ListFilesRequest)(nil),            // 38: mcpanel.ListFilesRequest
+	(*ListFilesResponse)(nil),           // 39: mcpanel.ListFilesResponse
+	(*ReadFileRequest)(nil),             // 40: mcpanel.ReadFileRequest
+	(*ReadFileResponse)(nil),            // 41: mcpanel.ReadFileResponse
+	(*WriteFileRequest)(nil),            // 42: mcpanel.WriteFileRequest
+	(*FileRequest)(nil),                 // 43: mcpanel.FileRequest
+	(*MkdirRequest)(nil),                // 44: mcpanel.MkdirRequest
+	(*RenameFileRequest)(nil),           // 45: mcpanel.RenameFileRequest
+	(*CopyFileRequest)(nil),             // 46: mcpanel.CopyFileRequest
+	(*SearchFilesRequest)(nil),          // 47: mcpanel.SearchFilesRequest
+	(*DownloadFileRequest)(nil),         // 48: mcpanel.DownloadFileRequest
+	(*FileChunk)(nil),                   // 49: mcpanel.FileChunk
+	(*UploadChunk)(nil),                 // 50: mcpanel.UploadChunk
+	(*UploadResult)(nil),                // 51: mcpanel.UploadResult
+	(*SubmitJobRequest)(nil),            // 52: mcpanel.SubmitJobRequest
+	(*SubmitJobResponse)(nil),           // 53: mcpanel.SubmitJobResponse
+	(*JobRequest)(nil),                  // 54: mcpanel.JobRequest
+	(*JobStatus)(nil),                   // 55: mcpanel.JobStatus
+	(*PlayerOverviewEntry)(nil),         // 56: mcpanel.PlayerOverviewEntry
+	(*PlayerOverviewResponse)(nil),      // 57: mcpanel.PlayerOverviewResponse
+	(*CommandRequest)(nil),              // 58: mcpanel.CommandRequest
+	(*EmptyRequest)(nil),                // 59: mcpanel.EmptyRequest
+	(*ResourceInfo)(nil),                // 60: mcpanel.ResourceInfo
+	(*ListResourcesResponse)(nil),       // 61: mcpanel.ListResourcesResponse
+	(*UploadResourceRequest)(nil),       // 62: mcpanel.UploadResourceRequest
+	(*DeleteResourceRequest)(nil),       // 63: mcpanel.DeleteResourceRequest
+	(*JavaRuntimeInfo)(nil),             // 64: mcpanel.JavaRuntimeInfo
+	(*ListJavaRuntimesResponse)(nil),    // 65: mcpanel.ListJavaRuntimesResponse
 }
 var file_mcpanel_proto_depIdxs = []int32{
 	0,  // 0: mcpanel.ConsoleFrame.type:type_name -> mcpanel.ConsoleFrame.Type
-	21, // 1: mcpanel.ListJarsResponse.jars:type_name -> mcpanel.JarInfo
-	26, // 2: mcpanel.ListBackupsResponse.backups:type_name -> mcpanel.BackupInfo
-	32, // 3: mcpanel.ListTunnelsResponse.tunnels:type_name -> mcpanel.TunnelInfo
-	36, // 4: mcpanel.ListFilesResponse.files:type_name -> mcpanel.FileInfo
-	55, // 5: mcpanel.PlayerOverviewResponse.players:type_name -> mcpanel.PlayerOverviewEntry
-	59, // 6: mcpanel.ListResourcesResponse.files:type_name -> mcpanel.ResourceInfo
-	63, // 7: mcpanel.ListJavaRuntimesResponse.runtimes:type_name -> mcpanel.JavaRuntimeInfo
+	22, // 1: mcpanel.ListJarsResponse.jars:type_name -> mcpanel.JarInfo
+	27, // 2: mcpanel.ListBackupsResponse.backups:type_name -> mcpanel.BackupInfo
+	33, // 3: mcpanel.ListTunnelsResponse.tunnels:type_name -> mcpanel.TunnelInfo
+	37, // 4: mcpanel.ListFilesResponse.files:type_name -> mcpanel.FileInfo
+	56, // 5: mcpanel.PlayerOverviewResponse.players:type_name -> mcpanel.PlayerOverviewEntry
+	60, // 6: mcpanel.ListResourcesResponse.files:type_name -> mcpanel.ResourceInfo
+	64, // 7: mcpanel.ListJavaRuntimesResponse.runtimes:type_name -> mcpanel.JavaRuntimeInfo
 	4,  // 8: mcpanel.DaemonService.Register:input_type -> mcpanel.RegisterRequest
 	6,  // 9: mcpanel.DaemonService.Ping:input_type -> mcpanel.PingRequest
 	8,  // 10: mcpanel.DaemonService.CreateInstance:input_type -> mcpanel.CreateInstanceRequest
@@ -5241,96 +5318,98 @@ var file_mcpanel_proto_depIdxs = []int32{
 	3,  // 15: mcpanel.DaemonService.DeleteInstance:input_type -> mcpanel.DeleteInstanceRequest
 	2,  // 16: mcpanel.DaemonService.GetInstanceStatus:input_type -> mcpanel.InstanceRequest
 	2,  // 17: mcpanel.DaemonService.GetInstanceRuntime:input_type -> mcpanel.InstanceRequest
-	58, // 18: mcpanel.DaemonService.GetContainerCapability:input_type -> mcpanel.EmptyRequest
+	59, // 18: mcpanel.DaemonService.GetContainerCapability:input_type -> mcpanel.EmptyRequest
 	11, // 19: mcpanel.DaemonService.SetInstanceContainer:input_type -> mcpanel.SetInstanceContainerRequest
 	13, // 20: mcpanel.DaemonService.Console:input_type -> mcpanel.ConsoleFrame
 	2,  // 21: mcpanel.DaemonService.StreamMetrics:input_type -> mcpanel.InstanceRequest
-	37, // 22: mcpanel.DaemonService.ListFiles:input_type -> mcpanel.ListFilesRequest
-	39, // 23: mcpanel.DaemonService.ReadFile:input_type -> mcpanel.ReadFileRequest
-	41, // 24: mcpanel.DaemonService.WriteFile:input_type -> mcpanel.WriteFileRequest
-	42, // 25: mcpanel.DaemonService.DeleteFile:input_type -> mcpanel.FileRequest
-	43, // 26: mcpanel.DaemonService.Mkdir:input_type -> mcpanel.MkdirRequest
-	44, // 27: mcpanel.DaemonService.RenameFile:input_type -> mcpanel.RenameFileRequest
-	45, // 28: mcpanel.DaemonService.CopyFile:input_type -> mcpanel.CopyFileRequest
-	46, // 29: mcpanel.DaemonService.SearchFiles:input_type -> mcpanel.SearchFilesRequest
-	47, // 30: mcpanel.DaemonService.DownloadFile:input_type -> mcpanel.DownloadFileRequest
-	49, // 31: mcpanel.DaemonService.UploadFile:input_type -> mcpanel.UploadChunk
+	38, // 22: mcpanel.DaemonService.ListFiles:input_type -> mcpanel.ListFilesRequest
+	40, // 23: mcpanel.DaemonService.ReadFile:input_type -> mcpanel.ReadFileRequest
+	42, // 24: mcpanel.DaemonService.WriteFile:input_type -> mcpanel.WriteFileRequest
+	43, // 25: mcpanel.DaemonService.DeleteFile:input_type -> mcpanel.FileRequest
+	44, // 26: mcpanel.DaemonService.Mkdir:input_type -> mcpanel.MkdirRequest
+	45, // 27: mcpanel.DaemonService.RenameFile:input_type -> mcpanel.RenameFileRequest
+	46, // 28: mcpanel.DaemonService.CopyFile:input_type -> mcpanel.CopyFileRequest
+	47, // 29: mcpanel.DaemonService.SearchFiles:input_type -> mcpanel.SearchFilesRequest
+	48, // 30: mcpanel.DaemonService.DownloadFile:input_type -> mcpanel.DownloadFileRequest
+	50, // 31: mcpanel.DaemonService.UploadFile:input_type -> mcpanel.UploadChunk
 	2,  // 32: mcpanel.DaemonService.GetInstanceIcon:input_type -> mcpanel.InstanceRequest
 	2,  // 33: mcpanel.DaemonService.GetMetrics:input_type -> mcpanel.InstanceRequest
-	51, // 34: mcpanel.DaemonService.SubmitJob:input_type -> mcpanel.SubmitJobRequest
-	53, // 35: mcpanel.DaemonService.GetJob:input_type -> mcpanel.JobRequest
-	53, // 36: mcpanel.DaemonService.CancelJob:input_type -> mcpanel.JobRequest
+	52, // 34: mcpanel.DaemonService.SubmitJob:input_type -> mcpanel.SubmitJobRequest
+	54, // 35: mcpanel.DaemonService.GetJob:input_type -> mcpanel.JobRequest
+	54, // 36: mcpanel.DaemonService.CancelJob:input_type -> mcpanel.JobRequest
 	2,  // 37: mcpanel.DaemonService.GetPlayerOverview:input_type -> mcpanel.InstanceRequest
-	57, // 38: mcpanel.DaemonService.SendCommand:input_type -> mcpanel.CommandRequest
-	58, // 39: mcpanel.DaemonService.ListResources:input_type -> mcpanel.EmptyRequest
-	61, // 40: mcpanel.DaemonService.UploadResource:input_type -> mcpanel.UploadResourceRequest
-	62, // 41: mcpanel.DaemonService.DeleteResource:input_type -> mcpanel.DeleteResourceRequest
-	58, // 42: mcpanel.DaemonService.ListJavaRuntimes:input_type -> mcpanel.EmptyRequest
+	58, // 38: mcpanel.DaemonService.SendCommand:input_type -> mcpanel.CommandRequest
+	59, // 39: mcpanel.DaemonService.ListResources:input_type -> mcpanel.EmptyRequest
+	62, // 40: mcpanel.DaemonService.UploadResource:input_type -> mcpanel.UploadResourceRequest
+	63, // 41: mcpanel.DaemonService.DeleteResource:input_type -> mcpanel.DeleteResourceRequest
+	59, // 42: mcpanel.DaemonService.ListJavaRuntimes:input_type -> mcpanel.EmptyRequest
 	15, // 43: mcpanel.DaemonService.GetConfig:input_type -> mcpanel.ConfigRequest
 	15, // 44: mcpanel.DaemonService.SetConfig:input_type -> mcpanel.ConfigRequest
 	17, // 45: mcpanel.DaemonService.UploadJar:input_type -> mcpanel.UploadJarRequest
 	18, // 46: mcpanel.DaemonService.SetInstanceJar:input_type -> mcpanel.SetInstanceJarRequest
 	19, // 47: mcpanel.DaemonService.SetInstanceJava:input_type -> mcpanel.SetInstanceJavaRequest
-	20, // 48: mcpanel.DaemonService.ListJars:input_type -> mcpanel.ListJarsRequest
-	23, // 49: mcpanel.DaemonService.Backup:input_type -> mcpanel.BackupRequest
-	25, // 50: mcpanel.DaemonService.Restore:input_type -> mcpanel.RestoreRequest
-	27, // 51: mcpanel.DaemonService.ListBackups:input_type -> mcpanel.ListBackupsRequest
-	29, // 52: mcpanel.DaemonService.DeleteBackup:input_type -> mcpanel.DeleteBackupRequest
-	30, // 53: mcpanel.DaemonService.ApplyTunnel:input_type -> mcpanel.TunnelRequest
-	30, // 54: mcpanel.DaemonService.RemoveTunnel:input_type -> mcpanel.TunnelRequest
-	31, // 55: mcpanel.DaemonService.ListTunnels:input_type -> mcpanel.ListTunnelsRequest
-	34, // 56: mcpanel.DaemonService.TestFrps:input_type -> mcpanel.TestFrpsRequest
-	5,  // 57: mcpanel.DaemonService.Register:output_type -> mcpanel.RegisterResponse
-	7,  // 58: mcpanel.DaemonService.Ping:output_type -> mcpanel.PingResponse
-	1,  // 59: mcpanel.DaemonService.CreateInstance:output_type -> mcpanel.OperationResponse
-	1,  // 60: mcpanel.DaemonService.StartInstance:output_type -> mcpanel.OperationResponse
-	1,  // 61: mcpanel.DaemonService.StopInstance:output_type -> mcpanel.OperationResponse
-	1,  // 62: mcpanel.DaemonService.KillInstance:output_type -> mcpanel.OperationResponse
-	1,  // 63: mcpanel.DaemonService.RestartInstance:output_type -> mcpanel.OperationResponse
-	1,  // 64: mcpanel.DaemonService.DeleteInstance:output_type -> mcpanel.OperationResponse
-	9,  // 65: mcpanel.DaemonService.GetInstanceStatus:output_type -> mcpanel.InstanceStatus
-	10, // 66: mcpanel.DaemonService.GetInstanceRuntime:output_type -> mcpanel.InstanceRuntime
-	12, // 67: mcpanel.DaemonService.GetContainerCapability:output_type -> mcpanel.ContainerCapability
-	1,  // 68: mcpanel.DaemonService.SetInstanceContainer:output_type -> mcpanel.OperationResponse
-	13, // 69: mcpanel.DaemonService.Console:output_type -> mcpanel.ConsoleFrame
-	14, // 70: mcpanel.DaemonService.StreamMetrics:output_type -> mcpanel.Metrics
-	38, // 71: mcpanel.DaemonService.ListFiles:output_type -> mcpanel.ListFilesResponse
-	40, // 72: mcpanel.DaemonService.ReadFile:output_type -> mcpanel.ReadFileResponse
-	1,  // 73: mcpanel.DaemonService.WriteFile:output_type -> mcpanel.OperationResponse
-	1,  // 74: mcpanel.DaemonService.DeleteFile:output_type -> mcpanel.OperationResponse
-	1,  // 75: mcpanel.DaemonService.Mkdir:output_type -> mcpanel.OperationResponse
-	1,  // 76: mcpanel.DaemonService.RenameFile:output_type -> mcpanel.OperationResponse
-	1,  // 77: mcpanel.DaemonService.CopyFile:output_type -> mcpanel.OperationResponse
-	38, // 78: mcpanel.DaemonService.SearchFiles:output_type -> mcpanel.ListFilesResponse
-	48, // 79: mcpanel.DaemonService.DownloadFile:output_type -> mcpanel.FileChunk
-	50, // 80: mcpanel.DaemonService.UploadFile:output_type -> mcpanel.UploadResult
-	48, // 81: mcpanel.DaemonService.GetInstanceIcon:output_type -> mcpanel.FileChunk
-	14, // 82: mcpanel.DaemonService.GetMetrics:output_type -> mcpanel.Metrics
-	52, // 83: mcpanel.DaemonService.SubmitJob:output_type -> mcpanel.SubmitJobResponse
-	54, // 84: mcpanel.DaemonService.GetJob:output_type -> mcpanel.JobStatus
-	1,  // 85: mcpanel.DaemonService.CancelJob:output_type -> mcpanel.OperationResponse
-	56, // 86: mcpanel.DaemonService.GetPlayerOverview:output_type -> mcpanel.PlayerOverviewResponse
-	1,  // 87: mcpanel.DaemonService.SendCommand:output_type -> mcpanel.OperationResponse
-	60, // 88: mcpanel.DaemonService.ListResources:output_type -> mcpanel.ListResourcesResponse
-	1,  // 89: mcpanel.DaemonService.UploadResource:output_type -> mcpanel.OperationResponse
-	1,  // 90: mcpanel.DaemonService.DeleteResource:output_type -> mcpanel.OperationResponse
-	64, // 91: mcpanel.DaemonService.ListJavaRuntimes:output_type -> mcpanel.ListJavaRuntimesResponse
-	16, // 92: mcpanel.DaemonService.GetConfig:output_type -> mcpanel.ConfigResponse
-	16, // 93: mcpanel.DaemonService.SetConfig:output_type -> mcpanel.ConfigResponse
-	1,  // 94: mcpanel.DaemonService.UploadJar:output_type -> mcpanel.OperationResponse
-	1,  // 95: mcpanel.DaemonService.SetInstanceJar:output_type -> mcpanel.OperationResponse
-	1,  // 96: mcpanel.DaemonService.SetInstanceJava:output_type -> mcpanel.OperationResponse
-	22, // 97: mcpanel.DaemonService.ListJars:output_type -> mcpanel.ListJarsResponse
-	24, // 98: mcpanel.DaemonService.Backup:output_type -> mcpanel.BackupResponse
-	1,  // 99: mcpanel.DaemonService.Restore:output_type -> mcpanel.OperationResponse
-	28, // 100: mcpanel.DaemonService.ListBackups:output_type -> mcpanel.ListBackupsResponse
-	1,  // 101: mcpanel.DaemonService.DeleteBackup:output_type -> mcpanel.OperationResponse
-	1,  // 102: mcpanel.DaemonService.ApplyTunnel:output_type -> mcpanel.OperationResponse
-	1,  // 103: mcpanel.DaemonService.RemoveTunnel:output_type -> mcpanel.OperationResponse
-	33, // 104: mcpanel.DaemonService.ListTunnels:output_type -> mcpanel.ListTunnelsResponse
-	35, // 105: mcpanel.DaemonService.TestFrps:output_type -> mcpanel.TestFrpsResponse
-	57, // [57:106] is the sub-list for method output_type
-	8,  // [8:57] is the sub-list for method input_type
+	20, // 48: mcpanel.DaemonService.SetInstanceLimits:input_type -> mcpanel.SetInstanceLimitsRequest
+	21, // 49: mcpanel.DaemonService.ListJars:input_type -> mcpanel.ListJarsRequest
+	24, // 50: mcpanel.DaemonService.Backup:input_type -> mcpanel.BackupRequest
+	26, // 51: mcpanel.DaemonService.Restore:input_type -> mcpanel.RestoreRequest
+	28, // 52: mcpanel.DaemonService.ListBackups:input_type -> mcpanel.ListBackupsRequest
+	30, // 53: mcpanel.DaemonService.DeleteBackup:input_type -> mcpanel.DeleteBackupRequest
+	31, // 54: mcpanel.DaemonService.ApplyTunnel:input_type -> mcpanel.TunnelRequest
+	31, // 55: mcpanel.DaemonService.RemoveTunnel:input_type -> mcpanel.TunnelRequest
+	32, // 56: mcpanel.DaemonService.ListTunnels:input_type -> mcpanel.ListTunnelsRequest
+	35, // 57: mcpanel.DaemonService.TestFrps:input_type -> mcpanel.TestFrpsRequest
+	5,  // 58: mcpanel.DaemonService.Register:output_type -> mcpanel.RegisterResponse
+	7,  // 59: mcpanel.DaemonService.Ping:output_type -> mcpanel.PingResponse
+	1,  // 60: mcpanel.DaemonService.CreateInstance:output_type -> mcpanel.OperationResponse
+	1,  // 61: mcpanel.DaemonService.StartInstance:output_type -> mcpanel.OperationResponse
+	1,  // 62: mcpanel.DaemonService.StopInstance:output_type -> mcpanel.OperationResponse
+	1,  // 63: mcpanel.DaemonService.KillInstance:output_type -> mcpanel.OperationResponse
+	1,  // 64: mcpanel.DaemonService.RestartInstance:output_type -> mcpanel.OperationResponse
+	1,  // 65: mcpanel.DaemonService.DeleteInstance:output_type -> mcpanel.OperationResponse
+	9,  // 66: mcpanel.DaemonService.GetInstanceStatus:output_type -> mcpanel.InstanceStatus
+	10, // 67: mcpanel.DaemonService.GetInstanceRuntime:output_type -> mcpanel.InstanceRuntime
+	12, // 68: mcpanel.DaemonService.GetContainerCapability:output_type -> mcpanel.ContainerCapability
+	1,  // 69: mcpanel.DaemonService.SetInstanceContainer:output_type -> mcpanel.OperationResponse
+	13, // 70: mcpanel.DaemonService.Console:output_type -> mcpanel.ConsoleFrame
+	14, // 71: mcpanel.DaemonService.StreamMetrics:output_type -> mcpanel.Metrics
+	39, // 72: mcpanel.DaemonService.ListFiles:output_type -> mcpanel.ListFilesResponse
+	41, // 73: mcpanel.DaemonService.ReadFile:output_type -> mcpanel.ReadFileResponse
+	1,  // 74: mcpanel.DaemonService.WriteFile:output_type -> mcpanel.OperationResponse
+	1,  // 75: mcpanel.DaemonService.DeleteFile:output_type -> mcpanel.OperationResponse
+	1,  // 76: mcpanel.DaemonService.Mkdir:output_type -> mcpanel.OperationResponse
+	1,  // 77: mcpanel.DaemonService.RenameFile:output_type -> mcpanel.OperationResponse
+	1,  // 78: mcpanel.DaemonService.CopyFile:output_type -> mcpanel.OperationResponse
+	39, // 79: mcpanel.DaemonService.SearchFiles:output_type -> mcpanel.ListFilesResponse
+	49, // 80: mcpanel.DaemonService.DownloadFile:output_type -> mcpanel.FileChunk
+	51, // 81: mcpanel.DaemonService.UploadFile:output_type -> mcpanel.UploadResult
+	49, // 82: mcpanel.DaemonService.GetInstanceIcon:output_type -> mcpanel.FileChunk
+	14, // 83: mcpanel.DaemonService.GetMetrics:output_type -> mcpanel.Metrics
+	53, // 84: mcpanel.DaemonService.SubmitJob:output_type -> mcpanel.SubmitJobResponse
+	55, // 85: mcpanel.DaemonService.GetJob:output_type -> mcpanel.JobStatus
+	1,  // 86: mcpanel.DaemonService.CancelJob:output_type -> mcpanel.OperationResponse
+	57, // 87: mcpanel.DaemonService.GetPlayerOverview:output_type -> mcpanel.PlayerOverviewResponse
+	1,  // 88: mcpanel.DaemonService.SendCommand:output_type -> mcpanel.OperationResponse
+	61, // 89: mcpanel.DaemonService.ListResources:output_type -> mcpanel.ListResourcesResponse
+	1,  // 90: mcpanel.DaemonService.UploadResource:output_type -> mcpanel.OperationResponse
+	1,  // 91: mcpanel.DaemonService.DeleteResource:output_type -> mcpanel.OperationResponse
+	65, // 92: mcpanel.DaemonService.ListJavaRuntimes:output_type -> mcpanel.ListJavaRuntimesResponse
+	16, // 93: mcpanel.DaemonService.GetConfig:output_type -> mcpanel.ConfigResponse
+	16, // 94: mcpanel.DaemonService.SetConfig:output_type -> mcpanel.ConfigResponse
+	1,  // 95: mcpanel.DaemonService.UploadJar:output_type -> mcpanel.OperationResponse
+	1,  // 96: mcpanel.DaemonService.SetInstanceJar:output_type -> mcpanel.OperationResponse
+	1,  // 97: mcpanel.DaemonService.SetInstanceJava:output_type -> mcpanel.OperationResponse
+	1,  // 98: mcpanel.DaemonService.SetInstanceLimits:output_type -> mcpanel.OperationResponse
+	23, // 99: mcpanel.DaemonService.ListJars:output_type -> mcpanel.ListJarsResponse
+	25, // 100: mcpanel.DaemonService.Backup:output_type -> mcpanel.BackupResponse
+	1,  // 101: mcpanel.DaemonService.Restore:output_type -> mcpanel.OperationResponse
+	29, // 102: mcpanel.DaemonService.ListBackups:output_type -> mcpanel.ListBackupsResponse
+	1,  // 103: mcpanel.DaemonService.DeleteBackup:output_type -> mcpanel.OperationResponse
+	1,  // 104: mcpanel.DaemonService.ApplyTunnel:output_type -> mcpanel.OperationResponse
+	1,  // 105: mcpanel.DaemonService.RemoveTunnel:output_type -> mcpanel.OperationResponse
+	34, // 106: mcpanel.DaemonService.ListTunnels:output_type -> mcpanel.ListTunnelsResponse
+	36, // 107: mcpanel.DaemonService.TestFrps:output_type -> mcpanel.TestFrpsResponse
+	58, // [58:108] is the sub-list for method output_type
+	8,  // [8:58] is the sub-list for method input_type
 	8,  // [8:8] is the sub-list for extension type_name
 	8,  // [8:8] is the sub-list for extension extendee
 	0,  // [0:8] is the sub-list for field type_name
@@ -5347,7 +5426,7 @@ func file_mcpanel_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_mcpanel_proto_rawDesc), len(file_mcpanel_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   64,
+			NumMessages:   65,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

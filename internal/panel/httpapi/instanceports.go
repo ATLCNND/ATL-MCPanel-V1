@@ -82,7 +82,11 @@ func (s *Server) handleListInstancePorts(w http.ResponseWriter, r *http.Request)
 	}
 
 	// 合并 Daemon 上报的实时状态（隧道是不是真的在跑）
-	live := s.daemonTunnelStatusByInstance()
+	//
+	// 只问**本实例**：下面的合并只用 instanceID 开头的 key，而原来那个
+	// "全表所有实例"的扇出意味着一个 viewer 的请求会让面板向所有租户的
+	// 实例逐个发 gRPC —— 既没有收益，又是个跨租户的放大器。
+	live := s.daemonTunnelStatusByInstance(r.Context(), []string{instanceID})
 	for i := range list {
 		if st, ok := live[instanceID+"|"+list[i].TunnelID]; ok {
 			list[i].LiveStatus = st.status
@@ -134,15 +138,22 @@ func (s *Server) handleListInstancePorts(w http.ResponseWriter, r *http.Request)
 		chargingSelf = ownerID == currentUserID(r)
 		usage := s.portUsage(ownerID)
 		remaining = 0
+		// 注意：这条是**非管理员**分支 —— 不返回线路的 host。
+		//
+		// 与 handleMyPorts（nodeusers.go）同一条政策：创建实例的表单会在"线路"
+		// 那一行显示 host，等于把公网服务器的真实地址交给使用者。用户只需要知道
+		// 线路**名字**和还剩几个端口，host 是运维信息（管理员看「穿透管理」即可）。
+		// 这里直接不查它，而不是查出来再清空 —— 少一份能泄露的数据。
+		// 字段本身保留在 JSON 里（空串），否则前端的 frps_host 会变成 undefined。
 		if qrows, err := s.db.Query(`
-			SELECT np.frps_id, COALESCE(f.name, '(已删除线路)'), COALESCE(f.host, ''), np.quota
+			SELECT np.frps_id, COALESCE(f.name, '(已删除线路)'), np.quota
 			FROM node_user_ports np
 			LEFT JOIN frps_servers f ON f.id = np.frps_id
 			WHERE np.user_id = ?
 			ORDER BY np.frps_id`, ownerID); err == nil {
 			for qrows.Next() {
 				var l portLine
-				if err := qrows.Scan(&l.FrpsID, &l.FrpsName, &l.FrpsHost, &l.Quota); err == nil {
+				if err := qrows.Scan(&l.FrpsID, &l.FrpsName, &l.Quota); err == nil {
 					l.Used = usage[l.FrpsID]
 					l.Available = maxInt(0, l.Quota-l.Used)
 					remaining += l.Available

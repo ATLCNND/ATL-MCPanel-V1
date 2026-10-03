@@ -12,10 +12,12 @@
 package nodeinstall
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -52,6 +54,14 @@ type Options struct {
 	CACert     []byte
 	ClientCert []byte
 	ClientKey  []byte
+
+	// KnownHostsFile 节点 SSH 主机密钥库（TOFU 落盘位置）。
+	// 留空则用 $ATL_SSH_KNOWN_HOSTS，再退回 ~/.ssh/atlmcpanel_known_hosts。
+	KnownHostsFile string
+
+	// OnHostKey 每次校验主机密钥后回调（addr、指纹、是否首次）。
+	// 供调用方记日志/审计；不做校验决策，决策在 hostKeyCallback 里。
+	OnHostKey func(addr, fingerprint string, first bool)
 }
 
 // Result 部署结果。
@@ -94,7 +104,7 @@ func Dial(o Options) (*Client, error) {
 	cfg := &ssh.ClientConfig{
 		User:            user,
 		Auth:            auths,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // 与面板现有节点登记模型一致（凭据可信）
+		HostKeyCallback: hostKeyCallback(o),
 		Timeout:         15 * time.Second,
 	}
 
@@ -104,6 +114,105 @@ func Dial(o Options) (*Client, error) {
 		return nil, fmt.Errorf("SSH 连接失败: %w", err)
 	}
 	return &Client{conn: conn}, nil
+}
+
+// hostKeyCallback 校验节点 SSH 主机密钥，首次连接时按 TOFU（信任首次使用）记住。
+//
+// 原先这里是 ssh.InsecureIgnoreHostKey()，等于完全放弃主机身份校验
+//（2026-10-01 安全审查的 H2）。这件事的后果比"连错主机"严重得多：
+//
+//   - 面板是用**密码**登录节点的（节点部署里最常见的就是 root 密码），
+//     而 SSH 密码认证会把口令明文发给服务端 —— 中间人拿到就能直接登进节点；
+//   - 同一条连接上紧接着会下发 `certs/ca.crt`、`certs/node.crt` 与
+//     `certs/node.key`（节点 mTLS 私钥）以及 Daemon 二进制。私钥一旦被中间人
+//     拿到，攻击者就能以这个节点的身份接入面板 gRPC。
+//
+// 做法：把"地址 -> 指纹"记在一个 0600 的文件里（见 knownHostsPath）。
+// 首次遇到某个地址时接受并落盘（TOFU），之后指纹不一致就直接拒绝连接 ——
+// 换机器（重装/迁移）时会报错，需要管理员删掉那一行重新信任。
+func hostKeyCallback(o Options) ssh.HostKeyCallback {
+	path := knownHostsPath(o.KnownHostsFile)
+	return func(_ string, remote net.Addr, key ssh.PublicKey) error {
+		addr := remote.String()
+		got := ssh.FingerprintSHA256(key)
+		want, err := lookupKnownHost(path, addr)
+		if err != nil {
+			return fmt.Errorf("读取主机密钥库失败: %w", err)
+		}
+		if want == "" {
+			if err := rememberKnownHost(path, addr, got); err != nil {
+				// 记不下来也必须拒绝：否则"校验"就成了摆设，
+				// 而且下次连接又会被当成首次，永远处于不校验状态。
+				return fmt.Errorf("记录主机密钥失败（%s）: %w", path, err)
+			}
+			if o.OnHostKey != nil {
+				o.OnHostKey(addr, got, true)
+			}
+			return nil
+		}
+		if want != got {
+			return fmt.Errorf("节点 SSH 主机密钥与已记录的不一致（%s）：已记录 %s，本次 %s。"+
+				"若确实是自己重装/迁移了该节点，请删除 %s 中对应行后重试",
+				addr, want, got, path)
+		}
+		if o.OnHostKey != nil {
+			o.OnHostKey(addr, got, false)
+		}
+		return nil
+	}
+}
+
+// knownHostsPath 主机密钥库路径：显式配置 > 环境变量 > ~/.ssh/atlmcpanel_known_hosts。
+func knownHostsPath(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if v := strings.TrimSpace(os.Getenv("ATL_SSH_KNOWN_HOSTS")); v != "" {
+		return v
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = "."
+	}
+	return filepath.Join(home, ".ssh", "atlmcpanel_known_hosts")
+}
+
+// lookupKnownHost 查某个地址已记录的指纹（没有则返回空串）。
+func lookupKnownHost(path, addr string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == addr {
+			return fields[1], nil
+		}
+	}
+	return "", sc.Err()
+}
+
+// rememberKnownHost 记录一个地址的指纹（0600，目录 0700）。
+func rememberKnownHost(path, addr, fingerprint string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = fmt.Fprintf(f, "%s %s\n", addr, fingerprint)
+	return err
 }
 
 // Close 关闭连接。
@@ -375,7 +484,10 @@ RemainAfterExit=yes
 # 幂等：先 -C 检查，存在就跳过；重复执行不会堆叠规则。
 # 只挡 NEW：容器主动发起的连接被挡，宿主主动连容器的回程（ESTABLISHED）必须放行，
 # 否则 docker 的端口发布就废了（见 install.go 里这段注释的完整说明）。
-ExecStart=/bin/bash -c 'iptables -C INPUT -i br-+ -m conntrack --ctstate NEW -j DROP 2>/dev/null || iptables -I INPUT -i br-+ -m conntrack --ctstate NEW -j DROP; iptables -C INPUT -i docker0 -m conntrack --ctstate NEW -j DROP 2>/dev/null || iptables -I INPUT -i docker0 -m conntrack --ctstate NEW -j DROP'
+# 末尾的 ip6tables 是 IPv4 规则的孪生（2026-10-01 安全审查）：docker 默认不给容器
+# IPv6，所以现状不可利用；但一旦有人打开 daemon.json 的 ipv6，缺了这条隔离就漏了。
+# ip6tables 不存在时整段自动跳过。
+ExecStart=/bin/bash -c 'iptables -C INPUT -i br-+ -m conntrack --ctstate NEW -j DROP 2>/dev/null || iptables -I INPUT -i br-+ -m conntrack --ctstate NEW -j DROP; iptables -C INPUT -i docker0 -m conntrack --ctstate NEW -j DROP 2>/dev/null || iptables -I INPUT -i docker0 -m conntrack --ctstate NEW -j DROP; if command -v ip6tables >/dev/null 2>&1; then ip6tables -C INPUT -i br-+ -m conntrack --ctstate NEW -j DROP 2>/dev/null || ip6tables -I INPUT -i br-+ -m conntrack --ctstate NEW -j DROP; ip6tables -C INPUT -i docker0 -m conntrack --ctstate NEW -j DROP 2>/dev/null || ip6tables -I INPUT -i docker0 -m conntrack --ctstate NEW -j DROP; fi'
 # 停止时不删规则：它们是安全控制，服务停了也不该把口子放开
 ExecStop=/bin/true
 

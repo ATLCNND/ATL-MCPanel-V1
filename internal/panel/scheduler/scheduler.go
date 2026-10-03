@@ -106,14 +106,25 @@ func (s *Scheduler) Stop() {
 	<-s.doneCh
 }
 
-// RunOnce 执行一轮：定时备份 + 定时指令任务 + 健康检查 + 到期检查 + 指标采样。
+// RunOnce 执行一轮：健康检查 + 到期检查 + 指标采样 + 定时备份 + 定时指令任务。
+//
+// **顺序不是随意的**：到期停机（checkExpiry）与磁盘超限停机（在 sampleMetrics
+// 里顺带做的 checkDiskLimit）必须排在两个"派发器"之前。
+//
+// 为什么：runDueBackups / runDueTasks 是**同步**执行真实动作的（开机要等 JVM 起来，
+// 单条任务最长 3 分钟），一串任务就能把这一轮拖过好几个 tick —— 而到期停机与
+// 磁盘兜底恰恰是"防止无限期免费占用"与"防止节点磁盘被写满"的最后一道，
+// 被饿死等于它们根本不存在。派发器自己晚一轮没有这种后果。
+//
+// 这里用"调换顺序"而不是开 goroutine：RunOnce 由单个 goroutine 串行驱动，
+// 保持串行就不可能有两轮巡检同时跑（到期重复停机、指标重复写库都会因此出现）。
 func (s *Scheduler) RunOnce(ctx context.Context) {
-	s.runDueBackups(ctx)
-	s.runDueTasks(ctx)
 	s.checkInstances(ctx)
 	s.checkNodes(ctx)
 	s.checkExpiry(ctx)
 	s.sampleMetrics(ctx)
+	s.runDueBackups(ctx)
+	s.runDueTasks(ctx)
 }
 
 // checkExpiry 处理实例到期：临近到期告警、到期后按配置自动停止。
@@ -244,28 +255,40 @@ func (s *Scheduler) runDueTasks(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	// 先把整张结果集读进内存、**关掉 rows**，再去做"禁用非法表达式"的 UPDATE。
+	//
+	// 为什么不能边遍历边改：那样是占着一条连接再去要第二条，池一小就互相等死 ——
+	// 2026-10-01 面板整体卡死（连登录都挂起）就是这个形状。
+	// 正确写法见 httpapi/filejobs.go 的 pumpJobs：收集 → Close → 再逐条处理。
+	type job struct {
+		id      int64
+		spec    string
+		lastRun sql.NullTime
+	}
+	var jobs []job
+	for rows.Next() {
+		var j job
+		if err := rows.Scan(&j.id, &j.spec, &j.lastRun); err != nil {
+			continue
+		}
+		jobs = append(jobs, j)
+	}
+	rows.Close()
+
 	type due struct {
 		id int64
 	}
 	var list []due
 	now := time.Now()
-	for rows.Next() {
-		var (
-			id      int64
-			spec    string
-			lastRun sql.NullTime
-		)
-		if err := rows.Scan(&id, &spec, &lastRun); err != nil {
-			continue
-		}
-		sched, err := cron.Parse(spec)
+	for _, j := range jobs {
+		sched, err := cron.Parse(j.spec)
 		if err != nil {
 			// 表达式非法：禁用该任务而不是每轮重试刷日志
-			s.log().Warn("定时任务表达式非法，已自动禁用", "task", id, "cron", spec, "error", err)
+			s.log().Warn("定时任务表达式非法，已自动禁用", "task", j.id, "cron", j.spec, "error", err)
 			if _, err := s.opts.DB.Exec(
 				`UPDATE instance_tasks SET enabled = 0, last_error = ? WHERE id = ?`,
-				"cron 表达式非法："+err.Error(), id); err != nil {
-				s.log().Warn("禁用非法定时任务失败", "task", id, "error", err)
+				"cron 表达式非法："+err.Error(), j.id); err != nil {
+				s.log().Warn("禁用非法定时任务失败", "task", j.id, "error", err)
 			}
 			continue
 		}
@@ -274,15 +297,14 @@ func (s *Scheduler) runDueTasks(ctx context.Context) {
 			continue
 		}
 		switch {
-		case lastRun.Valid:
-			if prev.After(lastRun.Time) {
-				list = append(list, due{id})
+		case j.lastRun.Valid:
+			if prev.After(j.lastRun.Time) {
+				list = append(list, due{j.id})
 			}
 		case now.Sub(prev) <= taskGraceWindow:
-			list = append(list, due{id})
+			list = append(list, due{j.id})
 		}
 	}
-	rows.Close()
 
 	for _, d := range list {
 		if err := s.opts.TaskRunner(d.id); err != nil {

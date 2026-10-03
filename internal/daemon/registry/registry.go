@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ATLCNND/ATL-MCPanel/internal/common/safepath"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/container"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/mcprocess"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/runas"
@@ -342,13 +343,22 @@ func (r *Registry) Create(m Meta) (*mcprocess.Instance, error) {
 // 最自然的猜测是"服务端卡死了"，所以必须把原因与恢复办法写进控制台本身。
 //
 // 失败只记日志：写不进去（目录只读、磁盘满）不该让实例注册不上。
+//
+// 这里同样是"以 root 往租户可控的路径追加写"，所以与其他控制台日志出入口一样
+// 要拒绝软链接：`logs -> /etc` 或 `logs/console.log -> /etc/cron.d/atl-x`
+// 都会让这句平台说明落进节点上的任意文件（详细理由见 mcprocess.consoleLogPath）。
 func noteConsoleInterrupted(dir, instanceID string) {
 	logPath := filepath.Join(dir, "logs", "console.log")
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		slog.Warn("写控制台说明失败", "instance", instanceID, "error", err)
 		return
 	}
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if _, err := safepath.ResolveWithin(dir, filepath.Dir(logPath)); err != nil {
+		slog.Warn("拒绝写控制台说明：日志目录疑似软链接逃逸",
+			"instance", instanceID, "dir", filepath.Dir(logPath), "error", err)
+		return
+	}
+	f, err := safepath.OpenNoFollow(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		slog.Warn("写控制台说明失败", "instance", instanceID, "error", err)
 		return
@@ -533,6 +543,44 @@ func (r *Registry) SetJavaVersion(id, javaVersion string) error {
 	m.JavaVersion = javaVersion
 	if err := writeMeta(sdir, m); err != nil {
 		return fmt.Errorf("写入实例元数据失败: %w", err)
+	}
+	return nil
+}
+
+// SetLimits 修改实例的 CPU / 内存上限，并持久化到实例元数据。
+//
+// 为什么需要它（2026-10-02）：这两个值原先**只在建实例时**由 CreateInstance 写进
+// instance.json，此后面板没有任何办法改 —— 节点用户建实例时把内存上限留空
+//（= 不限制），运营侧就永远收不回来，只能删库重建。
+//
+// 与 SetJavaVersion 同一类做法，也是同一条理由：容量上限**不是**运行中的进程
+// 能自己改的东西 —— Daemon 在实例启动时把 cpu.max / memory.max 写进 cgroup，
+// 运行中改这两个值不会影响已经起来的那个 JVM。所以本方法只落元数据，
+// 真正生效在**下一次启动**；面板会把这个语义写在界面上。
+//
+// 语义与建实例时一致：cpuQuota 为百分比（100 = 1 核，0 = 不限制），
+// memLimit 形如 "4G"（空串 = 不限制）。
+func (r *Registry) SetLimits(id string, cpuQuota int, memLimit string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, ok := r.instances[id]; !ok {
+		return fmt.Errorf("实例不存在")
+	}
+	sdir := filepath.Join(r.stateDir, id)
+	m, err := readMeta(sdir)
+	if err != nil {
+		return fmt.Errorf("读取实例元数据失败: %w", err)
+	}
+	m.CPUQuota = cpuQuota
+	m.MemLimit = memLimit
+	if err := writeMeta(sdir, m); err != nil {
+		return fmt.Errorf("写入实例元数据失败: %w", err)
+	}
+	// 内存里的那份也要跟着改：/runtime 之类的接口读的是 registry 里的实例，
+	// 只改文件的话，面板刚改完、界面上还是旧数字（"改了却没变"）。
+	if inst, ok := r.instances[id]; ok && inst != nil {
+		inst.SetLimits(cpuQuota, memLimit)
 	}
 	return nil
 }

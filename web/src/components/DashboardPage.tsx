@@ -6,6 +6,7 @@ import {
 } from '../api'
 import MiniMarkdown from './MiniMarkdown'
 import { NavKey } from './AppShell'
+import { parseServerTime } from '../time'
 import './DashboardPage.css'
 
 function fmtGB(bytes: number): string {
@@ -18,7 +19,8 @@ function pct(part: number, total: number): number {
 }
 function fmtAgo(s: string): string {
   if (!s) return '—'
-  const d = new Date(s)
+  // 服务端时间是无时区标记的 UTC，`new Date(s)` 会按本地时间解析 → 早一个时区差
+  const d = parseServerTime(s)
   if (isNaN(d.getTime())) return s
   const sec = (Date.now() - d.getTime()) / 1000
   if (sec < 60) return `${Math.max(0, Math.floor(sec))} 秒前`

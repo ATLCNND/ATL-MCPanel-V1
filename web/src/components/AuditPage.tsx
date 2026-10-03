@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { listAuditLogs } from '../api'
+import { parseServerTime } from '../time'
 import './AuditPage.css'
 
 /** 操作类型 → 中文说明与分组色彩 */
@@ -39,9 +40,12 @@ function labelOf(action: string) {
 /** 相对时间：审计场景下"多久之前"比绝对时间更好判断 */
 function fmtTime(s: string): string {
   if (!s) return '—'
-  const d = new Date(s)
+  // 必须走 parseServerTime：服务端时间是无时区标记的 UTC，`new Date(s)` 会按
+  // 本地时间解析 → "5 分钟前"会被算成"8 小时前"（偏差正好是时区差）。
+  const d = parseServerTime(s)
   if (isNaN(d.getTime())) return s
   const diff = (Date.now() - d.getTime()) / 1000
+  if (diff < 0) return '刚刚'
   if (diff < 60) return `${Math.max(0, Math.floor(diff))} 秒前`
   if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`
   if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`

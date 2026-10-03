@@ -43,6 +43,13 @@ auth:
 	if cfg.Daemon.GRPCListen != ":9091" {
 		t.Errorf("daemon grpc_listen 默认应为 :9091，实际 %s", cfg.Daemon.GRPCListen)
 	}
+	// 面板侧的 daemon_grpc_listen 默认必须是**回环**（2026-10-02 安全审查）：
+	// 它会被一键部署写进节点配置当 Daemon 管理口的监听地址，写成 ":9091"
+	// 等于把每台节点的管理口摆到所有网卡上。
+	if cfg.Server.DaemonGRPCListen != "127.0.0.1:9091" {
+		t.Errorf("server.daemon_grpc_listen 默认应为 127.0.0.1:9091（不是 :9091），实际 %s",
+			cfg.Server.DaemonGRPCListen)
+	}
 	if cfg.Daemon.InstanceDir != "instances" {
 		t.Errorf("instance_dir 默认应为 instances，实际 %s", cfg.Daemon.InstanceDir)
 	}

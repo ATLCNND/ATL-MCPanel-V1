@@ -269,16 +269,26 @@ export default function AnalysisProviders({ role }: { role?: string }) {
                 )}
               </div>
               <div className="ap-item-ops">
-                <button onClick={() => runTest(p.id)}>测试连接</button>
-                <button onClick={() => {
-                  setForm({
-                    id: p.id, name: p.name, base_url: p.base_url, model: p.model,
-                    api_key: '', prompt: p.prompt || '', global: p.owner_id === 0,
-                    enabled: p.enabled, timeout_sec: p.timeout_sec || 300,
-                  })
-                  setShowForm(true)
-                }}>编辑</button>
-                <button className="danger" onClick={() => remove(p)}>删除</button>
+                {/* 全局平台（owner_id === 0）的「测试连接」会把**解密后的 API Key**
+                    发到该平台配置的地址上，所以服务端只允许总管理员触发
+                    （2026-10-01 安全审查）。这里同步把按钮收起来 ——
+                    否则节点用户点下去只会得到一个 403，看着像功能坏了。 */}
+                {p.owner_id === 0 && !isAdmin ? (
+                  <span className="ap-readonly">全局平台由总管理员维护</span>
+                ) : (
+                  <>
+                    <button onClick={() => runTest(p.id)}>测试连接</button>
+                    <button onClick={() => {
+                      setForm({
+                        id: p.id, name: p.name, base_url: p.base_url, model: p.model,
+                        api_key: '', prompt: p.prompt || '', global: p.owner_id === 0,
+                        enabled: p.enabled, timeout_sec: p.timeout_sec || 300,
+                      })
+                      setShowForm(true)
+                    }}>编辑</button>
+                    <button className="danger" onClick={() => remove(p)}>删除</button>
+                  </>
+                )}
               </div>
             </div>
           ))}

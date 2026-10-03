@@ -605,6 +605,60 @@ func expiryView(expires sql.NullTime) (at, state string, daysLeft int) {
 	return at, state, daysLeft
 }
 
+// expiryBlocksStart 判断该动作是否属于"把实例拉起来"。
+//
+// 到期只拦这一类动作：stop / kill / delete 永远放行 —— 到期实例本来就该是
+// 停着的，反过来阻止把它关掉没有道理（还会让管理员没法收尾）。
+// 抽成单独的函数是为了让"哪些动作会被拦"能被单测直接钉住，
+// 而不是靠读 handleInstanceAction 里的 if。
+func expiryBlocksStart(action string) bool {
+	return action == "start" || action == "restart"
+}
+
+// instanceStartable 判断实例现在能不能被启动：到期且配置了自动停机时不能。
+//
+// 为什么必须在这里另拦一道：到期以前只是调度器每分钟巡检时"顺手"做的事
+//（scheduler.checkExpiry 里的已到期分支），在那之前（以及之后）任何一次 start
+// 都能把实例重新拉起来 —— 归属者只要再点一下「启动」，或者建一条"每分钟开机"
+// 的定时任务，到期时间就等于被无限延长，免费额度形同虚设。
+//
+// 判定口径与 scheduler.checkExpiry 的已到期分支**完全一致**（两边要能对得上，
+// 否则会出现"调度器认为该停、接口认为能开"的拉扯）：
+//   - expires_at 为 NULL（或空串）＝ 永不过期 → 放行；
+//   - 还没到期 → 放行；
+//   - 已到期但 expiry_autostop = 0（配置为「仅告警不自动停止」）→ 放行；
+//   - 已到期且 expiry_autostop = 1 → 拒绝，并给出到期时间与续期办法。
+//
+// 查不到实例记录（或数据库暂时不可用）时**放行**：这是"要不要停机"的策略判断，
+// 不是权限判断 —— 权限仍由调用方的 requireInstanceLevel 把关，
+// 不该因为一次查询失败就把正常用户挡在外面。
+func (s *Server) instanceStartable(instanceID string) (bool, string) {
+	var (
+		expires  sql.NullTime
+		autostop int
+	)
+	// 与调度器同口径取列；expires_at 存成空串时这里扫描会报错，
+	// 走的也是下面"不拦"的分支 —— 与调度器跳过空串行的效果一致。
+	if err := s.db.QueryRow(
+		`SELECT expires_at, expiry_autostop FROM instances WHERE instance_id = ?`,
+		instanceID).Scan(&expires, &autostop); err != nil {
+		return true, ""
+	}
+	// 与调度器的 `WHERE expires_at IS NOT NULL` 一致：NULL 表示永不过期
+	if !expires.Valid || expires.Time.IsZero() {
+		return true, ""
+	}
+	// 与调度器的 `left <= 0` 一致：到期是"当前时间 >= 到期时间"
+	if time.Now().Before(expires.Time) {
+		return true, ""
+	}
+	if autostop != 1 {
+		return true, ""
+	}
+	return false, "实例已于 " + expires.Time.Local().Format("2006-01-02 15:04") +
+		" 到期，且已配置「到期自动停止」，无法再启动。请联系管理员续期。"
+}
+
 // reconcileInstanceStatus 用 Daemon 上报的实时状态校正实例状态。
 //
 // 必要性：数据库中的 status 只反映面板发出的启停动作。若 Minecraft 进程
@@ -669,6 +723,17 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request, ac
 		}
 	} else if !s.requireInstanceLevel(w, r, instanceID, LevelCollab) {
 		return
+	}
+
+	// 到期拦截：只拦"把实例拉起来"的动作（见 expiryBlocksStart）。
+	//
+	// 放在权限之后、取节点客户端之前：越早拒绝越省事，也省掉一次注定失败的
+	// Daemon 往返。停/杀/删不受影响 —— 到期实例该停着，不能反过来关不掉。
+	if expiryBlocksStart(action) {
+		if ok, reason := s.instanceStartable(instanceID); !ok {
+			writeErr(w, http.StatusForbidden, reason)
+			return
+		}
 	}
 
 	// 从 DB 拿 node_id

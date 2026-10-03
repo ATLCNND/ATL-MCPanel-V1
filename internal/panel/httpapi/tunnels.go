@@ -158,8 +158,16 @@ func (s *Server) handleListFrps(w http.ResponseWriter, r *http.Request) {
 			&it.PortStart, &it.PortEnd, &it.Remark, &it.DisplayDomain); err != nil {
 			continue
 		}
-		_ = s.db.QueryRow(`SELECT COUNT(*) FROM tunnels WHERE frps_id = ?`, it.ID).Scan(&it.UsedPorts)
 		list = append(list, it)
+	}
+	// 逐条统计已用端口数必须等 rows 关掉之后再做：在遍历 *sql.Rows 的同时发新查询
+	// 是"占着一条连接再要一条"，池一小就互相等死（2026-10-01 面板整体卡死就是这个形状）。
+	// 正确写法见 filejobs.go 的 pumpJobs：收集 → Close → 再逐条处理。
+	// 显式 Close 之后 defer 的那次是个空操作，留着只作保险。
+	rows.Close()
+	for i := range list {
+		_ = s.db.QueryRow(`SELECT COUNT(*) FROM tunnels WHERE frps_id = ?`, list[i].ID).
+			Scan(&list[i].UsedPorts)
 	}
 	writeJSON(w, http.StatusOK, list)
 }
@@ -366,7 +374,8 @@ func (s *Server) handleListTunnels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 合并 Daemon 上报的实时状态
-	live := s.daemonTunnelStatusByInstance()
+	// nil 范围 = 全部实例：这条路只有总管理员能走到（requireAdminIn）
+	live := s.daemonTunnelStatusByInstance(r.Context(), nil)
 	for i := range list {
 		if st, ok := live[list[i].InstanceID+"|"+list[i].TunnelID]; ok {
 			list[i].LiveStatus = st.status
@@ -755,14 +764,29 @@ type tunnelLiveStatus struct {
 	err    string
 }
 
-// daemonTunnelStatusByInstance 汇总各实例的隧道实时状态（key: instanceID|tunnelID）。
-func (s *Server) daemonTunnelStatusByInstance() map[string]tunnelLiveStatus {
-	out := map[string]tunnelLiveStatus{}
+// daemonTunnelStatusTimeout 单次"隧道实时状态"查询的期限。
+//
+// 3 秒：这是给列表补一列实时状态的锦上添花，不该让页面等；拿不到就保持
+// 空值（前端显示"未知"），与 daemonTunnelLiveStatus 的口径一致。
+const daemonTunnelStatusTimeout = 3 * time.Second
 
+// tunnelInstanceIDs 取本轮要问的实例 id。
+//
+// scope 非 nil 时**就是**答案 —— 包含空切片："谁都不问"必须与 nil 的
+// "全部"区分开，否则传了空范围反而退化成全表扇出（正是要修的那个问题）。
+// scope 为 nil 只给管理员的 /api/tunnels 用（他本就该看到全部实例）。
+func (s *Server) tunnelInstanceIDs(scope []string) []string {
+	if scope != nil {
+		return scope
+	}
 	rows, err := s.db.Query(`SELECT DISTINCT instance_id FROM tunnels`)
 	if err != nil {
-		return out
+		return nil
 	}
+	// 这里一定要**在返回前**关掉 rows：调用方随后要逐个实例发 gRPC，
+	// 占着结果集去等网络（连接池只有几个连接）会把池子拖死。
+	defer rows.Close()
+
 	var ids []string
 	for rows.Next() {
 		var id string
@@ -770,9 +794,28 @@ func (s *Server) daemonTunnelStatusByInstance() map[string]tunnelLiveStatus {
 			ids = append(ids, id)
 		}
 	}
-	rows.Close()
+	return ids
+}
 
-	for _, id := range ids {
+// daemonTunnelStatusByInstance 汇总指定范围内各实例的隧道实时状态
+// （key: instanceID|tunnelID）。
+//
+// scope 为 nil 表示"全部实例"，非 nil 时**只问这些实例**：调用方必须把范围
+// 收窄到自己有权看到的实例上 —— 原来是"取全表的 DISTINCT instance_id 逐个问"，
+// 于是一个 viewer 打开端口页就会让面板对**所有租户**的实例各发一次 gRPC
+// （跨租户放大 + 无上限的扇出）。
+//
+// 每次调用都带真期限，并且请求取消后立刻放弃剩余实例：原来是
+// context.Background() 且没有超时，一个挂死的节点会永久占住一个 goroutine
+// 与一条连接（面板重启前都不会释放）。
+func (s *Server) daemonTunnelStatusByInstance(ctx context.Context, scope []string) map[string]tunnelLiveStatus {
+	out := map[string]tunnelLiveStatus{}
+
+	for _, id := range s.tunnelInstanceIDs(scope) {
+		// 请求已经走了（用户关页/超时）：剩下的实例不再问
+		if ctx.Err() != nil {
+			break
+		}
 		nodeID, ok := s.instanceNodeID(id)
 		if !ok {
 			continue
@@ -781,7 +824,9 @@ func (s *Server) daemonTunnelStatusByInstance() map[string]tunnelLiveStatus {
 		if err != nil {
 			continue
 		}
-		resp, err := cli.ListTunnels(context.Background(), &pb.ListTunnelsRequest{InstanceId: id})
+		cctx, cancel := context.WithTimeout(ctx, daemonTunnelStatusTimeout)
+		resp, err := cli.ListTunnels(cctx, &pb.ListTunnelsRequest{InstanceId: id})
+		cancel()
 		if err != nil {
 			continue
 		}

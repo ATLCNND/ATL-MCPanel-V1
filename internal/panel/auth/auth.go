@@ -14,6 +14,9 @@ type Claims struct {
 	UserID   int64  `json:"uid"`
 	Username string `json:"username"`
 	Role     string `json:"role"`
+	// TokenVersion 与 users.token_version 对应：库里对不上就说明令牌已作废
+	// （改过密码 / 账号被处理过）。见 internal/panel/db/migrate.go 版本 23。
+	TokenVersion int64 `json:"tv"`
 	jwt.RegisteredClaims
 }
 
@@ -39,11 +42,15 @@ func CheckPassword(hash, password string) bool {
 }
 
 // SignToken 签发 JWT。
-func (s *Service) SignToken(userID int64, username, role string, ttl time.Duration) (string, error) {
+//
+// tokenVersion 来自 users.token_version：它是令牌的"世代号"，改密码等操作会
+// 把它推进一位，于是此前签发的令牌全部失效（撤销机制，见 migrate.go v23）。
+func (s *Service) SignToken(userID int64, username, role string, tokenVersion int64, ttl time.Duration) (string, error) {
 	claims := Claims{
-		UserID:   userID,
-		Username: username,
-		Role:     role,
+		UserID:       userID,
+		Username:     username,
+		Role:         role,
+		TokenVersion: tokenVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

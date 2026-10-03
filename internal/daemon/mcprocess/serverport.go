@@ -2,11 +2,14 @@ package mcprocess
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/ATLCNND/ATL-MCPanel/internal/common/safepath"
 )
 
 // 实例的「端口」有三处出现，必须指向同一个值：
@@ -47,27 +50,59 @@ const (
 //
 // customStart 为 true 且文件不存在时不创建：自定义启动命令的实例可能根本不是
 // Minecraft 服务端（脚本、代理、机器人），凭空塞一个 server.properties 没有意义。
+//
+// 读与写都用 O_NOFOLLOW（见 safepath.OpenNoFollow）。server.properties 在实例
+// 目录里、租户随手可改，而这里是以 **root** 的身份去读它、改写它：一个
+// `server.properties -> /etc/ld.so.preload` 的软链接就能让 Daemon 在下次启动
+// 实例时建出/改写节点上的任意文件（写进 ld.so.preload 会让所有动态链接的程序
+// 都起不来，等于把整台节点打停）。所以目标是软链接时**跳过校准**并记一条警告：
+// 端口对不上只是隧道连不上，写穿软链接是节点级事故。
 func syncServerPort(dir string, port int, customStart bool) (bool, int, error) {
 	if port <= 0 || port > 65535 {
 		return false, 0, nil // 端口没配置/不合法：不猜，保持原样
 	}
 
 	path := filepath.Join(dir, serverPropsFile)
-	b, err := os.ReadFile(path)
+	f, err := safepath.OpenNoFollow(path, os.O_RDONLY, 0)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return false, 0, err
-		}
-		if customStart {
+		switch {
+		case safepath.IsSymlinkRefusal(err):
+			slog.Warn("server.properties 是软链接，已跳过端口校准", "dir", dir)
 			return false, 0, nil
-		}
-		// 还没有 server.properties：默认 java 启动的实例一定是 MC 服务端，
-		// 先写一行把端口定下来，服务端首次启动会把其余默认项补齐
-		// （缺项会取默认值并在启动时写回完整文件）。
-		if err := os.WriteFile(path, []byte(fmt.Sprintf("%s=%d\n", serverPortKey, port)), 0o644); err != nil {
+		case os.IsNotExist(err):
+			if customStart {
+				return false, 0, nil
+			}
+			// 还没有 server.properties：默认 java 启动的实例一定是 MC 服务端，
+			// 先写一行把端口定下来，服务端首次启动会把其余默认项补齐
+			// （缺项会取默认值并在启动时写回完整文件）。
+			//
+			// **悬空**软链接也在上面那一支被 ELOOP 挡住（O_NOFOLLOW 只看最后
+			// 一段是不是软链接，与目标存不存在无关），这里仍用 O_NOFOLLOW 是为了
+			// 守住"检查之后、创建之前"被换成软链接的那个窗口。
+			w, werr := safepath.OpenNoFollow(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+			if werr != nil {
+				if safepath.IsSymlinkRefusal(werr) {
+					slog.Warn("server.properties 是软链接，已跳过端口校准", "dir", dir)
+					return false, 0, nil
+				}
+				return false, 0, werr
+			}
+			werr = writeAllClose(w, fmt.Sprintf("%s=%d\n", serverPortKey, port))
+			if werr != nil {
+				return false, 0, werr
+			}
+			return true, 0, nil
+		default:
 			return false, 0, err
 		}
-		return true, 0, nil
+	}
+	b, err := io.ReadAll(f)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return false, 0, err
 	}
 
 	lines := strings.Split(string(b), "\n")
@@ -106,10 +141,29 @@ func syncServerPort(dir string, port int, customStart bool) (bool, int, error) {
 		}
 	}
 
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+	w, err := safepath.OpenNoFollow(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		if safepath.IsSymlinkRefusal(err) {
+			// 读到写之间被换成了软链接：同样只跳过，不写
+			slog.Warn("server.properties 是软链接，已跳过端口校准", "dir", dir)
+			return false, old, nil
+		}
+		return false, old, err
+	}
+	if err := writeAllClose(w, strings.Join(lines, "\n")); err != nil {
 		return false, old, err
 	}
 	return true, old, nil
+}
+
+// writeAllClose 写入内容并关闭文件，任一环节出错都报出来。
+// 只 Write 不看 Close 会漏掉"落盘时才发现磁盘满"这类失败。
+func writeAllClose(f *os.File, content string) error {
+	_, werr := f.Write([]byte(content))
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	return werr
 }
 
 // replacePortValue 只替换 "=" 之后的值，保留缩进与行尾的 \r（CRLF 文件）。

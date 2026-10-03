@@ -113,11 +113,23 @@ func main() {
 			os.Exit(1)
 		}
 		grpcOpts = append(grpcOpts, grpc.Creds(credentials.NewTLS(tlsCfg)))
+	} else if !config.IsLoopbackListen(cfg.Server.GRPCListen) && !cfg.Server.AllowInsecureGRPC {
+		// 明文 gRPC + 对外监听 = 任何能连上这个端口的主机都可以伪造节点注册
+		//（覆盖别的节点的 IP）与心跳。2026-10-01 安全审查后改为**拒绝启动**：
+		// 要恢复旧行为必须显式写 server.allow_insecure_grpc: true。
+		log.Error("拒绝以明文 gRPC 对外提供服务",
+			"grpc_listen", cfg.Server.GRPCListen,
+			"hint", "开启 server.grpc_mtls，或把 grpc_listen 改成 127.0.0.1:9090，或显式设置 server.allow_insecure_grpc: true")
+		os.Exit(1)
 	} else {
-		log.Warn("gRPC 未启用 mTLS（server.grpc_mtls=false），建议生产环境开启")
+		log.Warn("gRPC 未启用 mTLS（server.grpc_mtls=false）",
+			"grpc_listen", cfg.Server.GRPCListen,
+			"note", "监听范围已限制为回环或已显式允许明文")
 	}
 	grpcSrv := grpc.NewServer(grpcOpts...)
-	pb.RegisterDaemonServiceServer(grpcSrv, grpcapi.NewServer(d, log))
+	// 启用 mTLS 时，Register/Ping 必须校验"对端证书身份 == 它声称的节点名"，
+	// 否则任何持有 CA 签发证书的节点都能冒名顶替另一个节点。
+	pb.RegisterDaemonServiceServer(grpcSrv, grpcapi.NewServer(d, log, cfg.Server.GRPCMTLS))
 
 	// 在独立 goroutine 启动 gRPC
 	lis, err := net.Listen("tcp", cfg.Server.GRPCListen)

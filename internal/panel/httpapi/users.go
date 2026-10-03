@@ -209,11 +209,17 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "密码加密失败")
 		return
 	}
-	_, err = s.db.Exec(`UPDATE users SET password_hash = ? WHERE id = ?`, newHash, targetID)
+	// token_version +1：把**此前签发的所有令牌**作废。
+	//
+	// 改密码的语义就是"旧凭据不再有效"，但 JWT 是自证明的、签发后无法撤回，
+	// 所以必须靠世代号让旧令牌失效 —— 否则"重置被盗账号的密码"在 24 小时内
+	// 完全不生效（2026-10-01 安全审查）。改自己的密码同样会退出登录，
+	// 这是有意为之：前端会提示重新登录。
+	_, err = s.db.Exec(`UPDATE users SET password_hash = ?, token_version = COALESCE(token_version,0) + 1 WHERE id = ?`, newHash, targetID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "更新密码失败")
 		return
 	}
-	s.audit(r, "change_password", username, "目标用户="+username)
-	writeJSON(w, http.StatusOK, map[string]string{"message": "密码修改成功"})
+	s.audit(r, "change_password", username, "目标用户="+username+"（旧令牌已失效）")
+	writeJSON(w, http.StatusOK, map[string]string{"message": "密码修改成功，其它设备上的登录状态已失效"})
 }
