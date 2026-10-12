@@ -196,13 +196,117 @@ type NativeSource struct {
 func (NativeSource) Kind() string { return "native" }
 func (s NativeSource) ID() string { return strconv.Itoa(s.PID) }
 
+// resolveProcessTarget 把"可能只是包装进程"的 PID 解析成真正该统计的进程。
+//
+// ⚠️ 2026-10-06 修「资源占用显示不正常（内存 1.8MB、CPU 0%）」：
+//
+// 背景：非容器实例被 Daemon 接管后，daemon.pid 里记的是启动命令的 **`sh -c`
+// 包装进程**的 PID，而真正的 java 是它的**子进程**：
+//
+//	pid 35732  sh -c /usr/lib/jvm/.../java -Xms1G ... -jar ...
+//	pid 35733    └─ /usr/lib/jvm/.../java -Xms1G ... -jar ...   ← 真正吃内存的
+//
+// 于是读 /proc/<sh>/status 得到的是 shell 自己的 RSS（约 1.8MB）、
+// CPU ticks 也几乎不动 —— 面板上就是"内存 1.8MB、CPU 0%"，
+// 而趋势图（走 cgroup/历史采样）却是对的，显得"时好时坏"。
+//
+// 处理方式：若该 PID 的进程**不是** java 服务端进程，就沿子进程往下找
+// 第一个 java 服务端进程；找不到就用原 PID。这样对"直接 exec java"的
+// 正常情形完全无影响（本身就是 java，不进入查找分支）。
+func resolveProcessTarget(pid int) int {
+	if pid <= 0 {
+		return pid
+	}
+	if isJavaProcessByPID(pid) {
+		return pid
+	}
+	if child := findJavaChild(pid); child > 0 {
+		return child
+	}
+	return pid
+}
+
+// isJavaProcessByPID 判断该进程的命令行是否像"java 服务端进程"。
+//
+// 判据与 mcprocess.isJavaServerProcess 一致（argv[0] 基名含 java 且参数里有 .jar），
+// 但这里**不能**直接复用那个包 —— mcprocess 依赖 containermetrics，
+// 反向引用会形成循环。所以就地做一次同样的判断（两处都很短，且语义稳定）。
+func isJavaProcessByPID(pid int) bool {
+	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
+	if err != nil {
+		return false
+	}
+	return looksLikeJavaServer(raw)
+}
+
+// looksLikeJavaServer 从 cmdline 原始字节判断是否为 java 服务端进程。
+func looksLikeJavaServer(cmdline []byte) bool {
+	parts := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
+	if len(parts) == 0 {
+		return false
+	}
+	exe := parts[0]
+	if i := strings.LastIndex(exe, "/"); i >= 0 {
+		exe = exe[i+1:]
+	}
+	if !strings.Contains(exe, "java") {
+		return false
+	}
+	for _, a := range parts[1:] {
+		if strings.Contains(a, ".jar") {
+			return true
+		}
+	}
+	return false
+}
+
+// findJavaChild 在 pid 的直接子进程里找 java 服务端进程（找不到返回 0）。
+//
+// 只看直接子进程：包装层只有一层（`sh -c`），再深就是 java 自己的线程/进程了，
+// 往下递归反而可能误收同名实例的其它进程。
+func findJavaChild(pid int) int {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return 0
+	}
+	for _, e := range entries {
+		p, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		// 读 PPid 判断父子关系（/proc/<p>/stat 第4字段，但 comm 可能含空格，
+		// 这里用 status 里的 PPid 更稳）
+		data, err := os.ReadFile("/proc/" + strconv.Itoa(p) + "/status")
+		if err != nil {
+			continue
+		}
+		if ppidOf(data) == pid && isJavaProcessByPID(p) {
+			return p
+		}
+	}
+	return 0
+}
+
+// ppidOf 从 /proc/<pid>/status 内容里取 PPid。
+func ppidOf(status []byte) int {
+	for _, line := range strings.Split(string(status), "\n") {
+		if strings.HasPrefix(line, "PPid:") {
+			n, _ := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, "PPid:")))
+			return n
+		}
+	}
+	return 0
+}
+
 func (s NativeSource) Snapshot(context.Context) (Snapshot, error) {
 	if s.PID <= 0 {
 		return Snapshot{}, errors.New("实例进程不存在")
 	}
-	rss, threads := ReadProcStatus(s.PID)
+	// 包装进程（sh -c）要向下一层找真正的 java，否则读到的是 shell 自身的开销。
+	target := resolveProcessTarget(s.PID)
+	rss, threads := ReadProcStatus(target)
 	snap := Snapshot{
-		CPUCount: ReadProcCPUTicks(s.PID) * cpuPerTick,
+		CPUCount: ReadProcCPUTicks(target) * cpuPerTick,
 		MemUsed:  rss,
 		Threads:  -1,
 	}

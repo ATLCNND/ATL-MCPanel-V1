@@ -524,7 +524,7 @@ func (r *Registry) SetJarPath(id, jarPath string) error {
 // SetJavaVersion 更新实例使用的 JDK 并持久化到 instance.json（下次启动生效）。
 //
 // 与 SetJarPath 不同，**不要求实例处于停止状态**：换 JDK 不会动正在跑的那个 JVM
-//（它启动时就把解释器定死了），只影响下一次启动 —— 为此逼用户先停服没有意义。
+// （它启动时就把解释器定死了），只影响下一次启动 —— 为此逼用户先停服没有意义。
 // 面板会把"下次启动生效"写在界面上，不留"改了却没变"的错觉。
 //
 // 取值与建实例时一致：主版本号（"21"）或 java 可执行文件的绝对路径；空 = 自动（PATH）。
@@ -551,7 +551,7 @@ func (r *Registry) SetJavaVersion(id, javaVersion string) error {
 //
 // 为什么需要它（2026-10-02）：这两个值原先**只在建实例时**由 CreateInstance 写进
 // instance.json，此后面板没有任何办法改 —— 节点用户建实例时把内存上限留空
-//（= 不限制），运营侧就永远收不回来，只能删库重建。
+// （= 不限制），运营侧就永远收不回来，只能删库重建。
 //
 // 与 SetJavaVersion 同一类做法，也是同一条理由：容量上限**不是**运行中的进程
 // 能自己改的东西 —— Daemon 在实例启动时把 cpu.max / memory.max 写进 cgroup，
@@ -581,6 +581,43 @@ func (r *Registry) SetLimits(id string, cpuQuota int, memLimit string) error {
 	// 只改文件的话，面板刚改完、界面上还是旧数字（"改了却没变"）。
 	if inst, ok := r.instances[id]; ok && inst != nil {
 		inst.SetLimits(cpuQuota, memLimit)
+	}
+	return nil
+}
+
+// SetJvmMem 修改实例的 JVM 堆（-Xmx / -Xms），并持久化到实例元数据。
+//
+// 为什么和 SetLimits 分开（2026-10-04 用户提出"配额修改没法改 JVM 内存"）：
+// 这是**两个不同层面的"内存"**，混成一个字段就会出事故：
+//   - maxMem/minMem = **JVM 堆**（-Xmx / -Xms），写进启动命令；
+//   - memLimit      = **cgroup 上限**（memory.max），是整台进程的天花板。
+//
+// 堆必须比 cgroup 上限小（JVM 还有元空间、直接内存、线程栈等堆外开销），
+// 否则实例会在启动后不久被内核 OOM 杀掉。所以这里**不替用户做换算**，
+// 只如实保存；面板侧的界面会把两者的关系写清楚（并提示建议值 -Xmx×1.3+512MB）。
+//
+// 空串按 mcprocess.normMem 的既有口径处理（`-Xmx` 不能没有值）。
+func (r *Registry) SetJvmMem(id, maxMem, minMem string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, ok := r.instances[id]; !ok {
+		return fmt.Errorf("实例不存在")
+	}
+	sdir := filepath.Join(r.stateDir, id)
+	m, err := readMeta(sdir)
+	if err != nil {
+		return fmt.Errorf("读取实例元数据失败: %w", err)
+	}
+	m.MaxMem = maxMem
+	m.MinMem = minMem
+	if err := writeMeta(sdir, m); err != nil {
+		return fmt.Errorf("写入实例元数据失败: %w", err)
+	}
+	// 内存里的那份同样要改：启动命令是用 inst.MaxMem 渲染的（见 mcprocess
+	// 的 renderCommand / 默认模板），只写文件的话这次启动仍用旧值。
+	if inst, ok := r.instances[id]; ok && inst != nil {
+		inst.SetJvmMem(maxMem, minMem)
 	}
 	return nil
 }

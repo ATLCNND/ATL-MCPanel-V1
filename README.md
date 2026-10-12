@@ -73,7 +73,7 @@ bash scripts/build-web.sh
 cp config.example.yaml config.yaml
 
 # 4) 起面板（首次访问会引导创建第一个管理员账号）
-./bin/dsh-panel -config config.yaml
+./bin/atl-panel -config config.yaml
 ```
 
 面板默认监听 `:8080`，浏览器打开 `http://<你的IP>:8080` 即可。

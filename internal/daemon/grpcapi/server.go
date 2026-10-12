@@ -303,8 +303,27 @@ func (s *Server) RestartInstance(ctx context.Context, req *pb.InstanceRequest) (
 	go func() {
 		if err := inst.Restart(90 * time.Second); err != nil {
 			s.log.Error("重启失败", "id", req.InstanceId, "error", err)
+			return
+		}
+		s.log.Info("重启完成", "id", req.InstanceId)
+
+		// ⚠️ 重启完成后**必须**把穿透隧道接回来（2026-10-05 用户报的
+		// "重启后外部连不上，得手动停止再启动"就是这个）。
+		//
+		// 原因：隧道与实例进程同生共死 —— 进程一退出，SetExitHook 就调
+		// frp.StopInstance 把 frpc 收掉（见 daemon.go 里那段说明）。
+		// 而恢复隧道的 Resume 原先**只**挂在 StartInstance 上，
+		// 重启路径走的是 inst.Restart()（内部 Stop → Start），
+		// 完全绕过了那个处理器，于是：
+		//   实例起来了、容器端口也在，但 frpc 没了 → 公网入口不通。
+		// 用户看到的"手动停止再启动就好了"，正是因为那条路会经过 StartInstance。
+		//
+		// 放在这里而不是放进 inst.Restart()：mcprocess 不该知道 frp 的存在
+		//（它只管进程），隧道是 Daemon 层的编排 —— 与 StartInstance 同一层。
+		if err := s.frp.Resume(req.InstanceId); err != nil {
+			s.log.Warn("重启后恢复穿透隧道失败", "instance", req.InstanceId, "error", err)
 		} else {
-			s.log.Info("重启完成", "id", req.InstanceId)
+			s.log.Info("重启后已恢复穿透隧道", "instance", req.InstanceId)
 		}
 	}()
 	return &pb.OperationResponse{Success: true, Message: "重启中（请稍候查看状态）"}, nil
@@ -427,14 +446,25 @@ func (s *Server) GetInstanceStatus(ctx context.Context, req *pb.InstanceRequest)
 
 // consoleHistoryLines 控制台附加时回放的历史输出行数。
 //
-// 500 行太少：控制台是**每次进页签都会重新附加**的（切走再切回来就是一次
-// 重连），也就是每次切页签都只回放 500 行 —— 用户看了几千行日志、切去
-// 文件页签看一眼再回来，前面看过的就没了，观感上就是"日志丢了"。
+// 2026-10-05 由 2000 降到 500（用户报"控制台累积了太多历史输出"，选了方案 A）。
 //
-// 2000 行在回放读取上限（consoleTailMaxBytes = 512KB）之内：
-// 服务端一行约 80~120 字节，512KB 大约能放 4000 行以上，
-// 所以调大不会读到"被截断的半个日志"，只是把窗口放宽。
-const consoleHistoryLines = 2000
+// 为什么调小而不是"按启动次数截断"：
+//   - 控制台**每次进页签都会重新附加**（切走再切回来 = 一次重连），
+//     所以回放上限直接决定"切回来时会被倒进来多少行"。2000 行在长期运行的
+//     服务器上几乎等于把屏幕刷满，把真正想看的内容挤走。
+//   - 按"启动次数"截断需要额外记录"本次启动从日志第几字节开始"，
+//     实现与状态管理都更重；而且**重启后最想看的恰恰是上一次崩溃前的日志**，
+//     按启动切掉正好把它切没。500 行的窗口天然覆盖"崩溃前那几下"。
+//   - 长期积累的主力是周期性心跳日志（玩家数 / TPS），
+//     前端的「已屏蔽刷屏」开关已经能把它们挡掉（见 ConsoleTab 的心跳过滤）。
+//
+// 完整日志并没有丢：它仍在实例的 logs/console.log 里，可在「文件」页查看或下载。
+// 因此前端的控制台顶部会注明"仅显示最近 N 行"并指向文件页 ——
+// 让用户知道去哪找，而不是以为日志被删了。
+//
+// 500 行远小于回放读取上限（consoleTailMaxBytes = 512KB，约 4000+ 行），
+// 所以不会读到"被截断的半个日志"。
+const consoleHistoryLines = 500
 
 // Console 控制台双向流。
 //

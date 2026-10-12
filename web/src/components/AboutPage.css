@@ -1,0 +1,75 @@
+.about-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 760px;
+}
+
+.about-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 18px 20px;
+}
+
+.about-brand-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.about-lead {
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.about-card-title {
+  color: var(--text-1);
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.about-meta {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+}
+
+.about-meta-row {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 14px;
+  padding: 9px 0;
+  border-top: 1px solid var(--border);
+}
+
+.about-meta-row dt {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.about-meta-row dd {
+  color: var(--text-1);
+  font-size: 13px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.about-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+}
+
+.about-links a {
+  color: var(--accent-light);
+  font-size: 13px;
+}
+
+@media (max-width: 560px) {
+  .about-meta-row {
+    grid-template-columns: 90px minmax(0, 1fr);
+  }
+}

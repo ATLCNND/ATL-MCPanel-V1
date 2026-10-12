@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
-import { InstanceRuntime, getInstanceRuntime, getInstanceStats, StatsResponse } from '../api'
+import {
+  Instance, InstanceRuntime, getInstanceRuntime, getInstanceStats, StatsResponse,
+  setInstanceLimits,
+} from '../api'
 import { parseServerTime } from '../time'
 import './StatsTab.css'
 
@@ -18,6 +21,10 @@ function fmtUptime(sec?: number, status?: string): string {
   if (d > 0) return `${d} 天 ${h} 小时`
   if (h > 0) return `${h} 小时 ${m} 分`
   return `${m} 分`
+}
+/** 核数显示：允许半核（150% = 1.5 核），所以不能直接取整 */
+function fmtCores(n: number): string {
+  return Number.isInteger(n) ? String(n) : n.toFixed(1)
 }
 
 /**
@@ -81,17 +88,51 @@ function TrendChart({ title, points, color, fmt, unit }: {
   )
 }
 
-export default function StatsTab({ instanceId, maxMem, diskLimitMB, diskAutostop }: {
+/**
+ * 「统计与配额」页。
+ *
+ * 2026-10-04：资源上限（CPU / 内存 / 磁盘）的**查看与修改**从实例页右栏搬到这里。
+ * 原先右栏有「资源占用」和「资源限制」两张卡并排，内容高度重复（一个看当前值、
+ * 一个看上限），右栏被撑得很长、整页跟着滚动，而两侧其实都能一屏放下。
+ * 现在按"看数据的地方顺带管配额"合并到本页，右栏只留「信息 / 资源占用 / 备份日历」。
+ *
+ * 权限：编辑入口只给运营侧（总管理员 / 该节点的节点用户）——上层算好传进来。
+ * 租户自己能改的话，运营方收紧之后对方点一下就能放开，这个接口等于没做；
+ * 没有权限的人只看得到当前值。
+ */
+export default function StatsTab({ instanceId, inst, canEditLimits, onLimitsChanged }: {
   instanceId: string
-  maxMem: string
-  diskLimitMB?: number
-  diskAutostop?: boolean
+  /** 实例记录：取 max_mem / cpu_quota / mem_limit / disk_limit_mb / disk_autostop / status */
+  inst: Instance | null
+  canEditLimits: boolean
+  /** 保存成功后通知父组件重拉实例记录（右栏的占用/限制显示要跟着变） */
+  onLimitsChanged?: () => void
 }) {
   const [hours, setHours] = useState(24)
   const [stats, setStats] = useState<StatsResponse | null>(null)
   const [runtime, setRuntime] = useState<InstanceRuntime | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+
+  // 资源上限的就地编辑（从实例页右栏搬过来的那套）
+  const [editLimits, setEditLimits] = useState(false)
+  const [limCores, setLimCores] = useState('')
+  const [limMem, setLimMem] = useState('')
+  const [limDisk, setLimDisk] = useState('')
+  // JVM 堆（-Xmx / -Xms）：与上面的 cgroup 内存上限是两个层面，
+  // 所以表单里也要分成两个输入框（用户反馈"配额修改没法改 JVM 内存"）。
+  const [limMaxMem, setLimMaxMem] = useState('')
+  const [limMinMem, setLimMinMem] = useState('')
+  const [limBusy, setLimBusy] = useState(false)
+  const [limErr, setLimErr] = useState('')
+  const [limNote, setLimNote] = useState('')
+
+  const maxMem = inst?.max_mem || ''
+  const diskLimitMB = inst?.disk_limit_mb
+  const diskAutostop = inst?.disk_autostop
+  const cpuQuota = inst?.cpu_quota || 0
+  const cores = cpuQuota / 100
+  const running = inst?.status === 'running'
 
   const load = async () => {
     setLoading(true)
@@ -112,6 +153,57 @@ export default function StatsTab({ instanceId, maxMem, diskLimitMB, diskAutostop
 
   useEffect(() => { load() }, [instanceId, hours])
 
+  /** 把当前值填进草稿并进入编辑态 */
+  const openLimits = () => {
+    setLimCores(cpuQuota ? String(cores) : '')
+    setLimMem(inst?.mem_limit || '')
+    setLimDisk(diskLimitMB ? String(diskLimitMB) : '')
+    setLimMaxMem(inst?.max_mem || '')
+    // -Xms **留空**：面板库不保存这个字段（只有 max_mem 一列，见 db/migrate.go 的
+    // 建表语句），列表接口拿不到它。留空提交表示"不指定 -Xms"，节点会保留原值 ——
+    // 这是诚实的做法；假装回填一个值会让用户以为看的是真实配置。
+    setLimMinMem('')
+    setLimErr('')
+    setLimNote('')
+    setEditLimits(true)
+  }
+
+  const submitLimits = async () => {
+    setLimBusy(true); setLimErr(''); setLimNote('')
+    try {
+      const coresNum = limCores.trim() === '' ? 0 : Number(limCores)
+      if (!Number.isFinite(coresNum) || coresNum < 0) {
+        throw new Error('CPU 配额需为不小于 0 的数字（留空或 0 = 不限制）')
+      }
+      const diskNum = limDisk.trim() === '' ? 0 : Number(limDisk)
+      if (!Number.isFinite(diskNum) || diskNum < 0) {
+        throw new Error('磁盘配额需为不小于 0 的整数 MB（留空或 0 = 不限制）')
+      }
+      // JVM 堆在本地先挡一道：服务端也会校验，但"填了空却得到 1G"这种
+      // 反直觉的结果不值得让用户跑一趟网络才知道。
+      const maxMem = limMaxMem.trim()
+      if (!maxMem) {
+        throw new Error('JVM 堆上限（-Xmx）不能为空：请填一个值，如 4G。要表达"内存不限制"请把上面的 cgroup 内存上限留空')
+      }
+      const r = await setInstanceLimits(instanceId, {
+        cpu_quota: Math.round(coresNum * 100),
+        mem_limit: limMem.trim(),
+        disk_limit_mb: Math.round(diskNum),
+        max_mem: maxMem,
+        min_mem: limMinMem.trim(),
+      })
+      setEditLimits(false)
+      setLimNote(r.message + (r.note ? '；' + r.note : ''))
+      onLimitsChanged?.()
+      // 配额变了，本页的"配额水位"要立刻按新值算
+      void load()
+    } catch (e: any) {
+      setLimErr(e.message)
+    } finally {
+      setLimBusy(false)
+    }
+  }
+
   const pts = stats?.points || []
   const pick = (k: 'cpu' | 'mem' | 'players' | 'tps') => pts.map((p) => ({ v: p[k] as number, at: p.at }))
 
@@ -121,8 +213,132 @@ export default function StatsTab({ instanceId, maxMem, diskLimitMB, diskAutostop
     ? Math.min(100, Math.round((runtime.uptime_seconds / windowSec) * 100))
     : 0
 
+  // 磁盘配额水位（配额为 0/未设置时不算百分比，避免除零）
+  const quotaPct = diskLimitMB && diskLimitMB > 0 && runtime
+    ? Math.round((runtime.disk_used / 1024 / 1024 / diskLimitMB) * 100)
+    : 0
+  const quotaCls = quotaPct >= 95 ? 'bad' : quotaPct >= 85 ? 'warn' : 'ok'
+
   return (
     <div className="stats-tab">
+      {/* ---- 资源上限（配额）：查看 + 就地编辑 ----
+          放在最前面：配额决定"这台被允许用多少"，是理解下面所有曲线的前提。 */}
+      <div className="st-quota-card">
+        <div className="sqc-head">
+          <span className="sqc-title">资源上限（配额）</span>
+          {canEditLimits && !editLimits && (
+            <button className="sqc-edit" onClick={openLimits} disabled={limBusy}>修改限制</button>
+          )}
+        </div>
+
+        {limNote && <div className="warn-banner">{limNote}</div>}
+
+        {!editLimits ? (
+          <>
+            <div className="sqc-grid">
+              <div className="sqc-item">
+                <span className="k">CPU 配额</span>
+                <span className="v">
+                  {cores > 0 ? <>{fmtCores(cores)}<em> 核</em></> : <>不限制</>}
+                </span>
+                <span className="sub">
+                  {cpuQuota ? `cgroup cpu.max 硬上限 · ${cpuQuota}%` : '未设置，会与同节点其它实例争抢 CPU'}
+                </span>
+              </div>
+              <div className="sqc-item">
+                <span className="k">cgroup 内存上限</span>
+                <span className="v">{inst?.mem_limit ? inst.mem_limit : <em>不限制</em>}</span>
+                <span className="sub">memory.max：整个进程的天花板（含堆外）</span>
+              </div>
+              <div className="sqc-item">
+                <span className="k">JVM 堆上限</span>
+                <span className="v">{maxMem ? <>{maxMem}<em> -Xmx</em></> : '—'}</span>
+                <span className="sub">启动命令里的堆大小；建议比 cgroup 上限小（约 ×1.3 + 512MB）</span>
+              </div>
+              <div className="sqc-item">
+                <span className="k">磁盘配额</span>
+                <span className="v">
+                  {diskLimitMB && diskLimitMB > 0 ? <>{diskLimitMB}<em> MB</em></> : <>不限制</>}
+                </span>
+                <span className="sub">
+                  {diskLimitMB && diskLimitMB > 0
+                    ? `面板每分钟巡检${diskAutostop ? ' · 超限自动停机' : ' · 仅告警'}`
+                    : '软配额：不拦写入，只在接近时告警'}
+                </span>
+              </div>
+            </div>
+            {canEditLimits ? (
+              <div className="sqc-note">
+                磁盘配额改完即生效（面板巡检）；CPU 与两种内存在实例<strong>启动时</strong>才生效
+                （cgroup 写 memory.max、JVM 堆渲染进启动命令），运行中修改需重启实例。
+              </div>
+            ) : (
+              <div className="sqc-note">
+                资源上限由运营方设置：需要总管理员或该节点的节点管理员权限才能修改。如需调整请找管理员。
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="sqc-form">
+            {limErr && <div className="error-banner">{limErr}</div>}
+            {running && (
+              <div className="warn-banner">
+                实例正在运行：CPU、cgroup 内存上限与 <strong>JVM 堆</strong>都要
+                <strong>重启实例</strong>后生效（当前进程仍按启动时的那些值运行）；
+                磁盘配额改完即生效。
+              </div>
+            )}
+            <label className="sqc-field">
+              CPU 配额（核，100% = 1 核；0 或留空 = 不限制）
+              <input
+                value={limCores} disabled={limBusy} inputMode="decimal" placeholder="0"
+                onChange={(e) => setLimCores(e.target.value)}
+              />
+            </label>
+            <label className="sqc-field">
+              cgroup 内存上限（如 4G / 1536m；留空 = 不限制）
+              <input
+                value={limMem} disabled={limBusy} spellCheck={false} placeholder="4G（留空不限制）"
+                onChange={(e) => setLimMem(e.target.value)}
+              />
+            </label>
+            {/* JVM 堆：与 cgroup 上限分成两个输入框 —— 它们是两个层面的"内存"，
+                合成一个会让人以为改一个就够了（这正是用户报"改不了 JVM 内存"的由来）。 */}
+            <label className="sqc-field">
+              JVM 堆上限 -Xmx（如 4G / 1536m；<strong>不能留空</strong>）
+              <input
+                value={limMaxMem} disabled={limBusy} spellCheck={false} placeholder="4G"
+                onChange={(e) => setLimMaxMem(e.target.value)}
+              />
+            </label>
+            <label className="sqc-field">
+              JVM 初始堆 -Xms（如 1G / 512m；可留空 = 不指定 -Xms）
+              <input
+                value={limMinMem} disabled={limBusy} spellCheck={false} placeholder="1G（可留空）"
+                onChange={(e) => setLimMinMem(e.target.value)}
+              />
+            </label>
+            <div className="sqc-hint">
+              建议 <code>-Xmx</code> 比 cgroup 上限小一些（约 <code>-Xmx×1.3 + 512MB</code>）：
+              JVM 除堆之外还要用元空间、直接内存、线程栈，堆顶到天花板就容易被内核 OOM 杀掉。
+            </div>
+            <label className="sqc-field">
+              磁盘配额（MB；0 或留空 = 不限制）
+              <input
+                value={limDisk} disabled={limBusy} inputMode="numeric" placeholder="0"
+                onChange={(e) => setLimDisk(e.target.value)}
+              />
+            </label>
+            <div className="sqc-actions">
+              <button className="primary" onClick={submitLimits} disabled={limBusy}>
+                {limBusy ? '保存中…' : '保存'}
+              </button>
+              <button onClick={() => { setEditLimits(false); setLimErr('') }} disabled={limBusy}>取消</button>
+            </div>
+          </div>
+        )}
+      </div>
+
       <div className="st-toolbar">
         <div className="st-ranges">
           {[1, 6, 24, 72, 168].map((h) => (
@@ -179,16 +395,17 @@ export default function StatsTab({ instanceId, maxMem, diskLimitMB, diskAutostop
           <b>{runRate}%</b>
         </div>
         <div className="sr">
+          {/* 分母是**配额**（有配额时）——用户要的就是这个：一眼看出"离上限还剩多少"。
+              没设配额时才回落显示所在分区的容量，并且**写明是分区**，
+              免得把"整块盘"当成配额（这个混淆被用户报过）。 */}
           <span className="k">实例目录占用</span>
-          <b>{runtime ? fmtBytes(runtime.disk_used) : '—'}
-            {runtime?.disk_total ? ` / ${fmtBytes(runtime.disk_total)}` : ''}</b>
-        </div>
-        <div className="sr">
-          <span className="k">磁盘配额</span>
           <b>
-            {diskLimitMB && diskLimitMB > 0
-              ? `${diskLimitMB} MB（已用 ${runtime ? Math.round((runtime.disk_used / 1024 / 1024 / diskLimitMB) * 100) : 0}%）${diskAutostop ? ' · 超限自动停机' : ''}`
-              : '未设置'}
+            {runtime ? fmtBytes(runtime.disk_used) : '—'}
+            {diskLimitMB && diskLimitMB > 0 ? (
+              <em className="sr-dim"> / 配额 {diskLimitMB} MB</em>
+            ) : runtime?.disk_total ? (
+              <em className="sr-dim"> / 所在分区 {fmtBytes(runtime.disk_total)}</em>
+            ) : null}
           </b>
         </div>
       </div>
@@ -201,13 +418,7 @@ export default function StatsTab({ instanceId, maxMem, diskLimitMB, diskAutostop
             <b>{fmtBytes(runtime.disk_used)} / {diskLimitMB} MB</b>
           </div>
           <div className="bar">
-            <i
-              className={
-                runtime.disk_used / 1024 / 1024 / diskLimitMB >= 0.95 ? 'bad'
-                  : runtime.disk_used / 1024 / 1024 / diskLimitMB >= 0.85 ? 'warn' : 'ok'
-              }
-              style={{ width: `${Math.min(100, Math.round((runtime.disk_used / 1024 / 1024 / diskLimitMB) * 100))}%` }}
-            />
+            <i className={quotaCls} style={{ width: `${Math.min(100, quotaPct)}%` }} />
           </div>
           <div className="sq-note">
             85% 触发警告，95% 触发严重告警{diskAutostop ? '；已开启超限自动停机' : ''}

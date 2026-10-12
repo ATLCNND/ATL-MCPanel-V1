@@ -14,11 +14,11 @@ import (
 // 管理员存草稿是常态（先写好、到点再发），如果列表接口漏了 published 过滤，
 // 草稿会直接推给全站用户 —— 这类"说出去就收不回"的事必须由测试守住。
 func TestAnnouncementVisibility(t *testing.T) {
-	_, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	srv, ts := newTestServer(t)
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "an1", "password": "an123456", "role": "user"})
-	userTok := loginAs(t, ts, "an1", "an123456")
+	userTok := loginAs(t, srv, ts, "an1", "an123456")
 
 	// ① 发布一条
 	code, body := doJSON(t, ts, "POST", "/api/announcements", adminTok,
@@ -58,8 +58,8 @@ func TestAnnouncementVisibility(t *testing.T) {
 
 // TestAnnouncementOrderingPinnedFirst 置顶必须排在前面 —— 这是"置顶"的唯一意义。
 func TestAnnouncementOrderingPinnedFirst(t *testing.T) {
-	_, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	srv, ts := newTestServer(t)
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 
 	for _, ti := range []string{"较早的", "较新的"} {
 		doJSON(t, ts, "POST", "/api/announcements", adminTok,
@@ -90,11 +90,11 @@ func TestAnnouncementOrderingPinnedFirst(t *testing.T) {
 
 // TestAnnouncementWriteRequiresAdmin 写操作只给总管理员。
 func TestAnnouncementWriteRequiresAdmin(t *testing.T) {
-	_, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	srv, ts := newTestServer(t)
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "an2", "password": "an123456", "role": "user"})
-	userTok := loginAs(t, ts, "an2", "an123456")
+	userTok := loginAs(t, srv, ts, "an2", "an123456")
 
 	_, created := doJSON(t, ts, "POST", "/api/announcements", adminTok,
 		map[string]interface{}{"title": "公告", "body": "内容"})
@@ -115,8 +115,8 @@ func TestAnnouncementWriteRequiresAdmin(t *testing.T) {
 
 // TestAnnouncementValidation 空标题/不存在的 id 要有明确的状态码，不能 500。
 func TestAnnouncementValidation(t *testing.T) {
-	_, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	srv, ts := newTestServer(t)
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 
 	if code, _ := doJSON(t, ts, "POST", "/api/announcements", adminTok,
 		map[string]interface{}{"title": "   ", "body": "x"}); code != http.StatusBadRequest {
@@ -133,8 +133,8 @@ func TestAnnouncementValidation(t *testing.T) {
 
 // TestAnnouncementDelete 删掉之后列表里就没有了。
 func TestAnnouncementDelete(t *testing.T) {
-	_, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	srv, ts := newTestServer(t)
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	_, created := doJSON(t, ts, "POST", "/api/announcements", adminTok,
 		map[string]interface{}{"title": "待删", "body": ""})
 	id := itoa(int64(created["id"].(float64)))
@@ -152,11 +152,11 @@ func TestAnnouncementDelete(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHelpDoc(t *testing.T) {
-	_, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	srv, ts := newTestServer(t)
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "hl1", "password": "hl123456", "role": "user"})
-	userTok := loginAs(t, ts, "hl1", "hl123456")
+	userTok := loginAs(t, srv, ts, "hl1", "hl123456")
 
 	// ① 迁移里插了空文档，未写过时也应当 200 + 空内容（而不是 404/500）
 	code, body := doJSON(t, ts, "GET", "/api/help", userTok, nil)

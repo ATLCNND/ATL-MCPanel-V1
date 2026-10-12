@@ -116,7 +116,7 @@ type ServerConfig struct {
 	// 一键部署节点时写入节点配置；留空则尝试从 external_url 推导。
 	GRPCPublicAddress string `yaml:"grpc_public_address"`
 	// DaemonBinary 节点部署时下发的 Daemon 二进制路径。
-	// 留空则使用与面板二进制同目录的 dsh-daemon（保证版本一致）。
+	// 留空则使用与面板二进制同目录的 atl-daemon（保证版本一致）。
 	DaemonBinary string `yaml:"daemon_binary"`
 
 	// RemoteInstallDir 一键部署节点时的安装目录。

@@ -5,9 +5,8 @@ import FilesTab from './FilesTab'
 import ConfigTab from './ConfigTab'
 import BackupsTab from './BackupsTab'
 import PlayersTab from './PlayersTab'
-import JarsTab from './JarsTab'
-import StartScriptTab from './StartScriptTab'
-import InstancePorts from './InstancePorts'
+import GameSettingsTab from './GameSettingsTab'
+import InstanceSettingsTab from './InstanceSettingsTab'
 import BackupCalendar from './BackupCalendar'
 import AccountCard from './AccountCard'
 import StatsTab from './StatsTab'
@@ -16,7 +15,6 @@ import {
   instanceAction, levelAtLeast, listInstances, currentUser, User, isNodeUser,
   getMetrics, listBackups, listInstancePorts, getSchedule, getInstanceRuntime,
   BackupItem, Metrics, Instance, InstanceRuntime, instanceIconUrl, renameInstance,
-  setInstanceLimits, InstanceLimitsPayload,
 } from '../api'
 import AppShell, { NavKey, NAV_ITEMS } from './AppShell'
 import ThemeToggle from './ThemeToggle'
@@ -24,7 +22,7 @@ import Avatar from './Avatar'
 import Brand from './Brand'
 import './InstanceDetail.css'
 
-type Tab = 'console' | 'loganalysis' | 'players' | 'ports' | 'jars' | 'start' | 'files' | 'config' | 'backups' | 'stats' | 'tasks'
+type Tab = 'console' | 'loganalysis' | 'players' | 'gamesettings' | 'files' | 'config' | 'backups' | 'settings' | 'stats' | 'tasks'
 
 const TABS: { key: Tab; label: string; icon: string }[] = [
   { key: 'console', label: '控制台', icon: '▸' },
@@ -32,18 +30,23 @@ const TABS: { key: Tab; label: string; icon: string }[] = [
   // 排查顺序天然是"先看控制台 → 再看不懂就交给 AI 分析"
   { key: 'loganalysis', label: '日志分析', icon: '⌬' },
   { key: 'players', label: '玩家', icon: '◉' },
-  // 公网端口放在靠前的位置：模组/插件配好后，用户最常回来查的就是地址
-  { key: 'ports', label: '公网端口', icon: '⇄' },
-  { key: 'jars', label: '核心', icon: '◈' },
-  { key: 'start', label: '启动', icon: '⌘' },
+  // 「游戏设置」紧跟在玩家后面（用户 2026-10-05 指定位置：玩家 → 游戏设置 → 文件）：
+  // 它管的是**世界本身**（世界信息 + 原版 gamerule），与"谁在玩"是同一类对象，
+  // 排在文件管理之前更符合"先看内容、再碰文件"的顺路。
+  { key: 'gamesettings', label: '游戏设置', icon: '◈' },
   { key: 'files', label: '文件', icon: '▤' },
   { key: 'config', label: '配置', icon: '⚙' },
   { key: 'backups', label: '备份', icon: '▣' },
+  // 端口、核心、启动都属于实例运行环境，合并后放在第一组末尾便于集中管理。
+  { key: 'settings', label: '实例设置', icon: '⚙' },
 ]
 
 /** 分隔线之后的低频功能位 */
 const TABS_EXTRA: { key: Tab; label: string; icon: string }[] = [
-  { key: 'stats', label: '统计', icon: '◔' },
+  // 「统计与配额」：历史趋势 + 资源上限（CPU / 内存 / 磁盘）的查看与修改。
+  // 配额原先在右栏单独一张卡，与「资源占用」高度重复、还把右栏撑得很长，
+  // 2026-10-04 合并到这一页 —— 看数据的地方顺带管配额。
+  { key: 'stats', label: '统计与配额', icon: '◔' },
   { key: 'tasks', label: '任务', icon: '▷' },
 ]
 
@@ -222,15 +225,8 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
   // 实例改名（就地编辑标题）
   const [editingName, setEditingName] = useState(false)
   const [nameDraft, setNameDraft] = useState('')
-  // 资源限制（CPU / 内存 / 磁盘）的就地编辑。
-  // CPU 草稿按**核**存（可填 1.5），提交时才换算成百分比 —— 与建实例表单同一口径。
-  const [editLimits, setEditLimits] = useState(false)
-  const [limCores, setLimCores] = useState('')
-  const [limMem, setLimMem] = useState('')
-  const [limDisk, setLimDisk] = useState('')
-  const [limBusy, setLimBusy] = useState(false)
-  const [limErr, setLimErr] = useState('')
-  const [limNote, setLimNote] = useState('')
+  // 注：资源限制（CPU / 内存 / 磁盘）的就地编辑已搬到「统计与配额」页
+  //（见 StatsTab）—— 右栏原先那套 state 与处理函数已随之删除。
 
   const [inst, setInst] = useState<Instance | null>(null)
   const [metrics, setMetrics] = useState<Metrics | null>(null)
@@ -337,6 +333,14 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
   }, [instanceId, curStatus])
 
   // 运行数据（运行时长 / 启停次数 / 磁盘 / 网络）：Daemon 侧数据，5 秒刷新
+  //
+  // ⚠️ 这里同时负责**修正实例状态**（2026-10-04 修的"必须刷新浏览器按钮才变"）：
+  // 实例**非正常停止**（崩溃、被 kill、Daemon 那边停了）时，面板数据库里的 status
+  // 不会自己改，而原先只有挂载时拉一次实例记录 —— 于是顶部徽章、启停按钮全都停在
+  // "运行中"，用户点「启动」拿到的是"已经在运行"，必须手动刷新页面才对。
+  // runtime 是**直接问 Daemon** 的，它的 status 才是实时真相，所以每次轮询拿它
+  // 校准一次 curStatus；发现不一致时再顺带重拉一次实例记录（过期时间、占用这些
+  // 派生字段要跟着刷新）。
   useEffect(() => {
     let alive = true
     const tick = () =>
@@ -346,12 +350,16 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
           setRuntime(r)
           setNetRxHist((h) => [...h, r.net_rx_rate].slice(-24))
           setNetTxHist((h) => [...h, r.net_tx_rate].slice(-24))
+          if (r.status && r.status !== curStatus) {
+            setCurStatus(r.status)
+            void reloadInst()
+          }
         })
         .catch(() => { /* 忽略：节点不可达时保持上一次数据 */ })
     tick()
     const t = window.setInterval(tick, 5000)
     return () => { alive = false; window.clearInterval(t) }
-  }, [instanceId])
+  }, [instanceId, curStatus])
 
   // 备份列表 + 生效策略
   useEffect(() => {
@@ -408,80 +416,23 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
     }
   }
 
-  /**
-   * 打开资源限制的编辑（把当前值填进草稿）。
-   *
-   * 单位口径与建实例表单一致：CPU 填**核**（100% = 1 核，可填 1.5）、
-   * 内存填 cgroup 字面量（4G / 1536m）、磁盘填 MB。
-   * 权限与改名、公网端口同级（见 canEditLimits）。
-   */
-  const openLimits = () => {
-    setLimCores(String(inst?.cpu_quota ? inst.cpu_quota / 100 : 0))
-    setLimMem(inst?.mem_limit || '')
-    setLimDisk(String(inst?.disk_limit_mb || 0))
-    setLimErr(''); setLimNote('')
-    setEditLimits(true)
-  }
-
-  /**
-   * 保存资源限制。
-   *
-   * **只提交改动过的字段**：接口是部分更新，而 0 / 空串都表示"不限制"
-   * ——那是有意义的取值，不是"没填"。为了"把表单填满"而全量提交，
-   * 会把没动过的字段一起洗成不限制（后端用指针区分这两件事，前端也要配合）。
-   *
-   * 生效时机由后端的 message 说清楚，这里原样显示、不另编文案。
-   */
-  const submitLimits = async () => {
-    const payload: InstanceLimitsPayload = {}
-
-    const coresNow = inst?.cpu_quota ? inst.cpu_quota / 100 : 0
-    const cores = Number(limCores.trim() === '' ? '0' : limCores.trim())
-    if (!Number.isFinite(cores) || cores < 0) {
-      setLimErr('CPU 配额需为不小于 0 的数字（单位：核，100% = 1 核；0 = 不限制）')
-      return
-    }
-    if (cores !== coresNow) payload.cpu_quota = Math.round(cores * 100)
-
-    // 内存按 cgroup 字面量原样提交（只做 trim，不做格式判断）：
-    // 格式的权威判断在后端 —— 它清楚这个值最终会被写进哪个 cgroup 文件。
-    const mem = limMem.trim()
-    if (mem !== (inst?.mem_limit || '')) payload.mem_limit = mem
-
-    const diskNow = inst?.disk_limit_mb || 0
-    const disk = Number(limDisk.trim() === '' ? '0' : limDisk.trim())
-    if (!Number.isFinite(disk) || disk < 0) {
-      setLimErr('磁盘配额需为不小于 0 的整数（MB；0 = 不限制）')
-      return
-    }
-    if (Math.round(disk) !== diskNow) payload.disk_limit_mb = Math.round(disk)
-
-    if (Object.keys(payload).length === 0) {
-      setLimErr('三个上限都没有变化')
-      return
-    }
-
-    setLimBusy(true); setLimErr(''); setMsg('')
-    try {
-      const r = await setInstanceLimits(instanceId, payload)
-      setMsg(r.message || '资源上限已保存')
-      setLimNote(r.note || '')
-      setEditLimits(false)
-      // 保存后重新拉一次：列表接口才是这些字段的取值来源，别在本地自己拼状态
-      await reloadInst()
-    } catch (e: any) {
-      setLimErr(e.message || '保存失败')
-    } finally {
-      setLimBusy(false)
-    }
-  }
+  // 注：资源限制的编辑（openLimits / submitLimits）已搬到「统计与配额」页
+  //（StatsTab）—— 那一页既有历史曲线又有配额，放在一起比散在右栏更好找。
 
   const memLimit = parseMem(inst?.max_mem || '')
   const memPct = metrics && memLimit ? Math.min(100, Math.round((metrics.mem_used / memLimit) * 100)) : 0
+  // 磁盘占比：**优先按配额算**（配额才是"上限"，也是用户要看的东西）；
+  // 没设配额时退回"占所在分区的比例"，只是给个量级参考。
+  const diskPct = (() => {
+    if (!runtime) return 0
+    const usedMB = runtime.disk_used / 1024 / 1024
+    const limitMB = inst?.disk_limit_mb || 0
+    if (limitMB > 0) return Math.min(100, Math.round((usedMB / limitMB) * 100))
+    if (runtime.disk_total > 0) return Math.round((runtime.disk_used / runtime.disk_total) * 100)
+    return 0
+  })()
   // CPU 配额以百分比表示（100 = 1 核）；0 表示不限。
-  // 配额可能是 150% 这种半核，所以不能直接取整。
-  const cores = inst?.cpu_quota ? inst.cpu_quota / 100 : 0
-  const fmtCores = (c: number) => (Number.isInteger(c) ? String(c) : c.toFixed(1))
+  // 核数的换算与显示已搬到「统计与配额」页（那边是唯一展示配额的地方）。
 
   const handleNav = (key: string) => {
     if (key === 'alerts') { onOpenAlerts(); return }
@@ -701,13 +652,33 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
             </div>
           </div>
 
-          <div className="tab-body">
+          {/* 标签内容区。统一容器契约见 InstanceDetail.css 的 .tab-body：
+              内边距与滚动由它负责，标签页自己不加 —— 否则切换时内边距变化，
+              整块内容会横向位移（用户报的"切页时布局有差异"）。
+
+              控制台用 --flush：它自带头部工具栏与终端边框，需要贴边、
+              且要有确定高度（终端要占满剩余空间）。 */}
+          <div className={`tab-body${tab === 'console' ? ' tab-body--flush' : ''}`}>
+            {/* key={tab}：切标签时强制重挂载。
+                两个理由：① 各标签页的内部状态（滚动位置、展开项、草稿）不该跨页残留；
+                ② 切换动效需要元素"真的换了一个"，否则 React 复用同一个 DOM 节点、
+                   动画不会重放。 */}
+            <div className="tab-pane" key={tab}>
             {tab === 'console' && <ConsoleTab instanceId={instanceId} canSend={canOperate} />}
             {tab === 'loganalysis' && <LogShareTab instanceId={instanceId} canWrite={canWriteFiles} />}
             {tab === 'players' && <PlayersTab instanceId={instanceId} canWrite={canWriteFiles} />}
-            {tab === 'ports' && <InstancePorts instanceId={instanceId} canEdit={canManageExpiry} />}
-            {tab === 'jars' && <JarsTab instanceId={instanceId} canWrite={canWriteFiles} running={curStatus === 'running'} />}
-            {tab === 'start' && <StartScriptTab instanceId={instanceId} canWrite={canWriteFiles} running={curStatus === 'running'} isAdmin={isAdminUser} />}
+            {tab === 'gamesettings' && (
+              <GameSettingsTab instanceId={instanceId} canWrite={canWriteFiles} running={curStatus === 'running'} />
+            )}
+            {tab === 'settings' && (
+              <InstanceSettingsTab
+                instanceId={instanceId}
+                canManageExpiry={canManageExpiry}
+                canWriteFiles={canWriteFiles}
+                running={curStatus === 'running'}
+                isAdmin={isAdminUser}
+              />
+            )}
             {tab === 'files' && <FilesTab instanceId={instanceId} canWrite={canWriteFiles} />}
             {tab === 'config' && <ConfigTab instanceId={instanceId} canWrite={canWriteFiles} />}
             {tab === 'backups' && (
@@ -716,9 +687,9 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
             {tab === 'stats' && (
               <StatsTab
                 instanceId={instanceId}
-                maxMem={inst?.max_mem || ''}
-                diskLimitMB={inst?.disk_limit_mb}
-                diskAutostop={inst?.disk_autostop}
+                inst={inst}
+                canEditLimits={canEditLimits}
+                onLimitsChanged={reloadInst}
               />
             )}
             {tab === 'tasks' && (
@@ -731,6 +702,7 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
                 onExpiryChanged={reloadInst}
               />
             )}
+            </div>
           </div>
 
           {/* 控制台下方信息模块：填充原先的空白区。
@@ -832,24 +804,9 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
           <div className="w">
             <div className="w-title"><span>资源占用</span><span className="w-ico">◔</span></div>
 
-            {/* 资源分配：这是实例的**静态配置**，与是否在运行无关，
-                所以放在运行状态判断之外 —— 实例停着的时候同样需要看到
-                "这台分了多少核、多少内存"，否则只能去创建页翻配置。 */}
-            <div className="res alloc-row">
-              <div className="res-top">
-                <span className="k">分配核心</span>
-                <span className="v">
-                  {cores > 0
-                    ? <>{fmtCores(cores)}<em> 核</em></>
-                    : <>不限制<em> 配额</em></>}
-                </span>
-              </div>
-              <div className="res-note">
-                {inst?.cpu_quota
-                  ? `cgroup v2 cpu.max 硬上限 · 配额 ${inst.cpu_quota}%（100% = 1 核）`
-                  : '未设置 CPU 配额，会与同节点其它实例争抢 CPU'}
-              </div>
-            </div>
+            {/* 「分配核心」原先在最上面一行，2026-10-04 去掉：它与「统计与配额」页
+                的 CPU 配额是同一件事，而静态配置放在"实时占用"卡片里也容易让人
+                以为会随负载变化。核数现在只在统计页出现一次。 */}
 
             {curStatus !== 'running' ? (
               <div className="widget-empty">实例未运行</div>
@@ -879,20 +836,29 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
                   </div>
                   <div className="bar"><i className="ok" style={{ width: `${memPct}%` }} /></div>
                 </div>
+                {/* 磁盘：分母是**配额**（设了配额时），不是整块盘的容量 ——
+                    用户要的就是"离上限还剩多少"；没设配额才回落显示分区容量，
+                    且写明"所在分区"，免得被当成配额（用户报过这个混淆）。 */}
                 <div className="res">
                   <div className="res-top">
                     <span className="k">磁盘</span>
                     <span className="v">
                       {runtime ? fmtBytes(runtime.disk_used) : '—'}
-                      <em>{runtime && runtime.disk_total ? ` / ${fmtBytes(runtime.disk_total)}` : ''}</em>
+                      <em>
+                        {inst?.disk_limit_mb && inst.disk_limit_mb > 0
+                          ? ` / ${inst.disk_limit_mb} MB`
+                          : runtime && runtime.disk_total ? ` / 分区 ${fmtBytes(runtime.disk_total)}` : ''}
+                      </em>
                     </span>
                   </div>
                   <div className="bar">
-                    <i style={{ width: `${runtime && runtime.disk_total ? Math.round((runtime.disk_used / runtime.disk_total) * 100) : 0}%` }} />
+                    <i style={{ width: `${diskPct}%` }} />
                   </div>
-                  {runtime && runtime.disk_free ? (
-                    <div className="res-note">剩余 {fmtBytes(runtime.disk_free)}</div>
-                  ) : null}
+                  <div className="res-note">
+                    {inst?.disk_limit_mb && inst.disk_limit_mb > 0
+                      ? `配额 ${inst.disk_limit_mb} MB${inst.disk_autostop ? ' · 超限自动停机' : ''}`
+                      : runtime && runtime.disk_free ? `未设配额 · 分区剩余 ${fmtBytes(runtime.disk_free)}` : '未设配额'}
+                  </div>
                 </div>
                 <div className="res">
                   <div className="res-top">
@@ -905,115 +871,6 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
             )}
           </div>
 
-          {/* 资源限制（CPU / 内存 / 磁盘）：建实例时定下，之后原来**没有任何入口**
-              能改 —— 节点用户建实例时把内存留空（= 不限制），运营侧就再也收不回来。
-              这里给它一个就地编辑的入口，但权限**只给运营侧**（总管理员 / 该节点的
-              节点用户，见 canEditLimits）：租户能自己改的话，运营方收紧之后
-              对方点一下就能放开，这个接口等于没做。
-              没有权限的人只看得到当前值 —— 后端那道 403 不该是唯一的信号。 */}
-          <div className="w">
-            <div className="w-title"><span>资源限制</span><span className="w-ico">⚖</span></div>
-
-            {/* 后端回来的补充提醒（当前是"节点侧元数据未同步，CPU / 内存还没真正生效"）。
-                只在刚保存过之后显示：它是针对本次改动的提醒，不是常驻说明。 */}
-            {limNote && <div className="warn-banner">{limNote}</div>}
-
-            {!editLimits ? (
-              <>
-                <div className="res">
-                  <div className="res-top">
-                    <span className="k">CPU 配额</span>
-                    <span className="v">
-                      {cores > 0 ? <>{fmtCores(cores)}<em> 核</em></> : <>不限制</>}
-                    </span>
-                  </div>
-                </div>
-                <div className="res">
-                  <div className="res-top">
-                    <span className="k">内存上限</span>
-                    <span className="v">{inst?.mem_limit ? inst.mem_limit : <em>不限制</em>}</span>
-                  </div>
-                </div>
-                <div className="res">
-                  <div className="res-top">
-                    <span className="k">磁盘配额</span>
-                    <span className="v">
-                      {inst?.disk_limit_mb ? <>{inst.disk_limit_mb}<em> MB</em></> : <>不限制</>}
-                    </span>
-                  </div>
-                </div>
-                <div className="res-note">
-                  磁盘配额由面板每分钟巡检（85% 警告 / 95% 严重）；CPU 与内存在实例启动时由 Daemon 写入 cgroup。
-                </div>
-                {canEditLimits ? (
-                  <div style={{ marginTop: 8 }}>
-                    <button onClick={openLimits} disabled={busy}>修改限制</button>
-                  </div>
-                ) : (
-                  <div className="res-note">资源上限由运营方设置：需要总管理员或该节点的节点管理员权限才能修改。如需调整请找管理员。</div>
-                )}
-              </>
-            ) : (
-              <>
-                {limErr && <div className="error-banner">{limErr}</div>}
-
-                {/* 运行中改 CPU / 内存：cgroup 的限额是启动时写进去的，
-                    所以这里必须明说"重启后生效"——不留"改了却没变"的错觉
-                    （与「启动」页换 JDK 的说法一致）。 */}
-                {curStatus === 'running' && (
-                  <div className="warn-banner">
-                    实例正在运行：CPU / 内存上限要<strong>重启实例</strong>后生效
-                    （当前进程仍按启动时的那个值运行）；磁盘配额改完即生效。
-                  </div>
-                )}
-
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8, fontSize: 12, color: 'var(--text-3)' }}>
-                  CPU 配额（核，100% = 1 核；0 = 不限制）
-                  <input
-                    value={limCores}
-                    disabled={limBusy}
-                    inputMode="decimal"
-                    placeholder="0"
-                    onChange={(e) => setLimCores(e.target.value)}
-                  />
-                </label>
-
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8, fontSize: 12, color: 'var(--text-3)' }}>
-                  内存硬上限（如 4G / 1536m；留空 = 不限制）
-                  <input
-                    value={limMem}
-                    disabled={limBusy}
-                    spellCheck={false}
-                    placeholder="4G（留空不限制）"
-                    onChange={(e) => setLimMem(e.target.value)}
-                  />
-                </label>
-
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8, fontSize: 12, color: 'var(--text-3)' }}>
-                  磁盘配额（MB；0 = 不限制）
-                  <input
-                    value={limDisk}
-                    disabled={limBusy}
-                    inputMode="numeric"
-                    placeholder="0"
-                    onChange={(e) => setLimDisk(e.target.value)}
-                  />
-                </label>
-
-                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                  <button className="primary" onClick={submitLimits} disabled={limBusy}>
-                    {limBusy ? '保存中…' : '保存'}
-                  </button>
-                  <button
-                    onClick={() => { setEditLimits(false); setLimErr('') }}
-                    disabled={limBusy}
-                  >
-                    取消
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
 
           {/* 到期时间已搬到「任务」标签页 —— 语义上它和定时开关机、定时备份是一类
               （都是"这台实例什么时候会自动做什么"），原来挤在右栏最难找。

@@ -24,7 +24,7 @@ import (
 // 而既有用例基本都用 admin 令牌。所以这条**必须用普通用户**。
 func TestConcurrentInstanceListDoesNotDeadlock(t *testing.T) {
 	srv, ts := newTestServer(t)
-	admin := loginAs(t, ts, "adm12", "adm12-pass-1234")
+	admin := loginAs(t, srv, ts, "adm12", "adm12-pass-1234")
 	inst := "listdl01"
 	seedInstance(t, srv, inst, 1)
 
@@ -82,7 +82,7 @@ func TestConcurrentInstanceListDoesNotDeadlock(t *testing.T) {
 // "用户在线了多久"。现在先在内存里节流（30 秒窗口），再谈查库。
 func TestTouchOnlineThrottlesInMemory(t *testing.T) {
 	srv, ts := newTestServer(t)
-	admin := loginAs(t, ts, "adm13", "adm13-pass-1234")
+	admin := loginAs(t, srv, ts, "adm13", "adm13-pass-1234")
 
 	for i := 0; i < 20; i++ {
 		if code, _ := doJSON(t, ts, "GET", "/api/auth/me", admin, nil); code != http.StatusOK {

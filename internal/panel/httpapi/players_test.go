@@ -78,7 +78,7 @@ func TestConsoleSafeName(t *testing.T) {
 // 单元测试里没有（会以 500 结束，但错误信息不能是"未知名单类型"）。
 func TestKickIsKnownKind(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	seedInstance(t, srv, "inst-kick", 1)
 
 	code, body := doJSON(t, ts, "POST", "/api/instances/inst-kick/players", adminTok,
@@ -108,7 +108,7 @@ func TestKickIsKnownKind(t *testing.T) {
 // OP 等级：1~4 之外一律拒绝，且应当在联系 Daemon 之前就拒绝。
 func TestSetOpLevelValidation(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	seedInstance(t, srv, "inst-op", 1)
 
 	for _, lv := range []int{0, -1, 5, 99} {

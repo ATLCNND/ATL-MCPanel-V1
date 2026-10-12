@@ -14,6 +14,61 @@
   flex: 1;
 }
 
+/* ---- 连通式子导航（分页） ----
+   实例设置页 / 玩家页 / 游戏设置页共用的"一组分页"控件。
+
+   为什么抽到这里：这三处本来就该长得一模一样，但原先各自写了一份
+   （`.kind-tabs` / `.settings-tabs`），已经漂移过一次 —— 改一处另外两处不动。
+
+   两条硬要求（用户 2026-10-05 明确提的）：
+     1. **深品红描边**：一眼看出这是"同一组里的分页"。品红在深色底上偏暗，
+        所以用 1.5px 而不是 1px。
+     2. **分页不被拉长**：用 inline-flex + `flex: 0 0 auto`，每个分页只占内容宽度。
+        之前有 `flex:1` / `width:100%`，分页被撑满整行，看着很松散。 */
+.connected-tabs {
+  display: inline-flex;
+  align-items: stretch;
+  align-self: flex-start;
+  max-width: 100%;
+  border: 1.5px solid var(--accent-solid);
+  border-radius: var(--r-xl);
+  overflow: hidden;
+  background: var(--bg-surface);
+}
+
+.connected-tabs button {
+  border: 0;
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  padding: 7px 14px;
+  background: transparent;
+  color: var(--text-2);
+  transition: background .15s, color .15s;
+}
+
+.connected-tabs button:last-child {
+  border-right: 0;
+}
+
+.connected-tabs button:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.connected-tabs button.active {
+  background: var(--accent-solid);
+  color: var(--text-on-accent);
+}
+
+/* 窄屏：允许横向滚动，而不是把分页挤成两行或拉长 */
+@media (max-width: 760px) {
+  .connected-tabs {
+    overflow-x: auto;
+  }
+}
+
 /* ---- 等宽文本（路径、ID、时间戳） ---- */
 /* 路径 / ID / 端口等标识文本，统一弱化显示 */
 .mono {

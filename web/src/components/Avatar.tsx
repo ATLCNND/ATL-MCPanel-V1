@@ -60,6 +60,10 @@ export default function Avatar({
         className={`av av-img ${className}`}
         src={url}
         alt={name || '头像'}
+        // 懒加载：玩家列表一屏几十个皮肤头像会发出同样多的外部请求，
+        // 不懒加载会拖慢首屏（而这些图多数在滚动到之前根本不需要）。
+        loading="lazy"
+        decoding="async"
         onError={() => setBroken(true)}
         style={{ ...style, objectFit: 'cover', display: 'block' }}
       />

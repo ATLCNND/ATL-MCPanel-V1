@@ -63,7 +63,7 @@ func logShareAIUser(t *testing.T, srv *Server, ts *httptest.Server, adminTok, us
 // 只要自己在别的租户的分享链接里见过它。
 func TestLogShareAIRequiresUploadOwnedByInstance(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	userTok, _ := logShareAIUser(t, srv, ts, adminTok, "ls1")
 
 	// 另一台实例（本用户没有任何权限）上传的日志
@@ -88,7 +88,7 @@ func TestLogShareAIRequiresUploadOwnedByInstance(t *testing.T) {
 // TestLogShareAIServesCachedAnalysis 已落库的结论直接回放，不再起一次上游分析。
 func TestLogShareAIServesCachedAnalysis(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	userTok, _ := logShareAIUser(t, srv, ts, adminTok, "ls2")
 
 	seedLogShareUpload(t, srv, "instA", "LS-MINE")
@@ -113,7 +113,7 @@ func TestLogShareAIServesCachedAnalysis(t *testing.T) {
 // TestLogShareAIIsRateLimited 用光额度后必须 429，而不是照旧去起上游分析。
 func TestLogShareAIIsRateLimited(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	userTok, uid := logShareAIUser(t, srv, ts, adminTok, "ls3")
 
 	// 有上传记录、但**没有**落库的结论 → 走"起一次上游分析"那条路

@@ -66,6 +66,40 @@ export function clearToken() {
   localStorage.removeItem(USER_KEY)
 }
 
+/**
+ * 主动向服务端确认当前令牌是否仍然有效。
+ *
+ * ⚠️ 为什么需要它（2026-10-06 用户实测报出的控制台"连接错误"）：
+ *
+ * 前端原先只用 `isTokenExpired()` 判断令牌 —— 那**只看 JWT 里的 exp**。
+ * 但服务端还有一套 `users.token_version` 撤销机制（改密码等会把它推进一位），
+ * 于是存在这种情况：**exp 还没到、令牌却已被服务端判为无效**。
+ *
+ * 后果：控制台 WebSocket 被 401 拒绝，而 `onclose` 里 `isTokenExpired()` 返回 false
+ * → 走"3 秒后重连" → **无限重连、永远失败**，界面上只有一句笼统的"连接错误"。
+ * 用户既不知道是登录态问题，也不知道该重新登录。
+ *（实测：退出登录再登录即恢复正常 —— 因为拿到了新令牌。）
+ *
+ * 所以 WS 失败时不能只靠本地 exp 猜，要**问一次服务端**。用 `/api/auth/me`
+ * 这个必然存在的轻量接口当探针。
+ *
+ * 返回 true 表示服务端明确说这个令牌无效（401）。
+ */
+export async function tokenRejectedByServer(): Promise<boolean> {
+  const token = getToken()
+  if (!token) return true
+  try {
+    const resp = await fetch('/api/auth/me', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    // 只有明确的 401 才算"被拒"。网络错误/500 不算 ——
+    // 那可能是面板暂时不可用，不该把用户踢去重新登录。
+    return resp.status === 401
+  } catch {
+    return false
+  }
+}
+
 // ---- 会话失效（401）的全局处理 ----
 //
 // 为什么必须有这一层：面板重启换了 JWT 密钥、令牌到期（默认 24 小时）、
@@ -147,7 +181,6 @@ export async function apiFetch(path: string, options: ApiOptions = {}): Promise<
   }
   const token = getToken()
   if (token) headers['Authorization'] = `Bearer ${token}`
-
   const { skipAuthExpired, ...init } = options
   const resp = await fetch(path, { ...init, headers })
   const data = await resp.json().catch(() => ({}))
@@ -647,9 +680,24 @@ export async function monitorInstances(): Promise<MonitorInstance[]> {
   return apiFetch('/api/monitor/instances')
 }
 
-export function consoleWsUrl(instanceId: string): string {
+/**
+ * 控制台 WebSocket 的地址。
+ *
+ * ⚠️ 2026-10-06 修「空令牌」缺陷（用户实测：控制台一直"连接错误"）：
+ *
+ * 原实现是 `const token = getToken() || ''` —— 没有令牌时拼出 `?token=`（**空值**），
+ * 然后照常发起连接。服务端只能回 401 `{"error":"缺少 token"}`，
+ * 而 WebSocket 握手失败时浏览器**读不到响应体**（拿不到那句话），
+ * 前端于是只能显示一句笼统的"连接错误" —— 用户完全看不出是登录态问题。
+ *
+ * 现在返回 null 表示"根本不该发起这次连接"，由调用方直接给出可操作的提示。
+ * 语义上这是对的：**没有令牌就不存在"控制台连接"这件事**，
+ * 发一个必然失败的请求只会污染控制台（用户那次截了一屏 281 条错误）。
+ */
+export function consoleWsUrl(instanceId: string): string | null {
+  const token = getToken()
+  if (!token) return null
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  const token = getToken() || ''
   return `${proto}://${window.location.host}/ws/console/${instanceId}?token=${encodeURIComponent(token)}`
 }
 
@@ -1567,6 +1615,14 @@ export interface InstanceLimitsPayload {
   mem_limit?: string
   /** 实例目录软配额（MB，0 = 不限制） */
   disk_limit_mb?: number
+  /**
+   * JVM 堆上限 `-Xmx`（如 "4G"）。**与 mem_limit 不是一回事**：
+   * 这个是启动命令里的堆大小，那个是 cgroup 的天花板。
+   * 不能为空（空串在服务端会被拒）—— 留空表达"不限制"的是 mem_limit。
+   */
+  max_mem?: string
+  /** JVM 初始堆 `-Xms`（如 "1G"；可留空 = 不指定 -Xms） */
+  min_mem?: string
 }
 
 export interface InstanceLimitsResult {
@@ -1574,13 +1630,16 @@ export interface InstanceLimitsResult {
   message: string
   /** CPU / 内存这两项的补充说明（空 = 没有额外要提醒的）；见后端 limitsEnforceNote */
   note?: string
-  /** 改后的三个值：界面据此回显，不必再拉一次实例列表 */
+  /** 改后的这些值：界面据此回显，不必再拉一次实例列表 */
   cpu_quota: number
   mem_limit: string
   disk_limit_mb: number
+  max_mem: string
+  min_mem: string
   /**
-   * CPU / 内存上限有改动 → 要等实例**重新启动**才会被 Daemon 写进 cgroup；
-   * 磁盘配额由面板每分钟巡检，改完即生效（不受这个标志影响）。
+   * CPU / 内存上限（含 JVM 堆）有改动 → 要等实例**重新启动**才会被 Daemon
+   * 写进 cgroup / 渲染进启动命令；磁盘配额由面板每分钟巡检，改完即生效
+   * （不受这个标志影响）。
    */
   restart_required: boolean
 }
@@ -1592,6 +1651,81 @@ export async function setInstanceLimits(
   return apiFetch(`/api/instances/${encodeURIComponent(instanceId)}/limits`, {
     method: 'PUT',
     body: JSON.stringify(payload),
+  })
+}
+
+// ---- 世界信息与游戏规则（「游戏设置」页） ----
+
+export interface GameRule {
+  name: string
+  /** 原版规则值只有三种形态：true/false、整数、极少数小数 —— 后端原样带出字符串 */
+  value: string
+}
+
+export interface WorldInfo {
+  ok: boolean
+  world_dir: string
+  /** level.dat 是否存在（false = 世界还没生成，实例从未启动过） */
+  level_dat_found: boolean
+  level_name: string
+  /**
+   * 世界种子。**用字符串**：实测 1283372119871044237 远超 JS 的
+   * Number.MAX_SAFE_INTEGER（2^53），用 number 传会被改掉末几位。
+   */
+  seed: string
+  seed_present: boolean
+  generator: string
+  generate_features: boolean
+  bonus_chest: boolean
+  game_type: number
+  difficulty: number
+  difficulty_locked: boolean
+  hardcore: boolean
+  allow_commands: boolean
+  spawn_x: number
+  spawn_y: number
+  spawn_z: number
+  border_size: number
+  /** false = 世界边界未设置（后端已把 6e7 哨兵值换算掉） */
+  border_set: boolean
+  border_center_x: number
+  border_center_z: number
+  time: number
+  day_time: number
+  raining: boolean
+  thundering: boolean
+  last_played_ms: number
+  data_version: number
+  server_brands: string[]
+  gamerules: GameRule[]
+  datapacks_enabled: string[]
+  datapacks_disabled: string[]
+  dimensions: string[]
+}
+
+export async function getWorldInfo(instanceId: string, world?: string): Promise<WorldInfo> {
+  const q = world ? `?world=${encodeURIComponent(world)}` : ''
+  return apiFetch(`/api/instances/${encodeURIComponent(instanceId)}/world${q}`)
+}
+
+/**
+ * 修改一条原版游戏规则。
+ *
+ * 后端走控制台 `/gamerule`，所以**实例必须在运行**；停止时会返回 409 并说明原因
+ * （直接改 level.dat 会被运行中的服务器覆写，属于"改了却没变"）。
+ *
+ * ⚠️ 返回的 `value` 是**服务器已确认生效**的值，调用方应直接用它更新界面，
+ * **不要**紧接着调 `getWorldInfo()` 回读 —— 规则读自存档（level.dat），
+ * 而 `/gamerule` 改的是内存值，只有世界保存时才落盘，回读会拿到旧值。
+ */
+export async function setGameRule(
+  instanceId: string,
+  name: string,
+  value: string,
+): Promise<{ message: string; name: string; value: string; applied?: boolean; persist_hint?: string }> {
+  return apiFetch(`/api/instances/${encodeURIComponent(instanceId)}/gamerule`, {
+    method: 'PUT',
+    body: JSON.stringify({ name, value }),
   })
 }
 

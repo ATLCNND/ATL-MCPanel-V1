@@ -7,7 +7,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=__INSTALL_DIR__
-ExecStart=__INSTALL_DIR__/bin/dsh-daemon -config __INSTALL_DIR__/config.yaml
+ExecStart=__INSTALL_DIR__/bin/atl-daemon -config __INSTALL_DIR__/config.yaml
 Restart=on-failure
 RestartSec=5
 

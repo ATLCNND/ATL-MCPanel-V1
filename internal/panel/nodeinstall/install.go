@@ -7,7 +7,7 @@
 //
 // 设计考虑：
 //   - 所有步骤幂等，可重复执行（升级 = 重新上传并重启）
-//   - 二进制由面板本地二进制同目录提供（dsh-daemon），确保版本一致
+//   - 二进制由面板本地二进制同目录提供（atl-daemon），确保版本一致
 //   - 凭据仅用于本次连接，不落盘
 package nodeinstall
 
@@ -37,7 +37,7 @@ type Options struct {
 	// Daemon 配置
 	NodeID       string
 	PanelAddress string // Panel gRPC 地址（节点可访问的地址:端口）
-	DaemonBinary []byte // dsh-daemon 二进制内容
+	DaemonBinary []byte // atl-daemon 二进制内容
 	GRPCListen   string // Daemon 反向 gRPC 监听，默认 ":9091"
 	ServiceName  string // systemd 单元名，默认 atlmcpanel-daemon
 
@@ -256,13 +256,13 @@ func (c *Client) Probe(remoteDir string) (*Probe, error) {
 	if out, err := c.Run("command -v systemctl >/dev/null 2>&1 && echo yes || echo no"); err == nil {
 		p.HasSystemd = strings.TrimSpace(out) == "yes"
 	}
-	if out, err := c.Run(fmt.Sprintf("test -x %s/bin/dsh-daemon && echo yes || echo no", remoteDir)); err == nil {
+	if out, err := c.Run(fmt.Sprintf("test -x %s/bin/atl-daemon && echo yes || echo no", remoteDir)); err == nil {
 		p.Installed = strings.TrimSpace(out) == "yes"
 	}
 	if out, err := c.Run("test -f /etc/systemd/system/atlmcpanel-daemon.service && echo yes || echo no"); err == nil {
 		p.ExistingSvc = strings.TrimSpace(out) == "yes"
 	}
-	if out, err := c.Run(fmt.Sprintf("%s/bin/dsh-daemon -version 2>/dev/null || echo unknown", remoteDir)); err == nil {
+	if out, err := c.Run(fmt.Sprintf("%s/bin/atl-daemon -version 2>/dev/null || echo unknown", remoteDir)); err == nil {
 		p.BinaryVersion = strings.TrimSpace(out)
 	}
 	// 安装目录可能尚不存在，需回溯到最近的存在目录再统计可用空间
@@ -331,7 +331,7 @@ func (c *Client) Deploy(o Options) (*Result, error) {
 
 	// 0. 架构校验（放在最前面）
 	//
-	// 面板只能下发"自己同目录那一份" dsh-daemon，其架构在编译时固定。
+	// 面板只能下发"自己同目录那一份" atl-daemon，其架构在编译时固定。
 	// 不先比对的话，arm64 节点会被装上一个 amd64 二进制，直到启动才报
 	// Exec format error —— 那个错误离真正原因隔了好几层。
 	// 这里提前失败，并直接告诉用户该用哪个架构的包。
@@ -355,13 +355,23 @@ func (c *Client) Deploy(o Options) (*Result, error) {
 	// 上传前**再确保一次目录存在**：SFTP 打开远程文件失败（sftp: "Failure"）
 	// 最常见的原因就是目录还没建好（或建在了另一个路径上），而那时错误信息里
 	// 只有一句 "打开远程文件失败"，很难联想到目录 —— 重试一次比让人去猜便宜。
-	if err := c.Upload(dir+"/bin/dsh-daemon", o.DaemonBinary, 0o755); err != nil {
+	if err := c.Upload(dir+"/bin/atl-daemon", o.DaemonBinary, 0o755); err != nil {
 		_, _ = c.Run(fmt.Sprintf("mkdir -p %s/bin && chmod 755 %s %s/bin", dir, dir, dir))
-		if err2 := c.Upload(dir+"/bin/dsh-daemon", o.DaemonBinary, 0o755); err2 != nil {
+		if err2 := c.Upload(dir+"/bin/atl-daemon", o.DaemonBinary, 0o755); err2 != nil {
 			return nil, fmt.Errorf("上传 Daemon 二进制失败: %w（已自动建目录后重试仍失败）", err)
 		}
 	}
 	addStep("上传 Daemon 二进制")
+
+	// 2b. 旧名兼容软链接（过渡用）
+	//
+	// 二进制在 2026-10-12 由 dsh-daemon 改名成 atl-daemon。老节点上可能还有
+	// 引用 bin/dsh-daemon 的东西（旧单元、运维者自己的脚本）。ln -sfn 会**覆盖**
+	// 同名的旧真实文件，于是 bin/ 里不会留下两份各 19MB 的二进制、
+	// 更不会出现"不知道哪份在跑"。
+	//
+	// 失败不算错误：这只是兼容便利，节点上没有旧引用时毫无影响。
+	_, _ = c.Run(fmt.Sprintf("ln -sfn atl-daemon %s/bin/dsh-daemon", shellQuote(dir+"/bin")))
 
 	// 3. 上传 mTLS 材料
 	useTLS := len(o.CACert) > 0 && len(o.ClientCert) > 0 && len(o.ClientKey) > 0
@@ -600,7 +610,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=%s
-ExecStart=%s/bin/dsh-daemon -config %s/config.yaml
+ExecStart=%s/bin/atl-daemon -config %s/config.yaml
 Restart=on-failure
 RestartSec=5
 KillMode=process

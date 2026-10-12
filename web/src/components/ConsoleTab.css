@@ -108,6 +108,341 @@
   padding-left: 2px;
 }
 
+/* 屏蔽周期性心跳（玩家数 / TPS）的开关。
+   与左边的级别筛选**不是一组**（那是 info/warn/error），所以用中线隔开，
+   并给一个略宽的间距 —— 挨在一起会被当成"第四个级别"。 */
+.cf-hb {
+  margin-left: 10px;
+  border-left: 1px solid var(--border);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  padding-left: 12px;
+}
+
+.cf-hb.on {
+  color: var(--accent);
+  background: var(--accent-bg-2);
+  border-color: var(--accent-border);
+}
+
+/* "最近 500 行"的提示：弱化的说明文字，不抢状态徽章的注意力。
+   回放上限调小后必须有这一句 —— 否则用户会以为日志被丢了。 */
+.console-scope {
+  font-size: 11px;
+  color: var(--text-3);
+  padding: 2px 8px;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-full);
+  cursor: help;
+  flex: 0 0 auto;
+}
+
+/* 复制成功提示：一闪而过，不占常驻版面 */
+.console-tip {
+  font-size: 11.5px;
+  color: var(--success);
+  background: var(--success-bg);
+  border: 1px solid var(--success-dark);
+  border-radius: var(--r-full);
+  padding: 2px 9px;
+  flex: 0 0 auto;
+  animation: tip-in .12s ease-out;
+}
+
+@keyframes tip-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* 设置面板里的快捷键标签 */
+.cs-hint kbd {
+  display: inline-block;
+  padding: 0 5px;
+  margin: 0 1px;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--r-sm, 4px);
+  background: var(--bg-subtle);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-2);
+  line-height: 16px;
+}
+
+/* 终端本体允许文本选择（只读终端也应当能选） */
+.console-body .xterm {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* 复制按钮：与「⚙ 设置」并排，用中线隔开（它们是同一组"操作"。 */
+.cf-copy {
+  margin-left: 10px;
+  border-left: 1px solid var(--border);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  padding-left: 12px;
+}
+
+/* 全选按钮紧跟复制，二者是一组操作，不加中线 */
+.cf-selall {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+/* ============================================================================
+   自绘右键菜单（2026-10-06）
+   ============================================================================
+   用户反馈"右键在浏览器中存在其他功能" —— 浏览器/终端的默认菜单在这里
+   既抢事件又语义混乱，所以自己画一个只有常用操作的。 */
+
+/* 透明背板：接住"点别处关闭"的点击。必须在菜单之下、内容之上。 */
+.ctx-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+
+.ctx-menu {
+  position: fixed;
+  z-index: 41;
+  min-width: 168px;
+  padding: 4px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .32);
+  display: flex;
+  flex-direction: column;
+}
+
+.ctx-menu button {
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: var(--r);
+  font-size: 12.5px;
+  color: var(--text-1);
+}
+
+.ctx-menu button:hover:not(:disabled) {
+  background: var(--accent-bg-2);
+  color: var(--accent);
+}
+
+.ctx-menu button:disabled {
+  color: var(--text-3);
+  cursor: default;
+}
+
+/* ============================================================================
+   控制台设置（2026-10-06 用户要求）
+   ============================================================================
+   一个"齿轮"按钮 + 悬浮面板：调终端显示参数、增删刷屏屏蔽规则。 */
+
+.console-settings-wrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.cf-gear {
+  margin-left: 8px;
+  border-left: 1px solid var(--border);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  padding-left: 12px;
+}
+
+.cf-gear.on {
+  color: var(--accent);
+  background: var(--accent-bg-2);
+  border-color: var(--accent-border);
+}
+
+/* 悬浮面板。
+ *
+ * ⚠️ 2026-10-06 用户报「设置卡片不能完整显示」。根因**不在高度，而在裁剪**：
+ *   `.console { overflow: hidden }`（圆角裁剪用）会把绝对定位的浮层一起裁掉，
+ *   面板挂在按钮下方、超出了控制台容器高度 → 下半部分被剪掉看不见。
+ *   而 `max-height: 70vh` 是按**视口**算的，与控制台盒子的高度无关，必然溢出。
+ *
+ * 改成 `position: fixed` —— 它相对**视口**定位，不受任何祖先的 overflow 影响。
+ * 具体 left/top 由 JS 在打开时按按钮的 getBoundingClientRect() 算出并内联（见 tsx）。
+ * 高度上限也改成"视口高度减去面板顶端到顶部的距离"，保证底部完整可见。 */
+.console-settings {
+  position: fixed;   /* JS 会覆盖 left/top；这里的 fixed 是语义基准 */
+  z-index: 60;
+  width: 340px;
+  /* 按视口留边距：面板顶到视口底就是可用高度 */
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  padding: 12px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .35);
+  text-align: left;
+  font-size: 12.5px;
+  cursor: default;
+}
+
+.cs-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.cs-close {
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  padding: 0 4px;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.cs-close:hover { color: var(--text-1); background: transparent; }
+
+.cs-sec {
+  padding-top: 10px;
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.cs-sec:first-of-type { padding-top: 0; margin-top: 0; border-top: 0; }
+
+.cs-sec-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-3);
+  margin-bottom: 8px;
+}
+
+.cs-reset {
+  font-size: 11px;
+  padding: 1px 7px;
+}
+
+/* 滑块行：标签 | 滑块 | 当前值 */
+.cs-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+  color: var(--text-2);
+}
+
+.cs-row > span { flex: 0 0 62px; font-size: 12px; }
+.cs-row > input[type="range"] { flex: 1; min-width: 0; accent-color: var(--accent-solid); }
+.cs-row > b { flex: 0 0 46px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-1); font-size: 12px; }
+
+.cs-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 0;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.cs-check input[type="checkbox"] { accent-color: var(--accent-solid); flex: 0 0 auto; }
+
+.cs-rule-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.cs-custom { margin-top: 4px; }
+
+.cs-custom-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  min-width: 0;
+}
+
+.cs-custom-item code {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.cs-del {
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  padding: 0 3px;
+  font-size: 12px;
+}
+
+.cs-del:hover { color: var(--danger); background: transparent; }
+
+.cs-add {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.cs-add-pat { flex: 2; min-width: 0; font-size: 12px; }
+.cs-add-label { flex: 1; min-width: 0; font-size: 12px; }
+.cs-add button { font-size: 12px; padding: 3px 10px; flex: 0 0 auto; }
+
+.cs-err {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--danger);
+}
+
+.cs-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--text-3);
+}
+
+/* 关于剪贴板受限的提示：需要显眼一点（用户会反复遇到"复制没反应"），
+   但仍是说明性内容，所以用暖色而不是错误色。 */
+.cs-note-warn {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: var(--r);
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.cs-note-warn code {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--bg-subtle);
+  color: var(--text-1);
+}
+
+.cs-note-warn strong { color: var(--warning); }
+
+/* 设置面板里的输入框跟着面板宽度走（全局 input 样式会给固定宽度） */
+.console-settings input[type="text"],
+.console-settings input:not([type]) {
+  width: 100%;
+  font-size: 12px;
+  padding: 3px 7px;
+}
+
 .console-status {
   font-size: 11.5px;
   font-weight: 600;
@@ -131,16 +466,31 @@
 
 /* ---- 终端正文 ----
    高度对齐预览的 420px。xterm 需要明确像素高度才能正确 fit，
-   因此用固定高度而非百分比。 */
+   因此用固定高度而非百分比。
+
+   ⚠️ 2026-10-05 用户报「侧边滚动条拖不动」，根因在这里：
+     xterm 的滚动条是 `.xterm-viewport` 上的**原生**滚动条
+     （xterm.css 里 `.xterm-viewport { overflow-y: scroll }`，
+     另有一个隐藏的 `.xterm-scroll-area` 只负责撑出滚动高度）。
+     而这个容器原先同时给了 `padding: 10px 12px` 与 `overflow: hidden`，
+     内层 `.xterm` 又是 `height: 100%` —— 百分比高度算的是**内容盒**，
+     于是终端实际比可视区高出上下各 10px，滚动区域的底边落到可视区之外，
+     拖动滑块时指针很快离开滑块、表现为"拖不动"。
+
+   现在的做法：**容器不留内边距**（内边距交给内层做），
+   并让 xterm 严格填满容器，滚动条的几何关系就正常了。 */
 .console-body {
   height: 560px;
-  padding: 10px 12px;
+  padding: 0;
   overflow: hidden;
+  position: relative;
 }
 
 /* xterm 铺满容器，并让内层背景透明以透出 --term-bg */
 .console-body .xterm {
   height: 100%;
+  padding: 8px 10px;
+  box-sizing: border-box;
 }
 
 .console-body .xterm-viewport {
@@ -149,13 +499,28 @@
   scrollbar-color: var(--border-strong) transparent;
 }
 
+/* 滚动条：给足宽度，并保证滑块有最小高度 ——
+   滑块太短时在 xterm 这种"内容极长"的场景下几乎点不中。 */
 .console-body .xterm-viewport::-webkit-scrollbar {
-  width: 8px;
+  width: 10px;
+}
+
+.console-body .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .console-body .xterm-viewport::-webkit-scrollbar-thumb {
   background: var(--border-strong);
   border-radius: var(--r-full);
+  /* 最小高度：滑块再小也要能抓得住（WebKit 支持 min-height） */
+  min-height: 40px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+.console-body .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
+  background-clip: content-box;
 }
 
 /* ---- 命令输入行 ---- */

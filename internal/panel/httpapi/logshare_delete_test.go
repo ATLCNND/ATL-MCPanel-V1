@@ -74,7 +74,7 @@ func uploadMarkedDeleted(t *testing.T, srv *Server, instanceID, logshareID strin
 // 而且此后每个能看这台实例的人（collab 就行）都能从历史接口读到它。
 func TestLogShareDeleteRemovesLocalConclusion(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	seedInstance(t, srv, "instA", 1)
 	// 指向本地假服务：删远端副本要打第三方接口
 	srv.logShare = logshare.New(fakeLogShare(t).URL, 5*time.Second)
@@ -106,7 +106,7 @@ func TestLogShareDeleteRemovesLocalConclusion(t *testing.T) {
 // 客户端是常驻对象（见 NewServer），所以关掉开关不影响删除。
 func TestLogShareDeleteWorksWhenFeatureDisabled(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	seedInstance(t, srv, "instA", 1)
 	srv.logShare = logshare.New(fakeLogShare(t).URL, 5*time.Second)
 

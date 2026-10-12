@@ -55,7 +55,7 @@ func countLimitAudits(t *testing.T, srv *Server) int {
 // 之前那条 TestInstanceLimits_OwnerCanUpdate 断言的正是反面，已删除。
 func TestInstanceLimits_InstanceOwnerDenied(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	ownTok := mkUser(t, srv, ts, adminTok, "own1", "own12345", RoleUser)
 
 	seedInstance(t, srv, "inst1", 1)
@@ -64,7 +64,7 @@ func TestInstanceLimits_InstanceOwnerDenied(t *testing.T) {
 
 	for _, body := range []map[string]any{
 		{"cpu_quota": 800, "mem_limit": "", "disk_limit_mb": 0}, // 想全放开
-		{"mem_limit": "16G"},                                   // 只想加内存
+		{"mem_limit": "16G"}, // 只想加内存
 	} {
 		code, resp := doJSON(t, ts, "PUT", "/api/instances/inst1/limits", ownTok, body)
 		if code != http.StatusForbidden {
@@ -82,7 +82,7 @@ func TestInstanceLimits_InstanceOwnerDenied(t *testing.T) {
 // 收/放资源上限正是他对那台机器负责时该做的事。
 func TestInstanceLimits_NodeUserOfThatNodeCanUpdate(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	mkUser(t, srv, ts, adminTok, "nu1", "nu123456", RoleUser)
 
 	seedInstance(t, srv, "inst1", 1)
@@ -132,7 +132,7 @@ func TestInstanceLimits_NodeUserOfThatNodeCanUpdate(t *testing.T) {
 // 最先受害的是邻居），不是"被授权启停 + 看控制台"的人该决定的事。
 func TestInstanceLimits_ViewerCollabAndStrangerDenied(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	vwTok := mkUser(t, srv, ts, adminTok, "vw1", "vw123456", RoleUser)
 	colTok := mkUser(t, srv, ts, adminTok, "col1", "col12345", RoleUser)
 	outTok := mkUser(t, srv, ts, adminTok, "out1", "out12345", RoleUser)
@@ -170,7 +170,7 @@ func TestInstanceLimits_ViewerCollabAndStrangerDenied(t *testing.T) {
 // 不够，必须严格到"带空格、带分号、带路径、两个 token"一律拒掉。
 func TestInstanceLimits_InvalidValuesRejected(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	seedInstance(t, srv, "inst1", 1)
 
 	bad := []struct {
@@ -208,10 +208,10 @@ func TestInstanceLimits_InvalidValuesRejected(t *testing.T) {
 
 // TestInstanceLimits_AcceptsCgroupSizeForms 把"接受哪些写法"钉住：
 // 这些都是内核 memparse 认的形式，拒掉任何一个都会让用户莫名其妙
-//（"4G 能填、4GB 就说我不合法？"）。
+// （"4G 能填、4GB 就说我不合法？"）。
 func TestInstanceLimits_AcceptsCgroupSizeForms(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	seedInstance(t, srv, "inst1", 1)
 
 	for _, v := range []string{"512M", "4G", "1536m", "512MB", "512B", "1073741824", "1T"} {
@@ -234,7 +234,7 @@ func TestInstanceLimits_AcceptsCgroupSizeForms(t *testing.T) {
 // 也就是"只想改一个核数，结果悄悄把内存与磁盘的限制都放开了"。
 func TestInstanceLimits_PartialUpdateKeepsOtherFields(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	seedInstance(t, srv, "inst1", 1)
 	seedLimits(t, srv, "inst1", 200, "3G", 5120)
 
@@ -278,7 +278,7 @@ func TestInstanceLimits_PartialUpdateKeepsOtherFields(t *testing.T) {
 // 0 / 空串都是合法输入（= 不限制），不能因为"看起来像没填"就被当成非法。
 func TestInstanceLimits_AdminCanClearAll(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	seedInstance(t, srv, "inst1", 1)
 	seedLimits(t, srv, "inst1", 400, "4G", 20480)
 
@@ -296,12 +296,179 @@ func TestInstanceLimits_AdminCanClearAll(t *testing.T) {
 // TestInstanceLimits_UnknownInstance 实例不存在应 404（而不是 500）：
 // 授权判定对总管理员是直接放行的，所以这里能走到存在性检查。
 func TestInstanceLimits_UnknownInstance(t *testing.T) {
-	_, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	srv, ts := newTestServer(t)
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 
 	code, body := doJSON(t, ts, "PUT", "/api/instances/nope/limits", adminTok,
 		map[string]any{"cpu_quota": 100})
 	if code != http.StatusNotFound {
 		t.Errorf("不存在的实例应 404，实际 %d body=%v", code, body)
+	}
+}
+
+// ============================================================================
+// JVM 堆（-Xmx / -Xms）—— 2026-10-04 新增
+// ============================================================================
+
+// maxMemOf 读出实例的 JVM 堆上限。
+func maxMemOf(t *testing.T, srv *Server, instanceID string) string {
+	t.Helper()
+	var v string
+	if err := srv.db.QueryRow(
+		`SELECT COALESCE(max_mem, '') FROM instances WHERE instance_id = ?`, instanceID).Scan(&v); err != nil {
+		t.Fatalf("读 max_mem 失败: %v", err)
+	}
+	return v
+}
+
+// TestInstanceLimits_JvmHeapCanBeChanged 覆盖用户报的那条缺口：
+// 「实例配额修改没法修改 JVM 内存」—— max_mem 原先只在建实例时写一次。
+//
+// 关键点：**面板库只有 max_mem 一列**（见 db/migrate.go 的建表语句），
+// min_mem 从不入库、只在创建时转发给节点。所以这里断言的是 max_mem 真的落库了，
+// 而 min_mem 只出现在响应里（回显本次提交的值），且不因为它的存在让请求失败。
+func TestInstanceLimits_JvmHeapCanBeChanged(t *testing.T) {
+	srv, ts := newTestServer(t)
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
+	seedInstance(t, srv, "inst1", 1) // seedInstance 写入的初始 max_mem = '2G'
+
+	code, body := doJSON(t, ts, "PUT", "/api/instances/inst1/limits", adminTok, map[string]any{
+		"max_mem": "6G", "min_mem": "2G",
+	})
+	if code != http.StatusOK {
+		t.Fatalf("改 JVM 堆应 200，实际 %d body=%v", code, body)
+	}
+	if got := maxMemOf(t, srv, "inst1"); got != "6G" {
+		t.Errorf("max_mem 应为 6G，实际 %q", got)
+	}
+	// 响应回显：界面据此更新，不必再拉一次列表
+	if body["max_mem"] != "6G" {
+		t.Errorf("响应 max_mem 应为 6G，实际 %v", body["max_mem"])
+	}
+	if body["min_mem"] != "2G" {
+		t.Errorf("响应 min_mem 应为 2G，实际 %v", body["min_mem"])
+	}
+	// 改堆同样要重启才生效（堆是启动时渲染进启动命令的）
+	if body["restart_required"] != true {
+		t.Errorf("改 JVM 堆后 restart_required 应为 true，实际 %v", body["restart_required"])
+	}
+	if msg, _ := body["message"].(string); !strings.Contains(msg, "-Xmx6G") {
+		t.Errorf("提示里应说明改成了 -Xmx6G，实际 %q", msg)
+	}
+
+	// 审计要能分清"哪一层内存"被改了：这是 cgroup 还是 JVM 堆。
+	var detail string
+	if err := srv.db.QueryRow(
+		`SELECT detail FROM audit_logs WHERE action = 'update_instance_limits' ORDER BY id DESC LIMIT 1`).
+		Scan(&detail); err != nil {
+		t.Fatalf("应记录审计日志: %v", err)
+	}
+	if !strings.Contains(detail, "JVM 堆上限") || !strings.Contains(detail, "2G") {
+		t.Errorf("审计应写明 JVM 堆上限的旧值 → 新值，实际 %q", detail)
+	}
+}
+
+// TestInstanceLimits_JvmHeapRejectsEmptyAndBadFormats 校验 -Xmx 的边界。
+//
+// 为什么空串必须**拒绝**（与 mem_limit 的语义相反）：mcprocess.normMem 对空串
+// 的处理是回落到 "1G" —— 也就是说"留空"在这里不是"不限制"，而是"悄悄给你 1G"。
+// 让用户填了空却得到 1G，正是这个仓库最忌讳的"改了却没变"。
+func TestInstanceLimits_JvmHeapRejectsEmptyAndBadFormats(t *testing.T) {
+	srv, ts := newTestServer(t)
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
+	seedInstance(t, srv, "inst1", 1)
+
+	bad := []struct {
+		name string
+		body map[string]any
+	}{
+		{"空串", map[string]any{"max_mem": ""}},
+		{"只有空格", map[string]any{"max_mem": "   "}},
+		{"小数", map[string]any{"max_mem": "1.5G"}},
+		{"结尾带 B（JVM 不认）", map[string]any{"max_mem": "512MB"}},
+		{"负数", map[string]any{"max_mem": "-4G"}},
+		{"零", map[string]any{"max_mem": "0"}},
+		{"带空格", map[string]any{"max_mem": "4 G"}},
+		{"两个 token", map[string]any{"max_mem": "4G 8G"}},
+		{"命令注入", map[string]any{"max_mem": "4G;rm -rf /"}},
+		{"路径穿越", map[string]any{"max_mem": "../../etc/passwd"}},
+		{"换行", map[string]any{"max_mem": "4G\n1G"}},
+		{"数值过大", map[string]any{"max_mem": "4096G"}},
+		{"位数超出 int64", map[string]any{"max_mem": "99999999999999999999999"}},
+		{"-Xms 填了非法值", map[string]any{"max_mem": "4G", "min_mem": "1.5G"}},
+		{"-Xms 结尾带 B", map[string]any{"max_mem": "4G", "min_mem": "512MB"}},
+	}
+	for _, c := range bad {
+		code, body := doJSON(t, ts, "PUT", "/api/instances/inst1/limits", adminTok, c.body)
+		if code != http.StatusBadRequest {
+			t.Errorf("%s 应 400，实际 %d body=%v", c.name, code, body)
+		}
+	}
+	// 全程库都不该被动过（seedInstance 写的是 2G）
+	if got := maxMemOf(t, srv, "inst1"); got != "2G" {
+		t.Errorf("被拒的请求不该改动 max_mem，实际 %q", got)
+	}
+}
+
+// TestInstanceLimits_JvmHeapAcceptsRealForms 接受 JVM 真正认得的那些写法。
+func TestInstanceLimits_JvmHeapAcceptsRealForms(t *testing.T) {
+	srv, ts := newTestServer(t)
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
+	seedInstance(t, srv, "inst1", 1)
+
+	// 注意 8T 不在这里：它超过 1 TiB 的荒诞值挡板（maxMemLimitBytes），
+	// 是有意拒绝的 —— 那是"挡板"组的事，见下面那条用例。
+	for _, v := range []string{"4G", "1536m", "512M", "2g", "1024k"} {
+		code, body := doJSON(t, ts, "PUT", "/api/instances/inst1/limits", adminTok,
+			map[string]any{"max_mem": v})
+		if code != http.StatusOK {
+			t.Errorf("max_mem=%q 应被接受，实际 %d body=%v", v, code, body)
+			continue
+		}
+		if got := maxMemOf(t, srv, "inst1"); got != v {
+			t.Errorf("max_mem=%q 应原样保存，实际 %q", v, got)
+		}
+	}
+}
+
+// TestInstanceLimits_MinMemAloneIsNotNoop 是这一项最容易写错的地方：
+// min_mem **不进面板库**，所以拿不到旧值、无法参与"值有没有变"的比较。
+//
+// 如果一个请求只带了 min_mem（max_mem 与库里一致），按"changes 为空就是空操作"
+// 的旧逻辑会被直接挡掉、压根不转发给节点 —— 用户改了 -Xms 却什么也没发生。
+// 这条用例锁住这个行为：只带 min_mem 也必须成功，且被当作"要重启才生效"。
+func TestInstanceLimits_MinMemAloneIsNotNoop(t *testing.T) {
+	srv, ts := newTestServer(t)
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
+	seedInstance(t, srv, "inst1", 1) // max_mem = '2G'
+	seedLimits(t, srv, "inst1", 200, "3G", 4096)
+
+	code, body := doJSON(t, ts, "PUT", "/api/instances/inst1/limits", adminTok,
+		map[string]any{"min_mem": "1G"})
+	if code != http.StatusOK {
+		t.Fatalf("只带 min_mem 应 200（不能当成空操作挡掉），实际 %d body=%v", code, body)
+	}
+	if body["restart_required"] != true {
+		t.Errorf("-Xms 改了要重启才生效，restart_required 应为 true，实际 %v", body["restart_required"])
+	}
+	if body["min_mem"] != "1G" {
+		t.Errorf("响应应回显 min_mem=1G，实际 %v", body["min_mem"])
+	}
+	// 其它三个上限一个都不该被动
+	if cpu, mem, disk := limitsOf(t, srv, "inst1"); cpu != 200 || mem != "3G" || disk != 4096 {
+		t.Errorf("只改 -Xms 不该动到别的上限，实际 %d/%q/%d", cpu, mem, disk)
+	}
+	if got := maxMemOf(t, srv, "inst1"); got != "2G" {
+		t.Errorf("只改 -Xms 不该动到 max_mem，实际 %q", got)
+	}
+	// 审计要留下这次改动的痕迹（它没有旧值可记，只记新值）
+	var detail string
+	if err := srv.db.QueryRow(
+		`SELECT detail FROM audit_logs WHERE action = 'update_instance_limits' ORDER BY id DESC LIMIT 1`).
+		Scan(&detail); err != nil {
+		t.Fatalf("只改 -Xms 也应记审计: %v", err)
+	}
+	if !strings.Contains(detail, "初始堆") || !strings.Contains(detail, "1G") {
+		t.Errorf("审计应记下 -Xms 的新值，实际 %q", detail)
 	}
 }

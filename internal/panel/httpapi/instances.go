@@ -618,7 +618,7 @@ func expiryBlocksStart(action string) bool {
 // instanceStartable 判断实例现在能不能被启动：到期且配置了自动停机时不能。
 //
 // 为什么必须在这里另拦一道：到期以前只是调度器每分钟巡检时"顺手"做的事
-//（scheduler.checkExpiry 里的已到期分支），在那之前（以及之后）任何一次 start
+// （scheduler.checkExpiry 里的已到期分支），在那之前（以及之后）任何一次 start
 // 都能把实例重新拉起来 —— 归属者只要再点一下「启动」，或者建一条"每分钟开机"
 // 的定时任务，到期时间就等于被无限延长，免费额度形同虚设。
 //

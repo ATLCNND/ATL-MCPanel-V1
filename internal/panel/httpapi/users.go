@@ -10,14 +10,28 @@ import (
 	"github.com/ATLCNND/ATL-MCPanel/internal/panel/auth"
 )
 
-// handleRegister 管理员创建用户（注册由管理员控制；首个用户自动成为 admin）。
+// registerReq 建号请求体。
 type registerReq struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
-	Role     string `json:"role"` // admin / user，默认 user
+	Role     string `json:"role"` // admin / user，默认 user（nodeuser 会被降级，见 handleRegister）
 }
 
+// handleRegister 创建用户（**仅管理员**，注册由管理员控制）。
+//
+// 2026-10-12 安全修复：这里原先有一条"users 表为空 → 第一个匿名请求者自动
+// 建为 admin"的分支，路由又挂在 s.optionalAuth 上，于是**未初始化面板的
+// 管理员可以被任何能访问该端口的人抢注**（体检时实测：匿名 POST /api/users
+// 直接返回 201 + role=admin）。前端从来没有调用过它 —— 是一条运维者不知道
+// 存在的隐藏入口，所以危害比"公开的安装向导"更大。
+//
+// 现在：路由是 requireAdmin（见 server.go），本函数也只做"管理员建号"。
+// 首个管理员一律由本机 CLI 创建（cmd/panel/user.go 的 `user create`）。
+// 业界同类事故见 server.go 那条注释里的 Portainer GHSA-x626-fcwx-f5pc。
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	if !requireAdminIn(w, r) {
+		return
+	}
 	var req registerReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "无效的请求体")
@@ -28,51 +42,33 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 检查 users 表是否为空（首次初始化）
-	var count int
-	_ = s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count)
-	if count == 0 {
-		// 第一个用户自动成为 admin
-		role := "admin"
-		hash, err := auth.HashPassword(req.Password)
-		if err != nil {
-			writeErr(w, http.StatusInternalServerError, "密码加密失败")
-			return
-		}
-		res, err := s.db.Exec(`INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)`, req.Username, hash, role)
-		if err != nil {
-			writeErr(w, http.StatusConflict, "用户名已存在")
-			return
-		}
-		newID, _ := res.LastInsertId()
-		s.auditAs(newID, r, "create_user", req.Username, "首个用户（自动 admin）")
-		writeJSON(w, http.StatusCreated, map[string]string{"message": "首个用户已创建为管理员", "role": "admin"})
-		return
+	// 角色：沿用原有语义 —— **只有 admin 会被采纳，其余一律落成 user**。
+	//
+	// 于是 `role: "nodeuser"` 会被静默降级为 user（失败方向是更受限，安全上无害，
+	// 所以这次安全修复刻意不动它）。要建节点用户仍是"先用本接口建号 → 再用
+	// PUT /api/users/{id} 设角色"两步（analysis_api_test.go 的 mkUser 就是这么做的）。
+	// 把这个 wart 一并改掉是独立的一件事，不塞进本次提交。
+	role := RoleUser
+	if req.Role == RoleAdmin {
+		role = RoleAdmin
 	}
 
-	// 非首次：要求当前用户是 admin
-	curRole, _ := r.Context().Value(ctxKeyRole).(string)
-	if curRole != "admin" {
-		writeErr(w, http.StatusForbidden, "只有管理员能创建用户")
-		return
-	}
-
-	role := req.Role
-	if role != "admin" {
-		role = "user"
-	}
 	hash, err := auth.HashPassword(req.Password)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "密码加密失败")
 		return
 	}
-	_, err = s.db.Exec(`INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)`, req.Username, hash, role)
-	if err != nil {
+	if _, err := s.db.Exec(
+		`INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)`,
+		req.Username, hash, role); err != nil {
 		writeErr(w, http.StatusConflict, "用户名已存在")
 		return
 	}
-	s.audit(r, "create_user", req.Username, "角色="+role)
-	writeJSON(w, http.StatusCreated, map[string]string{"message": "用户创建成功"})
+	s.audit(r, "create_user", req.Username, "角色="+roleLabelZh(role))
+	writeJSON(w, http.StatusCreated, map[string]string{
+		"message": "用户创建成功",
+		"role":    role,
+	})
 }
 
 // handleListUsers 列出所有用户（仅 admin）。

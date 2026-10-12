@@ -137,8 +137,8 @@ mcpanel/
 ├── proto/                   # protobuf 定义
 │   └── mcpanel.proto        # 核心协议（Panel↔Daemon）
 ├── cmd/
-│   ├── panel/               # dsh-panel 入口
-│   └── daemon/              # dsh-daemon 入口
+│   ├── panel/               # atl-panel 入口
+│   └── daemon/              # atl-daemon 入口
 ├── internal/
 │   ├── panel/               # Panel 业务逻辑
 │   │   ├── server/          # gRPC server
@@ -433,7 +433,7 @@ message Metrics {
 
 | 产物 | 目标 | 做法 |
 |---|---|---|
-| `dsh-panel`、`dsh-daemon` | `linux/amd64`、`linux/arm64` | **CGO 保持开启 + musl 完全静态链接**（`scripts/build.sh` 已封装） |
+| `atl-panel`、`atl-daemon` | `linux/amd64`、`linux/arm64` | **CGO 保持开启 + musl 完全静态链接**（`scripts/build.sh` 已封装） |
 
 **为什么必须静态**：动态链接的二进制继承构建机的 glibc（Debian 13 → 需要 `GLIBC_2.34`），
 在旧发行版（CentOS 7 = 2.17）上**直接起不来**，报 `version 'GLIBC_2.34' not found`。
@@ -481,7 +481,7 @@ musl 方案零代码改动就拿到了同样的静态产物。
 "**前台直接跑**、被启动脚本 `exec`"，而不是只依赖 systemd 单元：
 
 ```bash
-exec /opt/mcpanel/bin/dsh-daemon -config /opt/mcpanel/config.yaml
+exec /opt/mcpanel/bin/atl-daemon -config /opt/mcpanel/config.yaml
 ```
 
 日志与退出语义要写清楚（退出码、信号处理、`KillMode=process` 在 systemd 场景下的必要性）。

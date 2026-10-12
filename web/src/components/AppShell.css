@@ -210,12 +210,69 @@
   flex: 0 0 auto;
 }
 
-/* 唯一的滚动容器 */
+/* 唯一的滚动容器。
+ *
+ * 2026-10-06 修「切换页面时两侧卡片位置变动」（用户定位到了根因）：
+ *   滚动条出现在**容器外侧**时会占掉内容宽度 —— 有的页面内容高、出现滚动条，
+ *   三列布局就被挤窄；有的页面内容矮、没有滚动条，就宽一些。
+ *   来回切页时左右两栏随之左右横跳。
+ *
+ * 两条改动一起用：
+ *   1. `scrollbar-gutter: stable` —— **始终为滚动条预留位置**，
+ *      无论当前有没有滚动条，内容宽度都不变（这是根治）。
+ *   2. 把滚动条做成**覆盖式**（`scrollbar-width: thin` + 透明轨道），
+ *      让视觉上它"缩进"到内容区边缘，不显得像一块外挂的灰条。
+ *
+ * ⚠️ 注意 `scrollbar-gutter: stable` 与 `overflow-y: auto` 是搭配使用的：
+ *    只在 auto 下它才"预留"，改成 scroll 会让所有页面都常驻一条轨道。 */
 .shell-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding: 0 28px 28px;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+/* WebKit：细滚动条 + 透明轨道；滑块留一点内边距，看起来是"嵌在里面" */
+.shell-body::-webkit-scrollbar {
+  width: 10px;
+}
+.shell-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+.shell-body::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: var(--r-full);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  min-height: 40px;
+}
+.shell-body::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
+  background-clip: content-box;
+}
+
+/* 实例页走 .shell-bare（不经 .shell-body），它自己也滚动 —— 同样处理，
+   否则实例页与其它页面之间仍会有横向跳动。 */
+.shell-bare {
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+.shell-bare::-webkit-scrollbar {
+  width: 10px;
+}
+.shell-bare::-webkit-scrollbar-track {
+  background: transparent;
+}
+.shell-bare::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: var(--r-full);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  min-height: 40px;
 }
 
 /* ---------------- 页面切换过渡 ----------------

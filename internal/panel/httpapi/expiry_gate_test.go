@@ -18,7 +18,7 @@ import (
 func TestExpiredInstanceStartRefusedStopAllowed(t *testing.T) {
 	srv, ts := newTestServer(t)
 	seedInstance(t, srv, "expinst1", 1)
-	admin := loginAs(t, ts, "expadmin", "expadmin-pass-1234")
+	admin := loginAs(t, srv, ts, "expadmin", "expadmin-pass-1234")
 
 	setInstanceExpiry(t, srv, "expinst1", time.Now().Add(-2*time.Hour), 1)
 

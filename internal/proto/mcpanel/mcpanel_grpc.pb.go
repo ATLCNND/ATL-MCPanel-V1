@@ -60,7 +60,9 @@ const (
 	DaemonService_SetInstanceJar_FullMethodName         = "/mcpanel.DaemonService/SetInstanceJar"
 	DaemonService_SetInstanceJava_FullMethodName        = "/mcpanel.DaemonService/SetInstanceJava"
 	DaemonService_SetInstanceLimits_FullMethodName      = "/mcpanel.DaemonService/SetInstanceLimits"
+	DaemonService_SetInstanceJvmMem_FullMethodName      = "/mcpanel.DaemonService/SetInstanceJvmMem"
 	DaemonService_ListJars_FullMethodName               = "/mcpanel.DaemonService/ListJars"
+	DaemonService_ReadWorldInfo_FullMethodName          = "/mcpanel.DaemonService/ReadWorldInfo"
 	DaemonService_Backup_FullMethodName                 = "/mcpanel.DaemonService/Backup"
 	DaemonService_Restore_FullMethodName                = "/mcpanel.DaemonService/Restore"
 	DaemonService_ListBackups_FullMethodName            = "/mcpanel.DaemonService/ListBackups"
@@ -153,7 +155,30 @@ type DaemonServiceClient interface {
 	// 所以对**正在运行**的实例来说，改完要重启才生效 —— 面板会在界面上明说这一点。
 	// 磁盘配额不走这里：那是面板自己的调度器巡检的，与 Daemon 无关。
 	SetInstanceLimits(ctx context.Context, in *SetInstanceLimitsRequest, opts ...grpc.CallOption) (*OperationResponse, error)
+	// 修改实例的 **JVM 堆**（-Xmx / -Xms）。
+	//
+	// 与 SetInstanceLimits 分开而不是合并：那是两个不同层面的"内存" ——
+	//
+	//	max_mem/min_mem = JVM 堆（启动命令里的 -Xmx/-Xms）
+	//	mem_limit       = cgroup memory.max（整台进程的天花板）
+	//
+	// 堆必须小于 cgroup 上限（JVM 还有元空间/直接内存/线程栈等堆外开销），
+	// 否则实例启动后不久会被内核 OOM 杀掉。合并成一个字段就没法表达这层约束。
+	//
+	// 同样是**下次启动**生效：启动命令在实例启动时就渲染好了。
+	SetInstanceJvmMem(ctx context.Context, in *SetInstanceJvmMemRequest, opts ...grpc.CallOption) (*OperationResponse, error)
 	ListJars(ctx context.Context, in *ListJarsRequest, opts ...grpc.CallOption) (*ListJarsResponse, error)
+	// 读取**世界信息**（解析 level.dat 的 NBT）。
+	//
+	// 为什么不让面板传原始二进制过来自己解析（虽然 DownloadFile 能做到）：
+	//
+	//	· level.dat 就在节点上，Daemon 就地解析最省事、也没有"面板拿到半截文件"的可能；
+	//	· 面板不需要懂 NBT 的二进制细节，拿到的是一份结构化的只读快照；
+	//	· 解析失败/文件损坏的错误在**文件所在的那一端**报出来，定位最直接。
+	//
+	// 只读：本 RPC **不会**写 level.dat。改游戏规则请走控制台 `/gamerule`
+	// （运行中的服务器会覆写 level.dat 里的 GameRules，直接改文件属于"改了却没变"）。
+	ReadWorldInfo(ctx context.Context, in *WorldInfoRequest, opts ...grpc.CallOption) (*WorldInfoResponse, error)
 	// 备份/回滚
 	Backup(ctx context.Context, in *BackupRequest, opts ...grpc.CallOption) (*BackupResponse, error)
 	Restore(ctx context.Context, in *RestoreRequest, opts ...grpc.CallOption) (*OperationResponse, error)
@@ -620,10 +645,30 @@ func (c *daemonServiceClient) SetInstanceLimits(ctx context.Context, in *SetInst
 	return out, nil
 }
 
+func (c *daemonServiceClient) SetInstanceJvmMem(ctx context.Context, in *SetInstanceJvmMemRequest, opts ...grpc.CallOption) (*OperationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OperationResponse)
+	err := c.cc.Invoke(ctx, DaemonService_SetInstanceJvmMem_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *daemonServiceClient) ListJars(ctx context.Context, in *ListJarsRequest, opts ...grpc.CallOption) (*ListJarsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListJarsResponse)
 	err := c.cc.Invoke(ctx, DaemonService_ListJars_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ReadWorldInfo(ctx context.Context, in *WorldInfoRequest, opts ...grpc.CallOption) (*WorldInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WorldInfoResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ReadWorldInfo_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -792,7 +837,30 @@ type DaemonServiceServer interface {
 	// 所以对**正在运行**的实例来说，改完要重启才生效 —— 面板会在界面上明说这一点。
 	// 磁盘配额不走这里：那是面板自己的调度器巡检的，与 Daemon 无关。
 	SetInstanceLimits(context.Context, *SetInstanceLimitsRequest) (*OperationResponse, error)
+	// 修改实例的 **JVM 堆**（-Xmx / -Xms）。
+	//
+	// 与 SetInstanceLimits 分开而不是合并：那是两个不同层面的"内存" ——
+	//
+	//	max_mem/min_mem = JVM 堆（启动命令里的 -Xmx/-Xms）
+	//	mem_limit       = cgroup memory.max（整台进程的天花板）
+	//
+	// 堆必须小于 cgroup 上限（JVM 还有元空间/直接内存/线程栈等堆外开销），
+	// 否则实例启动后不久会被内核 OOM 杀掉。合并成一个字段就没法表达这层约束。
+	//
+	// 同样是**下次启动**生效：启动命令在实例启动时就渲染好了。
+	SetInstanceJvmMem(context.Context, *SetInstanceJvmMemRequest) (*OperationResponse, error)
 	ListJars(context.Context, *ListJarsRequest) (*ListJarsResponse, error)
+	// 读取**世界信息**（解析 level.dat 的 NBT）。
+	//
+	// 为什么不让面板传原始二进制过来自己解析（虽然 DownloadFile 能做到）：
+	//
+	//	· level.dat 就在节点上，Daemon 就地解析最省事、也没有"面板拿到半截文件"的可能；
+	//	· 面板不需要懂 NBT 的二进制细节，拿到的是一份结构化的只读快照；
+	//	· 解析失败/文件损坏的错误在**文件所在的那一端**报出来，定位最直接。
+	//
+	// 只读：本 RPC **不会**写 level.dat。改游戏规则请走控制台 `/gamerule`
+	// （运行中的服务器会覆写 level.dat 里的 GameRules，直接改文件属于"改了却没变"）。
+	ReadWorldInfo(context.Context, *WorldInfoRequest) (*WorldInfoResponse, error)
 	// 备份/回滚
 	Backup(context.Context, *BackupRequest) (*BackupResponse, error)
 	Restore(context.Context, *RestoreRequest) (*OperationResponse, error)
@@ -939,8 +1007,14 @@ func (UnimplementedDaemonServiceServer) SetInstanceJava(context.Context, *SetIns
 func (UnimplementedDaemonServiceServer) SetInstanceLimits(context.Context, *SetInstanceLimitsRequest) (*OperationResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetInstanceLimits not implemented")
 }
+func (UnimplementedDaemonServiceServer) SetInstanceJvmMem(context.Context, *SetInstanceJvmMemRequest) (*OperationResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetInstanceJvmMem not implemented")
+}
 func (UnimplementedDaemonServiceServer) ListJars(context.Context, *ListJarsRequest) (*ListJarsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListJars not implemented")
+}
+func (UnimplementedDaemonServiceServer) ReadWorldInfo(context.Context, *WorldInfoRequest) (*WorldInfoResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReadWorldInfo not implemented")
 }
 func (UnimplementedDaemonServiceServer) Backup(context.Context, *BackupRequest) (*BackupResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Backup not implemented")
@@ -1682,6 +1756,24 @@ func _DaemonService_SetInstanceLimits_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_SetInstanceJvmMem_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetInstanceJvmMemRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).SetInstanceJvmMem(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_SetInstanceJvmMem_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).SetInstanceJvmMem(ctx, req.(*SetInstanceJvmMemRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _DaemonService_ListJars_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListJarsRequest)
 	if err := dec(in); err != nil {
@@ -1696,6 +1788,24 @@ func _DaemonService_ListJars_Handler(srv interface{}, ctx context.Context, dec f
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(DaemonServiceServer).ListJars(ctx, req.(*ListJarsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ReadWorldInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WorldInfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ReadWorldInfo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ReadWorldInfo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ReadWorldInfo(ctx, req.(*WorldInfoRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1996,8 +2106,16 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _DaemonService_SetInstanceLimits_Handler,
 		},
 		{
+			MethodName: "SetInstanceJvmMem",
+			Handler:    _DaemonService_SetInstanceJvmMem_Handler,
+		},
+		{
 			MethodName: "ListJars",
 			Handler:    _DaemonService_ListJars_Handler,
+		},
+		{
+			MethodName: "ReadWorldInfo",
+			Handler:    _DaemonService_ReadWorldInfo_Handler,
 		},
 		{
 			MethodName: "Backup",

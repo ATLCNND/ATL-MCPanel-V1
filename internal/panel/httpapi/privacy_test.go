@@ -17,10 +17,10 @@ import (
 // TestMyPortsHidesFrpsHostFromNonAdmin 普通用户的 /api/my/ports 不带 frps_host。
 func TestMyPortsHidesFrpsHostFromNonAdmin(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "pv1", "password": "pv123456", "role": "user"})
-	userTok := loginAs(t, ts, "pv1", "pv123456")
+	userTok := loginAs(t, srv, ts, "pv1", "pv123456")
 
 	const secretIP = "203.0.113.9"
 	frpsID := seedFrps(t, srv, secretIP, 25565, 25600)
@@ -77,10 +77,10 @@ func TestMyPortsHidesFrpsHostFromNonAdmin(t *testing.T) {
 // 原样发给了**每个能看到该实例的人**（连 owner 都不需要，viewer 就能拿到）。
 func TestInstancePortsHidesFrpsHostFromNonAdmin(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "pv3", "password": "pv123456", "role": "user"})
-	userTok := loginAs(t, ts, "pv3", "pv123456")
+	userTok := loginAs(t, srv, ts, "pv3", "pv123456")
 
 	const secretIP = "203.0.113.7"
 	frpsID := seedFrps(t, srv, secretIP, 25565, 25600)
@@ -146,7 +146,7 @@ func TestInstancePortsHidesFrpsHostFromNonAdmin(t *testing.T) {
 // 知道"能放到哪台机器上"（名字够了）。
 func TestMyNodesHidesIPFromNodeUser(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	// seedInstance 会顺带建出 id=1 的节点
 	seedInstance(t, srv, "inst1", 1)
 
@@ -157,7 +157,7 @@ func TestMyNodesHidesIPFromNodeUser(t *testing.T) {
 		t.Fatalf("设为节点用户应成功，实际 %d body=%v", code, body)
 	}
 	// 角色写在 JWT 里，提权后要重新登录
-	nodeTok := loginAs(t, ts, "pv2", "pv123456")
+	nodeTok := loginAs(t, srv, ts, "pv2", "pv123456")
 
 	code, raw := call(t, ts, "GET", "/api/my/nodes", nodeTok, nil)
 	if code != http.StatusOK {

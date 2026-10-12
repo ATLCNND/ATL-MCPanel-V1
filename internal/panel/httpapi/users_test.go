@@ -16,7 +16,7 @@ import (
 // 对比：handleDeleteMyAvatar（自己删头像）是删文件的，只有管理员删账号这条路径漏了。
 func TestDeleteUserRemovesAvatarFile(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "av1", "password": "av123456", "role": "user"})
 
@@ -55,7 +55,7 @@ func TestDeleteUserRemovesAvatarFile(t *testing.T) {
 // TestDeleteUserKeepsAvatarOfOthers 别删错人：只删目标账号的文件。
 func TestDeleteUserKeepsAvatarOfOthers(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	for _, u := range []string{"av2", "av3"} {
 		doJSON(t, ts, "POST", "/api/users", adminTok,
 			map[string]string{"username": u, "password": "av123456", "role": "user"})

@@ -1,4 +1,4 @@
-// dsh-panel 是 ATL-MCPanel 的中心管理面板入口。
+// atl-panel 是 ATL-MCPanel 的中心管理面板入口。
 package main
 
 import (
@@ -29,11 +29,42 @@ func main() {
 	cfgPath := flag.String("config", "config.yaml", "配置文件路径")
 	logLevel := flag.String("log-level", "info", "日志级别: debug/info/warn/error")
 	showVersion := flag.Bool("version", false, "显示版本信息并退出")
+	flag.Usage = func() {
+		fmt.Fprint(os.Stderr, "ATL-MCPanel 面板\n\n用法:\n"+
+			"  atl-panel [-config 配置文件] [-log-level 级别]   启动面板服务\n"+
+			"  atl-panel -version                              显示版本\n"+
+			"  atl-panel user <create|passwd|list> [...]       账号管理（含创建首个管理员）\n\n"+
+			"启动服务的参数:\n")
+		flag.PrintDefaults()
+		fmt.Fprint(os.Stderr, "\n")
+		userUsage()
+	}
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println(version.String())
 		return
+	}
+
+	// 子命令分流。必须放在 flag.Parse **之后**：
+	//
+	//	flag 包遇到第一个非 flag 参数就停止解析，于是包一层"-config X user create"
+	//	时全局 flag 已先被吃掉，剩下的 user/create 落在 flag.Args() 里。
+	//
+	// ⚠️ 早先的写法是判断 os.Args[1]=="user"，看起来能用，实际只在
+	//	`atl-panel user create ...`（子命令在最前）时成立；而安装脚本与文档里
+	//	写的是 `atl-panel -config /opt/mcpanel/config.yaml user create ...`
+	//	—— 那种顺序下分流不生效，程序会**静默地再起一个面板服务**，
+	//	而管理员一个也没建（实测踩到，且因为端口被占才露出线索）。
+	//	下面这种写法对两种顺序都成立。
+	if args := flag.Args(); len(args) > 0 {
+		if args[0] == "user" {
+			os.Exit(runUserCmd(*cfgPath, args[1:]))
+		}
+		// 多出来的位置参数一律报错而不是忽略：静默忽略正是上面那个 bug 的形态。
+		fmt.Fprintf(os.Stderr, "未知的子命令: %s（只支持 user）\n\n", args[0])
+		flag.Usage()
+		os.Exit(2)
 	}
 
 	log := logger.New(*logLevel)
@@ -171,6 +202,24 @@ func main() {
 	})
 	handler := api.Handler()
 	tlsReady := cfg.Server.TLSCert != "" && cfg.Server.TLSKey != ""
+
+	// ⚠️ 未配置证书时的部署提醒（**非必须**，2026-10-06 用户要求写进来）。
+	//
+	// 为什么值得提醒：面板的**控制台**走 WebSocket。用 HTTP 访问面板时一切正常；
+	// 但如果部署者自己在前端挂了 HTTPS（或用了自签证书），
+	// 浏览器会**允许页面"继续访问"、却直接拒绝 WebSocket**（没有"继续访问"这个选项），
+	// 表现为"控制台一直显示连接错误"，而页面上其它功能都正常 ——
+	// 这个现象很难自己定位（用户实测时浏览器控制台刷了 281 条
+	// `ERR_CERT_AUTHORITY_INVALID`，而界面上只有一句笼统的"连接错误"）。
+	//
+	// 所以这里只说清两件事：控制台需要受信任的证书；以及不配也完全能用。
+	// 刻意**不**强制、不报警告级别 —— 内网自用 HTTP 是完全合理的部署方式。
+	if !tlsReady {
+		log.Info("未配置 TLS 证书：面板将以 HTTP 提供服务（内网自用没问题）。" +
+			"若你打算用 HTTPS 访问，请使用「受信任的」证书 —— 自签证书会导致控制台 " +
+			"WebSocket 被浏览器拒绝（页面本身仍能通过「继续访问」打开），" +
+			"表现为「控制台一直显示连接错误」而其它功能都正常。")
+	}
 
 	// 双端口模式：HTTPS 监听 tls_listen，HTTP 监听 listen
 	if cfg.Server.TLSListen != "" && tlsReady {

@@ -6,7 +6,7 @@ import ThemeToggle from './ThemeToggle'
 import './AppShell.css'
 
 /** 全局导航项 */
-export type NavKey = 'dashboard' | 'instances' | 'monitor' | 'nodes' | 'tunnels' | 'audit' | 'users' | 'avatars' | 'providers' | 'account' | 'help'
+export type NavKey = 'dashboard' | 'instances' | 'monitor' | 'nodes' | 'tunnels' | 'audit' | 'users' | 'avatars' | 'providers' | 'account' | 'help' | 'about'
 
 /**
  * 全局导航项的**唯一定义处**。
@@ -39,6 +39,8 @@ export const NAV_ITEMS: { key: NavKey; label: string; icon: string; adminOnly?: 
   // 公告与帮助：公告是管理员对全体用户说话的地方，帮助是"面板怎么用"。
   // 两者同页 —— 用户想看"怎么用"时不用先猜是哪个入口。
   { key: 'help', label: '公告与帮助', icon: '※' },
+  // 关于放在全局导航底部，与账户和帮助同属低频信息页。
+  { key: 'about', label: '关于', icon: 'ⓘ' },
 ]
 
 /** 是否能看到「分析平台」页：总管理员或节点用户（与后端 canManageProviders 一致） */

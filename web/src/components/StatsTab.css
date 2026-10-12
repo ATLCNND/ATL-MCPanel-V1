@@ -226,3 +226,127 @@
   font-size: 11px;
   color: var(--text-3);
 }
+
+/* ---- 资源上限（配额）卡：查看 + 就地编辑 ----
+   2026-10-04 从实例页右栏搬过来。放在趋势图之前：配额决定"这台被允许用多少"，
+   是理解下面所有曲线的前提。 */
+.st-quota-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 12px 16px;
+  margin-bottom: 14px;
+}
+
+.sqc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.sqc-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.sqc-edit {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+/* 四个配额项：窄屏自动折行，宽屏一行四项 —— 不用强制滚动 */
+.sqc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px 18px;
+}
+
+.sqc-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sqc-item .k {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.sqc-item .v {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.sqc-item .v em {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-3);
+  font-style: normal;
+}
+
+.sqc-item .sub {
+  font-size: 10.5px;
+  color: var(--text-3);
+  line-height: 1.5;
+}
+
+.sqc-note {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.6;
+}
+
+/* 编辑态：三行输入 + 按钮，纵向排列（右栏那套横着放不下） */
+.sqc-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sqc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.sqc-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+/* 运行统计里"分母"的弱化样式（例如" / 配额 4096 MB"） */
+.sr-dim {
+  color: var(--text-3);
+  font-style: normal;
+  font-weight: 500;
+  margin-left: 2px;
+}
+
+/* 编辑态里的说明块（例如 cgroup 上限与 -Xmx 的关系）：
+   比 .sqc-note 更靠内、更像"就地提示"而不是"区块脚注"。 */
+.sqc-hint {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-3);
+  background: var(--bg-subtle);
+  border-radius: var(--r);
+  padding: 7px 10px;
+}
+
+.sqc-hint code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--text-2);
+}

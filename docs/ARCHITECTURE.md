@@ -8,7 +8,7 @@
 
 ### Panel（中心面板）
 ```
-dsh-panel
+atl-panel
 ├── HTTP/WS 层（前端 API + 控制台代理）
 │   ├── REST API      (/api/...)
 │   └── WebSocket     (/ws/console/{instanceId})
@@ -26,7 +26,7 @@ dsh-panel
 
 ### Daemon（每实例一个）
 ```
-dsh-daemon
+atl-daemon
 ├── gRPC Client（连 Panel，mTLS）
 ├── MC 进程管理（systemd unit）
 ├── 控制台桥接（stdin/stdout ↔ gRPC stream）
@@ -42,7 +42,7 @@ dsh-daemon
 ### 2.1 节点登记（Daemon 接入）
 ```
 管理员 → Panel: 提交节点信息(IP/SSH)
-Panel → SSH → VM: 探测环境、部署/启动 dsh-daemon
+Panel → SSH → VM: 探测环境、部署/启动 atl-daemon
 Panel → 签发 mTLS 客户端证书
 Daemon → gRPC Register(cert) → Panel
 Panel → 记录节点 online

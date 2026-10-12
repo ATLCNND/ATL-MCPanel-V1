@@ -49,7 +49,7 @@ func TestNodeStaleAfterIsNinetySeconds(t *testing.T) {
 // 两个节点接口都必须带上按心跳算出来的 online，否则界面又会各说各话。
 func TestNodeEndpointsExposeOnline(t *testing.T) {
 	srv, ts := newTestServer(t)
-	admin := loginAs(t, ts, "adm11", "adm11-pass-1234")
+	admin := loginAs(t, srv, ts, "adm11", "adm11-pass-1234")
 	seedInstance(t, srv, "onlinechk", 1)
 
 	// 把节点的 last_seen 做旧 5 分钟（模拟 Daemon 失联，但 status 列还是 online）

@@ -17,14 +17,14 @@ import (
 // 不是"实例自己的事"（后者才是 public 端口那类 owner 可自助的操作）。
 func TestContainerToggle_AdminOnly(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "ctrowner", "password": "ctr123456", "role": "user"})
 
 	seedInstance(t, srv, "inst1", 1)
 	ownID := uidOf(t, srv, "ctrowner")
 	assignLevel(t, srv, "inst1", ownID, LevelOwner)
-	ownTok := loginAs(t, ts, "ctrowner", "ctr123456")
+	ownTok := loginAs(t, srv, ts, "ctrowner", "ctr123456")
 
 	// ① 实例 owner（权限最高的租户角色）也必须被挡住
 	code, body := doJSON(t, ts, "PUT", "/api/instances/inst1/container", ownTok,
@@ -59,13 +59,13 @@ func TestContainerToggle_AdminOnly(t *testing.T) {
 // 万一以后有人把路由改回 requireAuth + LevelOwner，这里会立刻红。
 func TestContainerToggle_NotOwnerControllable(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "ctrnode", "password": "ctr123456", "role": "nodeuser"})
 
 	seedInstance(t, srv, "inst1", 1)
 	nodeID := uidOf(t, srv, "ctrnode")
-	nodeTok := loginAs(t, ts, "ctrnode", "ctr123456")
+	nodeTok := loginAs(t, srv, ts, "ctrnode", "ctr123456")
 
 	// 节点用户（能管节点资源与端口，权限不低）同样不能开关隔离：
 	// 容器化是节点级安全属性，只有总管理员能定。

@@ -17,7 +17,7 @@ import (
 func TestCreateTaskRespectsLimit(t *testing.T) {
 	srv, ts := newTestServer(t)
 	seedInstance(t, srv, "taskcap1", 1)
-	admin := loginAs(t, ts, "taskcapadmin", "taskcap-pass-1234")
+	admin := loginAs(t, srv, ts, "taskcapadmin", "taskcap-pass-1234")
 
 	// 先塞到上限：其中一条是**已禁用**的 —— 禁用的行同样要占调度器每轮的解析开销，
 	// 也是用户留着"以后再用"的，不清理就不该再让新的进来。

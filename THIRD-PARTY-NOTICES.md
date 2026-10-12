@@ -14,7 +14,7 @@ ATL-MCPanel 的分发包（二进制、前端静态资源）中包含下列第�
 
 ---
 
-## 一、Go 组件（已链接进 dsh-panel / dsh-daemon）
+## 一、Go 组件（已链接进 atl-panel / atl-daemon）
 
 | 组件 | 版本 | 许可证 |
 |---|---|---|

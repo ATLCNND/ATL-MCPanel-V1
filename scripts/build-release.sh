@@ -172,16 +172,16 @@ make_pkg() {
 
   # 二进制
   if [ "$kind" = "panel" ]; then
-    cp "$srcbin/dsh-panel" "$out/bin/"
+    cp "$srcbin/atl-panel" "$out/bin/"
     # 面板的一键部署节点要用**同版本**的 daemon，所以面板包里也放一份
-    [ -f "$srcbin/dsh-daemon" ] && cp "$srcbin/dsh-daemon" "$out/bin/"
+    [ -f "$srcbin/atl-daemon" ] && cp "$srcbin/atl-daemon" "$out/bin/"
     # frpc 也要放一份：一键部署会把"面板二进制旁边"的 frpc 一并下发到节点
     # （见 httpapi/nodes.go 的 readSiblingBinary），这样穿透开箱可用。
     # 校验和不符时 copy_frpc 返回 1 —— 必须中止整包，不能"少一个文件照样发"。
     copy_frpc "$arch" "$out/bin" "供一键部署下发" || return 1
     cp -r web/dist "$out/web-dist"
   else
-    cp "$srcbin/dsh-daemon" "$out/bin/"
+    cp "$srcbin/atl-daemon" "$out/bin/"
     # frpc 随节点包分发（**穿透开箱可用**的前提）。
     #
     # 为什么随包发：Daemon 用 `exec.LookPath("frpc")` 找它（见 internal/daemon/grpcapi/
@@ -265,19 +265,27 @@ done
 echo
 echo "==> 校验包内容"
 FAIL=0
-# 只校验**部署包**：dist/ 里现在还有运行时镜像 tar（atl-mcpanel-runtime-*.tar.gz），
-# 它不是部署包，按部署包的标准去查必然"缺文件"（实测把打包直接判成了失败）。
-for f in dist/atl-mcpanel-*-linux-*.tar.gz; do
+# 只校验**本次要出的那批**包，即匹配当前 $VERSION 的。
+#
+# 为什么不能扫 dist/ 下所有包（2026-10-12 实测踩到）：dist/ 是**累积目录**，
+# 每次发布的历史包都留在里面。扫全部包时，一个早就该被遗忘的旧包会把整次打包判成失败
+# —— 症状是"新包明明是对的，却报 0.9.18 那个包缺少 bin/atl-panel"，
+# 而失败原因和本次改动毫无关系。发布者很容易因此去改新代码，方向完全错了。
+# （那次真实原因更简单：0.9.18 的包里二进制还叫 dsh-panel，它是改名之前的产物。）
+#
+# 运行时镜像 tar（atl-mcpanel-runtime-*.tar.gz）本来也要排除：它不是部署包，
+# 按部署包的标准去查必然"缺文件"。
+for f in dist/atl-mcpanel-${VERSION}-linux-*.tar.gz; do
   [ -f "$f" ] || continue
   list=$(tar tzf "$f")
   base=$(basename "$f" .tar.gz)
   need="LICENSE VERSION config.example.yaml deploy/install.sh deploy/upgrade.sh README.md"
   if echo "$base" | grep -q -- '-panel$'; then
-    need="$need bin/dsh-panel web-dist/index.html deploy/systemd/atlmcpanel-panel.service"
+    need="$need bin/atl-panel web-dist/index.html deploy/systemd/atlmcpanel-panel.service"
   else
-    need="$need bin/dsh-daemon deploy/systemd/atlmcpanel-daemon.service"
+    need="$need bin/atl-daemon deploy/systemd/atlmcpanel-daemon.service"
     # 节点包里不该有面板专属文件
-    if echo "$list" | grep -qE 'bin/dsh-panel|web-dist'; then
+    if echo "$list" | grep -qE 'bin/atl-panel|web-dist'; then
       echo "    ❌ $base 里混进了面板专属文件" >&2
       FAIL=1
     fi
@@ -286,7 +294,7 @@ for f in dist/atl-mcpanel-*-linux-*.tar.gz; do
     echo "$list" | grep -qx "$base/$n" || { echo "    ❌ $base 缺少 $n" >&2; FAIL=1; }
   done
 done
-[ "$FAIL" -eq 0 ] && echo "    ✅ 所有包的必需文件齐全，且没有互相串味"
+[ "$FAIL" -eq 0 ] && echo "    ✅ 本次 $VERSION 的包必需文件齐全，且没有互相串味"
 
 # ---------- 5. 校验：包里的脚本语法正确 ----------
 echo

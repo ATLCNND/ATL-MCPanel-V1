@@ -102,7 +102,28 @@ service DaemonService {
   // 所以对**正在运行**的实例来说，改完要重启才生效 —— 面板会在界面上明说这一点。
   // 磁盘配额不走这里：那是面板自己的调度器巡检的，与 Daemon 无关。
   rpc SetInstanceLimits(SetInstanceLimitsRequest) returns (OperationResponse);
+  // 修改实例的 **JVM 堆**（-Xmx / -Xms）。
+  //
+  // 与 SetInstanceLimits 分开而不是合并：那是两个不同层面的"内存" ——
+  //   max_mem/min_mem = JVM 堆（启动命令里的 -Xmx/-Xms）
+  //   mem_limit       = cgroup memory.max（整台进程的天花板）
+  // 堆必须小于 cgroup 上限（JVM 还有元空间/直接内存/线程栈等堆外开销），
+  // 否则实例启动后不久会被内核 OOM 杀掉。合并成一个字段就没法表达这层约束。
+  //
+  // 同样是**下次启动**生效：启动命令在实例启动时就渲染好了。
+  rpc SetInstanceJvmMem(SetInstanceJvmMemRequest) returns (OperationResponse);
   rpc ListJars(ListJarsRequest) returns (ListJarsResponse);
+
+  // 读取**世界信息**（解析 level.dat 的 NBT）。
+  //
+  // 为什么不让面板传原始二进制过来自己解析（虽然 DownloadFile 能做到）：
+  //   · level.dat 就在节点上，Daemon 就地解析最省事、也没有"面板拿到半截文件"的可能；
+  //   · 面板不需要懂 NBT 的二进制细节，拿到的是一份结构化的只读快照；
+  //   · 解析失败/文件损坏的错误在**文件所在的那一端**报出来，定位最直接。
+  //
+  // 只读：本 RPC **不会**写 level.dat。改游戏规则请走控制台 `/gamerule`
+  //（运行中的服务器会覆写 level.dat 里的 GameRules，直接改文件属于"改了却没变"）。
+  rpc ReadWorldInfo(WorldInfoRequest) returns (WorldInfoResponse);
 
   // 备份/回滚
   rpc Backup(BackupRequest) returns (BackupResponse);
@@ -376,6 +397,92 @@ message SetInstanceLimitsRequest {
   string instance_id = 1;
   int32 cpu_quota = 2;
   string mem_limit = 3;
+}
+
+// SetInstanceJvmMemRequest 修改实例的 JVM 堆（-Xmx / -Xms）。
+//
+// 取值与建实例时（CreateInstanceRequest 的 max_mem / min_mem）同语义：
+// 形如 "4G" / "1536m"；空串由 Daemon 按既有口径归一（-Xmx 不能没有值）。
+//
+// 两个字段都是**全量覆盖**：面板把当前想生效的值一起发过来，避免"只发一个、
+// 另一个被清空"的歧义。想只改一个时，面板先用库里的旧值补齐另一个。
+message SetInstanceJvmMemRequest {
+  string instance_id = 1;
+  string max_mem = 2;
+  string min_mem = 3;
+}
+
+// ============================================================
+// 世界信息（level.dat）
+// ============================================================
+
+message WorldInfoRequest {
+  string instance_id = 1;
+  // 世界目录名（空 = 用 server.properties 里的 level-name，再空则用 "world"）
+  string world = 2;
+  // 是否把 GameRules 一并返回（51 条，有些调用方不需要）
+  bool include_gamerules = 3;
+}
+
+// GameRule 单条原版规则。
+//
+// 值统一用字符串：level.dat 里 GameRules 的**所有值都存成 String**
+//（实测 Paper 1.21.1 的 51 条全是 String，连 randomTickSpeed 也是 "3"）。
+// 这里原样带出，由面板决定按布尔还是数字解释 —— 不在这里猜。
+message GameRule {
+  string name = 1;
+  string value = 2;
+}
+
+message WorldInfoResponse {
+  bool success = 1;
+  string error = 2;
+
+  // ---- 世界身份 ----
+  string world_dir = 3;        // 实际读取的目录名
+  string level_name = 4;       // Data.LevelName
+  string seed = 5;             // WorldGenSettings.seed（**有符号**，可能是负数；十进制字符串）
+  bool seed_present = 6;       // 是否真有种子（老存档可能没有这个字段）
+  string generator = 7;        // 主世界 generator.type（noise / flat / ...）
+  bool generate_features = 8;  // 是否生成结构
+  bool bonus_chest = 9;
+
+  // ---- 玩法 ----
+  int32 game_type = 10;        // 0 生存 1 创造 2 冒险 3 旁观
+  int32 difficulty = 11;       // 0 和平 1 简单 2 普通 3 困难
+  bool difficulty_locked = 12;
+  bool hardcore = 13;
+  bool allow_commands = 14;
+
+  // ---- 出生点与边界 ----
+  int32 spawn_x = 15;
+  int32 spawn_y = 16;
+  int32 spawn_z = 17;
+  double border_size = 18;     // 6e7 = 未设置边界（哨兵值，面板要特判）
+  double border_center_x = 19;
+  double border_center_z = 20;
+
+  // ---- 世界状态 ----
+  int64 time = 21;             // Data.Time（游戏刻）
+  int64 day_time = 22;         // Data.DayTime
+  bool raining = 23;
+  bool thundering = 24;
+  int64 last_played_ms = 25;   // Data.LastPlayed（**毫秒**）
+
+  // ---- 版本 ----
+  int32 data_version = 26;     // Data.DataVersion（如 3955 = 1.21.1）
+  repeated string server_brands = 27; // Data.ServerBrands
+
+  // ---- 规则与数据包 ----
+  repeated GameRule gamerules = 28;
+  repeated string datapacks_enabled = 29;
+  repeated string datapacks_disabled = 30;
+
+  // ---- 维度清单（从 WorldGenSettings.dimensions 的键名取，如 minecraft:overworld）----
+  repeated string dimensions = 31;
+
+  // 该世界目录下是否有对应的 level.dat（面板据此提示"该维度尚无存档"）
+  bool level_dat_found = 32;
 }
 
 message ListJarsRequest {

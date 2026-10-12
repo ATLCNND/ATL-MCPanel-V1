@@ -12,10 +12,13 @@
   align-items: start;
 }
 
-/* ---------------- 左栏 ---------------- */
+/* ---------------- 左栏 ----------------
+   与右栏同一套粘住方式（见下方 .detail-side 的说明）：`align-self: stretch`
+   让粘住区间不受标签内容高度影响，切页时不会跳。 */
 .detail-nav {
   position: sticky;
   top: 20px;
+  align-self: stretch;
 }
 
 /* 品牌区（图标 + 面板名 + 版本号）。
@@ -374,17 +377,85 @@
   color: var(--danger);
 }
 
+/* ---------------- 标签内容区 ----------------
+   2026-10-05：统一所有标签页的容器契约。
+
+   问题：各标签页的根元素**各自为政** —— 玩家页是 `padding:16px 20px; height:100%;
+   overflow-y:auto`（自己滚），文件页是 `flex:1; min-height:0`（撑满父容器），
+   而统计页/控制台是自然高度。于是切换标签时**内边距、滚动位置、页面总高度**
+   都会变，左右两栏（sticky）跟着上下跳 —— 用户报的"切页时布局有差异"就是这个。
+
+   现在的契约（所有标签页都必须遵守）：
+     · 外层 `.tab-body` 负责**内边距与滚动**，且高度可预期；
+     · 标签页自己的根元素**不加** padding、不自己滚（除非像控制台那样
+       确实是内部滚动的编辑器，那也通过 .tab-body 的 height 拿到确定高度）。
+
+   为什么要给 `.tab-body` 一个上限高度：左栏与右栏都是 `position: sticky`，
+   只有中间列高度**稳定**时，三栏的相对位置才不会随标签内容长短变化。
+   设成 `calc(100vh - <页头高度>)` 之后，短内容不再把侧栏"顶"上去。 */
 .tab-body {
+  min-width: 0;
+  padding: 0 0 8px;
+}
+
+/* ⚠️ 这里**曾经**有一条 `min-height: calc(100vh - 320px)`，本意是"让中间列高度稳定、
+   短标签页不把两侧 sticky 栏顶上去"。已于 2026-10-06 删除，原因是它有副作用：
+
+   控制台页的"下方四个信息卡片"（.console-modules）是 .tab-body 的**兄弟节点**
+   （不是子节点），所以那条 min-height 把 tab-body 撑满一屏后，
+   四个卡片就被推到**折叠线以下** —— 用户看到的现象正是"它们跑走了、
+   和控制台之间空出一大块"。
+
+   而它原本想解决的问题（切页时两侧跳动）其实另有根因：**滚动条出现/消失
+   改变内容宽度**。已用 `.shell-body { scrollbar-gutter: stable }` 根治
+   （见 AppShell.css），不需要再靠撑高度。 */
+
+/* 下方信息模块紧贴控制台：间距由 .console-modules 的 margin-top 控制，
+   这里不再插入额外空白。 */
+.tab-body + .console-modules {
+  margin-top: 12px;
+}
+
+/* 统一标签页内边距：以前是各页自己写（16px 20px / 0 / …），现在由这里给。
+   子页若确实需要不同的内边距（例如控制台要贴边），用 `.tab-body--flush` 覆盖。 */
+.tab-body > * {
   min-width: 0;
 }
 
-/* ---------------- 右栏 ---------------- */
+/* 控制台要贴边显示（它自带头部工具栏与终端边框），不额外加内边距 */
+.tab-body--flush {
+  padding: 0;
+}
+
+/* ---------------- 右栏 ----------------
+ *
+ * 2026-10-06 修「切标签页时右栏上下跳动」（左侧修好后用户仍看到右侧跳）：
+ *
+ * 两栏本来都是 `position: sticky; top: 20px`，但**行为不一致**，原因是
+ * sticky 的"粘住区间"由**该列自身盒子在网格行里的高度**决定，而
+ * `align-items: start` 让每列的盒子只有内容那么高：
+ *
+ *   · 控制台页：tab-body 下面还有四个信息卡片 → 整行很高 →
+ *     右栏盒子（内容高）相对整行很短 → sticky 很快"用完"可粘区间，
+ *     表现为滚一点点就被顶走；
+ *   · 其它标签页：整行不高 → 右栏几乎一直贴在 top:20px。
+ *   ⇒ 切换标签时右栏的**纵向位置**就跳了。
+ *
+ * 修法：给右栏一个**不受标签内容影响**的粘住方式 ——
+ *   · `align-self: stretch` 让它的网格盒子撑满整行（不再只有内容高），
+ *     这样粘住区间对任何标签页都一样；
+ *   · 内部仍用 flex 纵向排列，内容自然从顶部开始。
+ * 左栏同理（它本来就矮，之前看不出来）。
+ */
 .detail-side {
   position: sticky;
   top: 20px;
+  align-self: stretch;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* 自身不滚动、高度由内容决定；stretch 只影响它参与网格的行高计算 */
+  min-height: 0;
 }
 
 .detail-side .w {
@@ -548,29 +619,9 @@
   margin-top: 5px;
 }
 
-/* 资源分配行：属于「静态配置」，与下面的实时占用区分开。
-   用品牌粉底色块 + 描边，一眼能看出这块讲的是"分到了多少"而不是"用了多少"，
-   与配置页的表单区保持同一套视觉语言。 */
-.res.alloc-row {
-  padding: 8px 10px;
-  margin-bottom: 12px;
-  background: var(--accent-bg);
-  border: 1px solid var(--accent-border);
-  border-radius: var(--r);
-}
-
-.res.alloc-row .res-top {
-  margin-bottom: 3px;
-}
-
-.res.alloc-row .res-top .k {
-  color: var(--text-2);
-}
-
-.res.alloc-row .res-note {
-  margin-top: 0;
-  line-height: 1.5;
-}
+/* 资源分配行（.res.alloc-row）已随「分配核心」一起删除（2026-10-04）：
+   核数现在只在「统计与配额」页出现一次 —— 静态配置放在"实时占用"卡片里，
+   本来就容易让人以为它会随负载变化。 */
 
 .bar {
   height: 5px;

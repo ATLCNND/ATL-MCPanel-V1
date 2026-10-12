@@ -28,7 +28,7 @@
 #   ./build.sh --debug                  # 保留调试信息（默认 -s -w 剥掉符号）
 #   ./build.sh --version 1.0.0
 #
-# 产物：bin/<GOOS>-<GOARCH>/dsh-panel、bin/<GOOS>-<GOARCH>/dsh-daemon
+# 产物：bin/<GOOS>-<GOARCH>/atl-panel、bin/<GOOS>-<GOARCH>/atl-daemon
 # ---------------------------------------------------------------------------
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -126,7 +126,7 @@ for T in $TARGETS; do
   fi
 
   for BIN in panel daemon; do
-    NAME="dsh-${BIN}"
+    NAME="atl-${BIN}"
     printf '>>> %-12s %s/%s ' "$NAME" "$GOOS" "$GOARCH"
     # shellcheck disable=SC2086
     if GOOS="$GOOS" GOARCH="$GOARCH" go build $TAGS -ldflags "$LDFLAGS" -o "$OUT/$NAME" "./cmd/$BIN" 2>"$OUT/.build-$BIN.err"; then
@@ -160,7 +160,7 @@ if [ -z "$DYNAMIC" ]; then
   echo "==> 断言：产物必须是静态链接、且不引用 glibc 符号版本"
   BAD=0
   for T in $TARGETS; do
-    for BIN in dsh-panel dsh-daemon; do
+    for BIN in atl-panel atl-daemon; do
       f="bin/${T%%/*}-${T##*/}/$BIN"
       [ -f "$f" ] || continue
       ok=1
@@ -190,7 +190,7 @@ if [ -z "$DYNAMIC" ] && [ -f scripts/smoke-binary.sh ]; then
     *" $HOST_T "*)
       echo
       echo "==> 断言：静态产物真的能启动（本机架构 $HOST_T）"
-      if bash scripts/smoke-binary.sh "bin/${HOST_T%%/*}-${HOST_T##*/}/dsh-panel"; then
+      if bash scripts/smoke-binary.sh "bin/${HOST_T%%/*}-${HOST_T##*/}/atl-panel"; then
         echo "    ✅ 启动冒烟通过"
       else
         echo "    ❌ 启动冒烟失败 —— 产物不可用，别拿去打包" >&2
@@ -205,7 +205,7 @@ echo "==> 完成"
 for T in $TARGETS; do
   d="bin/${T%%/*}-${T##*/}"
   [ -d "$d" ] || continue
-  for BIN in dsh-panel dsh-daemon; do
+  for BIN in atl-panel atl-daemon; do
     [ -f "$d/$BIN" ] || continue
     printf '    %-28s %s\n' "$T/$BIN" "$(du -h "$d/$BIN" | cut -f1)"
   done

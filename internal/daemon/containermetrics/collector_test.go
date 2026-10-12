@@ -271,6 +271,69 @@ func TestNativeSourceZeroPID(t *testing.T) {
 	}
 }
 
+// 场景：PID 指向 **sh -c 包装进程** 时，应统计到真正的 java 子进程。
+//
+// 复现的是 2026-10-06 用户报的「资源占用显示不正常」：
+//
+//	pid 35732  sh -c .../java -jar ...
+//	pid 35733    └─ .../java -jar ...      ← 真正吃内存的
+//
+// daemon.pid 里记的是 35732，于是面板显示内存 1.8MB、CPU 0%
+// （sh 自己的 RSS 约 1.8MB，而 java 是 1.3GB）。
+//
+// 这里用 `sleep` 伪装包装层不好构造"父 sh + 子 java"的组合，
+// 所以直接测判定函数本身：looksLikeJavaServer 与 resolveProcessTarget 的语义。
+func TestLooksLikeJavaServer(t *testing.T) {
+	cases := []struct {
+		name string
+		argv []string
+		want bool
+	}{
+		{"直接 java -jar", []string{"/usr/lib/jvm/temurin-21/bin/java", "-Xmx2G", "-jar", "/opt/x/server.jar", "nogui"}, true},
+		{"仅 java 无 jar", []string{"/usr/bin/java", "-version"}, false},
+		{"sh -c 包装（不是 java 进程本身）", []string{"/bin/sh", "-c", "/usr/bin/java -jar /opt/x/server.jar"}, false},
+		{"空命令行", []string{}, false},
+		{"可执行名含 java 的伪装", []string{"/tmp/java", "-jar", "/x.jar"}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var b []byte
+			for _, a := range c.argv {
+				b = append(b, a...)
+				b = append(b, 0)
+			}
+			if got := looksLikeJavaServer(b); got != c.want {
+				t.Fatalf("looksLikeJavaServer(%v) = %v，期望 %v", c.argv, got, c.want)
+			}
+		})
+	}
+}
+
+// 场景：resolveProcessTarget 对"本身就是 java"的 PID 必须**原样返回**。
+// 这条保证修复对正常情形零影响（不会因为多找一层而改变行为）。
+func TestResolveProcessTargetKeepsJavaPID(t *testing.T) {
+	// 用当前测试进程无法伪装成 java，所以改用"非 java 且无 java 子进程"的 PID：
+	// 期望它**回退为原 PID**（而不是 0），否则采集会整个失效。
+	pid := os.Getpid()
+	if got := resolveProcessTarget(pid); got != pid {
+		t.Fatalf("非 java 且无 java 子进程时应返回原 PID %d，实际 %d", pid, got)
+	}
+	if got := resolveProcessTarget(0); got != 0 {
+		t.Fatalf("PID=0 应原样返回 0，实际 %d", got)
+	}
+}
+
+// 场景：ppidOf 能正确解析 /proc/<pid>/status 的 PPid 行。
+func TestPPidOf(t *testing.T) {
+	status := "Name:\tjava\nState:\tS (sleeping)\nPPid:\t1234\nUid:\t0\t0\t0\t0\n"
+	if got := ppidOf([]byte(status)); got != 1234 {
+		t.Fatalf("ppidOf = %d，期望 1234", got)
+	}
+	if got := ppidOf([]byte("Name:\tx\n")); got != 0 {
+		t.Fatalf("无 PPid 时应返回 0，实际 %d", got)
+	}
+}
+
 // 场景：容器 cgroup 读取（v2 布局，用临时目录里的假 cgroup 文件）。
 func TestContainerSourceReadsFakeCgroupV2(t *testing.T) {
 	root := t.TempDir()

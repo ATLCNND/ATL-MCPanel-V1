@@ -24,7 +24,7 @@ if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
   exit 2
 fi
 # 转成绝对路径：下面要 cd 到临时目录跑，相对路径会失效
-# （踩过：报 "bin/linux-amd64/dsh-panel: 没有那个文件或目录"，
+# （踩过：报 "bin/linux-amd64/atl-panel: 没有那个文件或目录"，
 #   看着像二进制缺失，其实是路径相对了）
 BIN="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
 

@@ -13,7 +13,7 @@ import (
 // 那两个字节。手写解析反而更稳、也更少依赖。
 //
 // 为什么必须有这个校验（2026-09-17 发现）：
-// 一键部署下发的二进制是**面板自己那份**（`<面板目录>/dsh-daemon`），
+// 一键部署下发的二进制是**面板自己那份**（`<面板目录>/atl-daemon`），
 // 它的架构在编译时就固定了。而节点可能是 arm64。代码里 `Probe` 明明探测了
 // 远端架构，`Deploy` 却从来不比对 —— 于是 arm64 节点会被装上一个 amd64 二进制，
 // 直到 `systemctl start` 才报 `Exec format error`，
@@ -84,7 +84,7 @@ func (c *Client) checkArch(bin []byte) error {
 		return nil
 	}
 	return fmt.Errorf(
-		"架构不匹配：节点是 %s，而面板要下发的 dsh-daemon 是 %s。\n"+
+		"架构不匹配：节点是 %s，而面板要下发的 atl-daemon 是 %s。\n"+
 			"一键部署只能下发**面板自己同目录那一份**二进制，所以面板所在架构必须与节点一致。\n"+
 			"解决办法：在节点上手动安装对应架构的发布包（linux-%s），或用与节点同架构的面板。",
 		got, want, archToGoArch(got))

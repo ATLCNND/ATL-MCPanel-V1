@@ -470,16 +470,23 @@ func (s *Server) daemonBinaryPath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("无法定位面板二进制: %w", err)
 	}
-	p := filepath.Join(filepath.Dir(exe), "dsh-daemon")
-	if _, err := os.Stat(p); err != nil {
-		return "", fmt.Errorf("未找到同目录的 dsh-daemon（%s），请在配置中指定 server.daemon_binary", p)
+	// 找"与面板二进制同目录"的 daemon。名字在 2026-10-12 由 dsh-daemon 改成
+	// atl-daemon，这里**先新名、再退回旧名**：手工部署（自己把二进制拷进 bin/）
+	// 或只换了面板二进制的场景下，bin/ 里可能只有旧名那一份，而旧名在新装里
+	// 只是个软链接 —— 两条路都能走通。
+	dir := filepath.Dir(exe)
+	for _, name := range []string{"atl-daemon", "dsh-daemon"} {
+		p := filepath.Join(dir, name)
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
 	}
-	return p, nil
+	return "", fmt.Errorf("未找到同目录的 atl-daemon（%s/atl-daemon），请在配置中指定 server.daemon_binary", dir)
 }
 
 // readSiblingBinary 读"与某个二进制同目录"的可选文件（读不到就返回 nil）。
 //
-// 用途：面板包在 bin/ 里同时带着 dsh-daemon 与 frpc，一键部署要把 frpc 也下发。
+// 用途：面板包在 bin/ 里同时带着 atl-daemon 与 frpc，一键部署要把 frpc 也下发。
 // 读不到**不算错误** —— 老包或裁剪过的包没有 frpc，穿透只是不可用而已，
 // 不该让整次部署失败。
 func readSiblingBinary(refPath, name string) []byte {

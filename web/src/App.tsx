@@ -16,6 +16,7 @@ import AvatarReview from './components/AvatarReview'
 import DashboardPage from './components/DashboardPage'
 import AccountPage from './components/AccountPage'
 import HelpPage from './components/HelpPage'
+import AboutPage from './components/AboutPage'
 import AlertsModal from './components/AlertsModal'
 import AnalysisProviders from './components/AnalysisProviders'
 import { useSessionWatchdog } from './components/usePanelMeta'
@@ -42,6 +43,7 @@ const PAGE_META: Record<NavKey, { title: string; subtitle: string }> = {
   providers: { title: '分析平台', subtitle: '日志交给谁分析、用什么凭据，以及调用限额' },
   account: { title: '账户', subtitle: '我的资源、权限与账号设置' },
   help: { title: '公告与帮助', subtitle: '管理员公告，以及面板使用说明' },
+  about: { title: '关于', subtitle: '面板版本、构建信息与项目链接' },
 }
 
 /**
@@ -236,6 +238,8 @@ export default function App() {
         return <AccountPage onLogout={handleLogout} />
       case 'help':
         return <HelpPage isAdmin={user?.role === 'admin'} />
+      case 'about':
+        return <AboutPage />
       default:
         return <Instances onOpen={(id, name, status, level) => setView({ id, name, status, level })} />
     }

@@ -49,7 +49,7 @@ func TestSystemdUnitHasKillModeProcess(t *testing.T) {
 		t.Error("systemd 单元必须设置 KillMode=process")
 	}
 	for _, want := range []string{
-		"ExecStart=/opt/mcpanel/bin/dsh-daemon -config /opt/mcpanel/config.yaml",
+		"ExecStart=/opt/mcpanel/bin/atl-daemon -config /opt/mcpanel/config.yaml",
 		"WorkingDirectory=/opt/mcpanel",
 		"Restart=on-failure",
 		"WantedBy=multi-user.target",

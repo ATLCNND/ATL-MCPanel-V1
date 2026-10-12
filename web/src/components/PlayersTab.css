@@ -1,274 +1,130 @@
-.players-tab {
-  padding: 16px 20px;
-  overflow-y: auto;
-  height: 100%;
-}
+/* 玩家页根容器。
+   2026-10-05：**不再自己滚动、不再自己撑满高度**（原为 `height:100%; overflow-y:auto`
+   + `padding:16px 20px`）。内边距与滚动交给外层 `.tab-body` 统一负责 ——
+   以前它自带内边距而别的标签页没有，切页时整块内容会横向位移，
+   用户报的"切页时布局有差异"就是这个。 */
+.players-tab { min-width: 0; }
+.players-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
 
-.players-bar {
+/* 子导航样式在 styles/components.css 的 `.connected-tabs`（与实例设置页、
+   游戏设置页共用一份定义）。这里**不要再写一份** —— 那正是以前漂移的原因。 */
+.players-tab .connected-tabs { margin-bottom: 0; }
+.kind-tabs .tab-count, .connected-tabs .tab-count { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: var(--r-full); background: var(--accent-bg-2); color: var(--accent); font-size: 11px; font-weight: 600; line-height: 16px; }
+.connected-tabs button.active .tab-count { background: rgba(255,255,255,.25); color: var(--text-on-accent); }
+/* ---- 统计条：连通的长条形（2026-10-06 用户要求）----
+   排布按用户指定：各项**均匀分布**、内容**居中**、
+   标注在数字**上方**且用正常黑体（不是小字灰色）。 */
+.psum-bar {
+  display: flex;
+  align-items: stretch;
+  margin-bottom: 12px;
+  background: var(--bg-surface);
+  border: 1.5px solid var(--accent-solid);
+  border-radius: var(--r-xl);
+  overflow-x: auto;
+}
+/* flex:1 让各项等宽（均匀分布）；basis 0 保证宽度只由"格数"决定，
+   不随内容长短变化 —— 否则「世界目录」那种长内容会把别人挤扁。 */
+.psum-item {
+  flex: 1 1 0;
+  min-width: 76px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 7px 12px;
+  border-right: 1px solid var(--border);
+  text-align: center;
+}
+.psum-item:last-child { border-right: 0; }
+/* 世界目录：内容不定长，给它多一点宽度但仍参与均匀分配 */
+.psum-item.wide { flex: 1.4 1 0; min-width: 100px; }
+.psum-item.on { background: var(--accent-bg); }
+/* 标注在上方：正常字重与正常字号（用户明确要求"从小字改为正常黑体"） */
+.psum-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  white-space: nowrap;
+  line-height: 1.3;
+}
+.psum-num {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text-1);
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.psum-num.on { color: var(--accent); }
+.psum-item.wide .psum-num { font-size: 13px; font-weight: 600; }
+
+.players-filter { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.players-filter input { flex: 1; max-width: 420px; }
+.players-filter .muted { font-size: 12px; }
+.tag-list { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.tag { display: inline-block; padding: 1px 7px; border-radius: var(--r-full); font-size: 11px; line-height: 16px; border: 1px solid transparent; white-space: nowrap; }
+.tag.op { background: var(--warning-bg); color: var(--warning); border-color: var(--warning-border); }
+.tag.wl { background: var(--accent-bg-2); color: var(--accent); border-color: var(--accent-border); }
+.tag.ban { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-border); }
+.tag.muted-tag { background: var(--bg-subtle); color: var(--text-3); border-color: var(--border); }
+.tag.on { background: var(--success-bg); color: var(--success); border-color: var(--success-dark); }
+.tag.off { background: var(--bg-subtle); color: var(--text-3); border-color: var(--border); }
+.players-hint { color: var(--text-3); font-size: 12px; margin-bottom: 12px; }
+.whitelist-switch { display: flex; align-items: center; gap: 14px; padding: 10px 12px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--r); margin-bottom: 12px; }
+.players-add { display: flex; gap: 8px; margin-bottom: 12px; }
+.players-add input { flex: 1; max-width: 420px; }
+.ban-duration { min-width: 220px; }
+.players-table { width: 100%; font-size: 13px; margin-top: 6px; }
+.players-table th, .players-table td { padding: 9px 10px; }
+.players-table .uuid { font-size: 11px; color: var(--text-3); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- 玩家卡片（2026-10-06 重做）----
+   用户反馈：① 太单调 ② 比例奇怪、卡片过高、内部排布要重设。
+   改动：头像换成**真实皮肤**（mc-heads CDN，取不到自动回退首字母）；
+   布局从"三行堆叠"改为"头像 + 右侧两行"，卡片高度明显下降； */
+.player-grid {
+  display: grid;
+  /* 卡片变矮变宽：200px 起，一屏能放下更多玩家 */
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 10px;
+}
+.player-card {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
-}
-
-.kind-tabs {
-  display: flex;
-  gap: 6px;
-}
-
-.kind-tabs button.active {
-  background: var(--accent-solid);
-  border-color: var(--accent-solid);
-  color: var(--text-on-accent);
-}
-
-/* 标签上的数量角标：让「全部玩家信息」一眼看出规模，
-   不必点进去才知道这个服有没有人玩过 */
-.kind-tabs .tab-count {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 0 6px;
-  border-radius: var(--r-full);
-  background: var(--accent-bg-2);
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 16px;
-}
-
-.kind-tabs button.active .tab-count {
-  background: rgba(255, 255, 255, 0.25);
-  color: var(--text-on-accent);
-}
-
-/* ---------------- 全部玩家信息：概览卡 ---------------- */
-
-.players-summary {
-  display: flex;
-  flex-wrap: wrap;
   gap: 10px;
-  margin-bottom: 14px;
-}
-
-.psum {
-  min-width: 96px;
-  padding: 10px 14px;
+  min-width: 0;
+  padding: 9px 11px;
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
 }
+.player-card:hover, .player-card:focus-visible { border-color: var(--border-strong); outline: none; }
+.player-card.online { border-color: var(--accent-border); }
+.player-card.selected { border-color: var(--accent-solid); background: var(--accent-bg); }
+/* 皮肤头像：像素风要**不插值**，否则放大会糊 */
+.player-card .pc-av { image-rendering: pixelated; }
+.pc-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.pc-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.pc-name { color: var(--text-1); font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; }
+.pc-tags { display: flex; gap: 3px; flex-wrap: nowrap; overflow: hidden; }
+.pc-sub { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-3); min-width: 0; }
+.pc-sub span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-dot { color: var(--border-strong); flex: 0 0 auto; }
 
-/* 在线人数 > 0 时用品牌色描边，让"有人在玩"这件事一眼可见 */
-.psum.on {
-  border-color: var(--accent-border);
-  background: var(--accent-bg);
-}
-
-.psum.wide {
-  min-width: 150px;
-}
-
-.psum-num {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text-1);
-  line-height: 1.2;
-}
-
-.psum-num.on {
-  color: var(--accent);
-}
-
-.psum.wide .psum-num {
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.psum-label {
-  font-size: 11.5px;
-  color: var(--text-3);
-}
-
-.players-filter {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-.players-filter input {
-  flex: 1;
-  max-width: 420px;
-}
-
-.players-filter .muted {
-  font-size: 12px;
-}
-
-/* 在线玩家整行轻微高亮，便于在长列表里定位 */
-.players-table tr.row-online td {
-  background: var(--accent-bg);
-}
-
-.tag-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  align-items: center;
-}
-
-.tag {
-  display: inline-block;
-  padding: 1px 7px;
-  border-radius: var(--r-full);
-  font-size: 11px;
-  line-height: 16px;
-  border: 1px solid transparent;
-}
-
-.tag.op {
-  background: var(--warning-bg);
-  color: var(--warning);
-  border-color: var(--warning-border);
-}
-
-.tag.wl {
-  background: var(--accent-bg-2);
-  color: var(--accent);
-  border-color: var(--accent-border);
-}
-
-.tag.ban {
-  background: var(--danger-bg);
-  color: var(--danger);
-  border-color: var(--danger-border);
-}
-
-.tag.muted-tag {
-  margin-left: 6px;
-  background: var(--bg-subtle);
-  color: var(--text-3);
-  border-color: var(--border);
-}
-
-.players-hint {
-  color: var(--text-3);
-  font-size: 12px;
-  margin-bottom: 12px;
-}
-
-.whitelist-switch {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 10px 12px;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r);
-  margin-bottom: 12px;
-}
-
-.players-add {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.players-add input {
-  flex: 1;
-  max-width: 420px;
-}
-
-.players-table {
-  width: 100%;
-  font-size: 13px;
-  margin-top: 6px;
-}
-
-.players-table th,
-.players-table td {
-  padding: 9px 10px;
-}
-
-.players-table .uuid {
-  font-size: 11px;
-  color: var(--text-3);
-  max-width: 280px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.players-note {
-  margin-top: 14px;
-  color: var(--text-3);
-  font-size: 12px;
-  line-height: 1.7;
-  max-width: 900px;
-}
-
-/* ---- 总览表里的一键操作 ---- */
-
-.player-ops {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.player-ops button {
-  font-size: 12px;
-  padding: 3px 8px;
-  white-space: nowrap;
-}
-
-/* OP 等级选择：紧贴在一排按钮末尾，用 label 把 "OP" 两个字和下拉框绑在一起，
-   否则单看一个下拉框不知道它在设什么 */
-.player-ops .op-level {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11.5px;
-  color: var(--text-3);
-}
-
-.player-ops .op-level select {
-  font-size: 12px;
-  padding: 2px 4px;
-  border-radius: var(--r);
-  border: 1px solid var(--border);
-  background: var(--bg-surface);
-  color: var(--text-1);
-}
-
-.players-oplevel-note {
-  margin-top: 12px;
-  font-size: 12px;
-  line-height: 1.9;
-  color: var(--text-3);
-  max-width: 900px;
-}
-
-.players-oplevel-note .op-hint-item {
-  display: inline-block;
-  margin-right: 12px;
-  white-space: nowrap;
-}
-
-.players-oplevel-note .op-hint-item b {
-  color: var(--text-2);
-}
-
-.success-banner {
-  background: var(--success-bg);
-  color: var(--success);
-  border: 1px solid var(--success-dark);
-  border-radius: var(--r);
-  padding: 8px 12px;
-  font-size: 13px;
-  margin-bottom: 10px;
-}
+.player-grid-empty { grid-column: 1 / -1; padding: 28px; }
+.player-popover { position: absolute; z-index: 5; top: calc(100% + 6px); left: 8px; right: 8px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px; background: var(--bg-surface); border: 1px solid var(--border-strong); border-radius: var(--r-lg); box-shadow: 0 6px 20px rgba(0,0,0,.28); }
+.player-popover button { font-size: 12px; padding: 3px 8px; white-space: nowrap; }
+.op-level { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--text-3); }
+.op-level select { font-size: 12px; padding: 2px 4px; border-radius: var(--r); border: 1px solid var(--border); background: var(--bg-surface); color: var(--text-1); }
+.players-note { margin-top: 14px; color: var(--text-3); font-size: 12px; line-height: 1.7; max-width: 900px; }
+.players-oplevel-note { margin-top: 12px; font-size: 12px; line-height: 1.9; color: var(--text-3); max-width: 900px; }
+.players-oplevel-note .op-hint-item { display: inline-block; margin-right: 12px; white-space: nowrap; }
+.players-oplevel-note .op-hint-item b { color: var(--text-2); }
+.success-banner { background: var(--success-bg); color: var(--success); border: 1px solid var(--success-dark); border-radius: var(--r); padding: 8px 12px; font-size: 13px; margin-bottom: 10px; }
+/* 窄屏：分页条允许横向滚动（而不是拉长/换行撑成两行） */
+@media (max-width: 760px) { .players-bar { align-items: flex-start; flex-direction: column; } .players-add { flex-wrap: wrap; } .ban-duration { flex: 1; min-width: 180px; } }

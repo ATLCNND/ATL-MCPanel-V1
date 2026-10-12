@@ -424,7 +424,10 @@
 }
 
 .files-list tbody td {
-  padding: 7px 16px;
+  /* 每行高度（2026-10-04 用户反馈"太紧凑"）：纵向内边距 7 → 11px。
+     行高交给内容自己撑（不设 height）—— 列表里有图标、标签、按钮，
+     给 td 写死 height 只是"最小高度"，反而会让带按钮的行更高、各列不齐。 */
+  padding: 11px 16px;
   border-bottom: 1px solid var(--border);
 }
 

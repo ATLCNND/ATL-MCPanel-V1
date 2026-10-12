@@ -86,10 +86,37 @@ func doJSONArr(t *testing.T, ts *httptest.Server, method, path, token string, bo
 	return code, out
 }
 
-// loginAs 注册（若不存在）并登录，返回 token。
-func loginAs(t *testing.T, ts *httptest.Server, username, password string) string {
+// seedUser 直接写库建一个测试账号（已存在则原样保留）。
+//
+// 为什么要绕过 HTTP：POST /api/users 自 2026-10-12 起**只允许管理员**调用。
+// 在那之前它允许匿名创建"库里的第一个用户"并自动给 admin —— 测试原先正是靠
+// 这条免鉴权路径造账号的。那条路本身就是漏洞（未初始化面板可被抢注管理员），
+// 所以测试也必须停止依赖它：测试不该需要一个生产上刻意关掉的入口。
+func seedUser(t *testing.T, srv *Server, username, password, role string) {
 	t.Helper()
-	doJSON(t, ts, "POST", "/api/users", "", map[string]string{"username": username, "password": password})
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		t.Fatalf("加密测试密码失败: %v", err)
+	}
+	if _, err := srv.db.Exec(
+		`INSERT OR IGNORE INTO users (username, password_hash, role) VALUES (?, ?, ?)`,
+		username, hash, role); err != nil {
+		t.Fatalf("建测试用户 %s 失败: %v", username, err)
+	}
+}
+
+// loginAs 登录测试账号；账号不存在时直接写库建为**总管理员**，返回令牌。
+//
+// 关于"默认建为 admin"：这不是偷懒，而是精确复刻改动前的语义 —— 原先每个测试
+// 的第一次 loginAs 会走匿名注册，而匿名注册只对**第一个**用户生效且必然是 admin；
+// 之后的 loginAs 目标（bob / carol / …）都已由管理员用 API 建好，只会命中
+// "已存在 → 直接登录"这一条分支。因此 seed-if-missing + role=admin 与旧行为等价。
+//
+// 需要非 admin 角色的令牌时，请用 mkUser（analysis_api_test.go），或用管理员令牌
+// 调 POST /api/users 显式指定角色。
+func loginAs(t *testing.T, srv *Server, ts *httptest.Server, username, password string) string {
+	t.Helper()
+	seedUser(t, srv, username, password, RoleAdmin)
 
 	code, body := doJSON(t, ts, "POST", "/api/auth/login", "", map[string]string{"username": username, "password": password})
 	if code != http.StatusOK {
@@ -139,14 +166,14 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestLoginFlow(t *testing.T) {
-	_, ts := newTestServer(t)
+	srv, ts := newTestServer(t)
 
 	code, _ := doJSON(t, ts, "POST", "/api/auth/login", "", map[string]string{"username": "ghost", "password": "whatever"})
 	if code != http.StatusUnauthorized {
 		t.Errorf("不存在的用户应返回 401，实际 %d", code)
 	}
 
-	token := loginAs(t, ts, "admin", "admin123")
+	token := loginAs(t, srv, ts, "admin", "admin123")
 
 	code, _ = doJSON(t, ts, "POST", "/api/auth/login", "", map[string]string{"username": "admin", "password": "wrong"})
 	if code != http.StatusUnauthorized {
@@ -181,15 +208,15 @@ func TestAuthRequiredOnProtectedRoutes(t *testing.T) {
 }
 
 func TestAdminOnlyRoutes(t *testing.T) {
-	_, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	srv, ts := newTestServer(t)
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 
 	if code, _ := doJSON(t, ts, "POST", "/api/users", adminTok, map[string]string{
 		"username": "bob", "password": "bob12345", "role": "user",
 	}); code != http.StatusCreated {
 		t.Fatalf("管理员创建用户应成功，实际 %d", code)
 	}
-	bobTok := loginAs(t, ts, "bob", "bob12345")
+	bobTok := loginAs(t, srv, ts, "bob", "bob12345")
 
 	adminOnly := []struct {
 		method, path string
@@ -213,9 +240,9 @@ func TestAdminOnlyRoutes(t *testing.T) {
 
 func TestInstanceVisibilityAndAccess(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok, map[string]string{"username": "carol", "password": "carol123", "role": "user"})
-	carolTok := loginAs(t, ts, "carol", "carol123")
+	carolTok := loginAs(t, srv, ts, "carol", "carol123")
 
 	seedInstance(t, srv, "inst1", 1)
 
@@ -255,7 +282,7 @@ func TestInstanceVisibilityAndAccess(t *testing.T) {
 
 func TestAssignmentGuards(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	seedInstance(t, srv, "inst1", 1)
 
 	// 不存在的实例
@@ -275,8 +302,8 @@ func TestAssignmentGuards(t *testing.T) {
 }
 
 func TestPasswordValidation(t *testing.T) {
-	_, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	srv, ts := newTestServer(t)
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 
 	if code, body := doJSON(t, ts, "POST", "/api/users", adminTok, map[string]string{"username": "short", "password": "123"}); code != http.StatusBadRequest {
 		t.Errorf("过短密码应 400，实际 %d body=%v", code, body)
@@ -291,8 +318,8 @@ func TestPasswordValidation(t *testing.T) {
 }
 
 func TestLoginRateLimitIntegration(t *testing.T) {
-	_, ts := newTestServer(t)
-	loginAs(t, ts, "admin", "admin123")
+	srv, ts := newTestServer(t)
+	loginAs(t, srv, ts, "admin", "admin123")
 
 	// 连续失败至阈值
 	for i := 0; i < userLimiterCfg.maxFailures; i++ {
@@ -358,7 +385,7 @@ func TestDummyPasswordHashIsValidBcrypt(t *testing.T) {
 
 func TestLoginAuditRecorded(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 
 	doJSON(t, ts, "POST", "/api/auth/login", "", map[string]string{"username": "admin", "password": "bad"})
 
@@ -383,20 +410,54 @@ func TestLoginAuditRecorded(t *testing.T) {
 	_ = adminTok
 }
 
-func TestFirstUserBecomesAdmin(t *testing.T) {
-	_, ts := newTestServer(t)
+// TestAnonymousCannotClaimFirstAdmin 是**本次安全修复的核心回归测试**。
+//
+// 改动前：POST /api/users 挂在 optionalAuth 上，users 表为空时任何匿名请求者
+// 都会被建成 admin（本测试原来是 TestFirstUserBecomesAdmin，断言的正是这个行为）。
+// 后果是**只要面板在 users 表为空的状态下对外可达，扫到它的人一条请求就能拿到
+// 管理员** —— 前端从未调用过这个接口，所以运维者不会知道它存在。
+//
+// 现在必须：一律 401（未登录），且库里**不能**多出任何用户。
+// 首个管理员只能从本机命令行创建（cmd/panel/user.go），那需要 shell 权限。
+func TestAnonymousCannotClaimFirstAdmin(t *testing.T) {
+	srv, ts := newTestServer(t)
+
 	code, body := doJSON(t, ts, "POST", "/api/users", "", map[string]string{"username": "first", "password": "123456"})
-	if code != http.StatusCreated {
-		t.Fatalf("首个用户应创建成功，实际 %d", code)
+	if code != http.StatusUnauthorized {
+		t.Fatalf("匿名建号必须被拒（401），实际 code=%d body=%v", code, body)
 	}
-	if role, _ := body["role"].(string); role != "admin" {
-		t.Errorf("首个用户应自动成为管理员，实际 role=%v", body["role"])
+
+	var count int
+	if err := srv.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+		t.Fatal(err)
 	}
+	if count != 0 {
+		t.Errorf("匿名请求不得建出任何用户，实际 users 表有 %d 行", count)
+	}
+}
+
+// TestNonAdminCannotCreateUser 非管理员也不能建号（普通用户 / 节点用户都不行）。
+func TestNonAdminCannotCreateUser(t *testing.T) {
+	srv, ts := newTestServer(t)
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
+
+	for _, tc := range []struct {
+		name, role string
+	}{{"普通用户", RoleUser}, {"节点用户", RoleNodeUser}} {
+		seedUser(t, srv, "mk-"+tc.role, "pw123456", tc.role)
+		tok := loginAsToken(t, ts, "mk-"+tc.role, "pw123456")
+		code, body := doJSON(t, ts, "POST", "/api/users", tok,
+			map[string]string{"username": "sneak-" + tc.role, "password": "pw123456"})
+		if code != http.StatusForbidden {
+			t.Errorf("%s 建号应被拒（403），实际 code=%d body=%v", tc.name, code, body)
+		}
+	}
+	_ = adminTok
 }
 
 func TestUserDeletionGuards(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok, map[string]string{"username": "temp", "password": "temp1234"})
 
 	var tmpID, adminID int64

@@ -288,10 +288,22 @@ func (i *Instance) RenderStartCommand() (command string, scriptActive bool, scri
 		return "sh " + sp, true, sp
 	}
 	if i.StartCommand != "" {
-		return i.renderCommand(i.StartCommand), false, sp
+		return i.renderCommandLocked(i.StartCommand), false, sp
 	}
-	return fmt.Sprintf("java -Xms%s -Xmx%s -jar %s nogui",
-		normMem(i.MinMem), normMem(i.MaxMem), i.JarPath), false, sp
+	// 默认模板。
+	//
+	// ⚠️ 2026-10-06 修：这里原先**硬写了字面量 "java"**，于是「Java 版本」这个
+	// 设置只在**自定义启动命令**（走 renderCommand 的 {java} 占位符）下生效，
+	// 用默认模板的实例选了 17 也还是跑 PATH 上的默认 java。
+	// 那是一个**静默忽略用户选择**的缺陷：用户以为切了版本，实际没切；
+	// 对需要老版本 Java 的核心（如 1.16 及更早需要 Java 8/17）会直接起不来，
+	// 而报错信息只会说"类文件版本不对"，指向不了真正的原因。
+	//
+	// 改为与自定义命令同一条解析路径：resolveJavaBinLocked 会在节点上按
+	// java_version 找对应 JDK，找不到时**回退到 PATH 上的 java 并给出可见提示**
+	//（见它自己的注释），所以这里不会把"选错版本"变成"实例起不来"。
+	return fmt.Sprintf("%s -Xms%s -Xmx%s -jar %s nogui",
+		i.resolveJavaBinLocked(), normMem(i.MinMem), normMem(i.MaxMem), i.JarPath), false, sp
 }
 
 // NewInstance 创建实例管理器。
@@ -378,7 +390,7 @@ func IsAlive(pid int) bool {
 // 读方向同样致命：指向 /etc/shadow 的软链接会把节点机密送回该实例的控制台。
 //
 // logs 目录本身也要一并检查：软链接的**目录**是同一个逃逸的上一级形态
-//（`logs -> /etc` 之后 `logs/console.log` 看起来仍在实例目录里）。
+// （`logs -> /etc` 之后 `logs/console.log` 看起来仍在实例目录里）。
 func consoleLogPath(dir, instanceID string) (string, error) {
 	logsDir := filepath.Join(dir, "logs")
 	if _, err := safepath.ResolveWithin(dir, logsDir); err != nil {
@@ -392,7 +404,7 @@ func consoleLogPath(dir, instanceID string) (string, error) {
 // openConsoleLogAppend 以追加方式打开控制台日志，并拒绝软链接目标。
 //
 // 用 O_NOFOLLOW 而不是 os.OpenFile：边界检查与真正打开之间总有一个窗口
-//（TOCTOU），租户可以在那一刻把目标换成软链接；O_NOFOLLOW 让内核在最后一段是
+// （TOCTOU），租户可以在那一刻把目标换成软链接；O_NOFOLLOW 让内核在最后一段是
 // 软链接时直接返回 ELOOP，把这个窗口关掉（见 safepath.OpenNoFollow 的说明）。
 func openConsoleLogAppend(path, instanceID string) (*os.File, error) {
 	f, err := safepath.OpenNoFollow(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -537,7 +549,7 @@ func (i *Instance) Start() error {
 	} else if i.StartCommand != "" {
 		i.startMode = "custom"
 		// 自定义命令：用 sh -c 执行，支持占位符替换和任意脚本
-		command := i.renderCommand(i.StartCommand)
+		command := i.renderCommandLocked(i.StartCommand)
 		cmd = exec.Command("sh", "-c", command)
 	} else {
 		i.startMode = "default"
@@ -555,7 +567,7 @@ func (i *Instance) Start() error {
 			"nogui",
 		}
 		args = append(args, i.JavaArgs...)
-		javaBin := i.resolveJavaBin()
+		javaBin := i.resolveJavaBinLocked()
 		cmd = exec.Command(javaBin, args...)
 	}
 	cmd.Dir = i.Dir
@@ -873,7 +885,7 @@ func (i *Instance) Containerized() bool {
 // `docker logs -f --since <console.log 的 mtime>`。
 //
 // `--since` 用**文件最后写入时间**：用"现在"会丢掉接管期间容器产生的那段输出
-//（崩溃现场往往就在里面），用容器启动时间则会把整段历史重放一遍。
+// （崩溃现场往往就在里面），用容器启动时间则会把整段历史重放一遍。
 // 代价是边界上可能重复一两行 —— 比少一段现场划算。
 //
 // 注意这里重复的是**日志文件里**的行，与控制台附加时的重复是两回事：后者由
@@ -884,7 +896,7 @@ func (i *Instance) Containerized() bool {
 // 不要因为控制台不再重复了就把这段一起删掉 —— 两者互不相干。
 //
 // 返回 true 表示"现在有东西在采集输出"，false 表示没人采集
-//（调用方据此写"输出无法接续"的兜底说明）。错了不是致命错误，实例本身还是好的。
+// （调用方据此写"输出无法接续"的兜底说明）。错了不是致命错误，实例本身还是好的。
 func (i *Instance) EnsureContainerLogFollow() (bool, error) {
 	i.mu.Lock()
 	rt := i.Container
@@ -1345,15 +1357,24 @@ func (i *Instance) Subscribe() (<-chan string, func()) {
 //
 // 谁都不能少：丢一行比重复一行严重得多（崩溃现场往往就是那几行）。所以不靠"事后去重"
 // 来补救，而是把窗口本身消掉：快照与订阅都在 subMu 之内完成，而 broadcast 持的也是
-// subMu —— 于是这条路径与广播是互斥的，一行要么已经落进快照（在订阅之前读到），
-// 要么发生在我们挂上订阅之后（走实时通道），没有第三种可能。
+// subMu —— 于是这条路径与广播是互斥的：**在广播之前就已落盘的行**必然进快照，
+// **在订阅之后才广播的行**必然走实时通道。
+//
+// ⚠️ 但"既不丢也不重"**不是无条件的**（2026-10-03 用 `-count=N` 连跑同一个用例发现，
+// 之前这里的说法过头了）：广播与"把这一行写进日志文件"是**两个独立事件**，
+// 锁只能给"广播 vs 快照+订阅"排序，管不住写文件。于是当某一行**先落盘、后广播**，
+// 而 AttachConsole 恰好落在两者之间时，这一行会既在快照里、又走实时通道 ——
+// 控制台上多显示**一行**。生产上写文件的是服务端进程（不是 Daemon），这个窗口同样存在。
+// 影响：附加控制台时**偶尔多一行**，纯观感问题（而"丢一行"才是要避免的），
+// 彻底消除需要给广播带行号（见下面对比过的第三方案），代价与收益不成比例，故接受。
 //
 // 为什么不去重文本（对比过的另外两条路）：
 //   - 比对内容：广播的是**行内容**，没有 id，而控制台里重复行是常态（心跳、
 //     "Done (3.2s)! For help..."、插件批量日志），按内容丢会把真实重复的输出也扔了，
 //     等于用"丢掉合法日志"换"少一次重复"，方向反了；
 //   - 加行号：要改 broadcast 的载荷类型与 Subscriber 的通道类型（string → 结构体），
-//     牵动所有订阅方，为了一个能用一把锁解决的问题不值得。
+//     牵动所有订阅方，为了一个能用一把锁解决的问题不值得 —— 但它确实是
+//     "连上面那一行的窗口也消掉"的唯一办法，将来若真有人报"附加时多一行"，就在这里加。
 //
 // 两件事的先后在锁内无所谓（都不再被打断），这里先挂订阅、后读快照，只是让
 // "订阅已生效"这件事在函数返回时已经成立，读代码时更容易看出窗口确实没了。
@@ -1405,6 +1426,15 @@ func (i *Instance) AttachConsole(maxLines int) (history []string, out <-chan str
 func (i *Instance) broadcast(line string) {
 	i.subMu.Lock()
 	defer i.subMu.Unlock()
+	i.broadcastLocked(line)
+}
+
+// broadcastLocked 与 broadcast 相同，但要求调用方**已经持有 subMu**。
+//
+// 拆出来是为了让"发布一行"能被放进调用方自己的临界区：生产路径上写日志文件的是
+// 服务端进程（与 broadcast 天然不原子），而测试要在同一把锁内完成"写文件 + 广播"，
+// 才能精确地验证 AttachConsole 的原子性（见 process_attach_test.go 的说明）。
+func (i *Instance) broadcastLocked(line string) {
 	for _, s := range i.subs {
 		// 落后的订阅者：先把"丢了多少行"补一条可见的提示，再发当前行。
 		// 宁可让用户看到"这里丢了 N 行"，也不要让他以为日志就长这样 ——
@@ -1569,7 +1599,23 @@ func normMem(s string) string {
 // 可能由 alternatives 管理、未必出现在常见 JDK 目录下，直接失败会让
 // "选错版本"变成"实例起不来"。但回退必须**可见**：日志里记一条，
 // 控制台也会看到一条提示，否则用户会以为自己真的切到了 17。
+//
+// 自己加锁，供**未持有 i.mu** 的调用者使用。
+// 已经持锁的调用者（renderCommand / RenderStartCommand）必须用
+// resolveJavaBinLocked，否则会死锁 —— sync.Mutex 不可重入。
 func (i *Instance) resolveJavaBin() string {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.resolveJavaBinLocked()
+}
+
+// resolveJavaBinLocked 是 resolveJavaBin 的实现体，**要求调用者已持有 i.mu**。
+//
+// ⚠️ 为什么要拆成两个（2026-10-06）：
+// 默认启动模板改成调用本函数之后，它是在 RenderStartCommand 的锁内被调用的，
+// 而 resolveJavaBin 自己又要 LOCK —— 直接调会**立刻死锁**（Go 的 sync.Mutex
+// 不可重入），表现为实例启动时面板整个卡住。拆一个"已持锁"变体出来是最直白的解法。
+func (i *Instance) resolveJavaBinLocked() string {
 	want := strings.TrimSpace(i.JavaVersion)
 	if want == "" {
 		return "java"
@@ -1641,13 +1687,40 @@ func (i *Instance) SetLimits(cpuQuota int, memLimit string) {
 	i.mu.Unlock()
 }
 
+// SetJvmMem 更新 JVM 堆上限 / 初始堆（-Xmx / -Xms，下次启动生效）。
+//
+// 与 SetLimits（cgroup 上限）分开是有意的：这是两个不同层面的"内存"。
+// 启动命令是用 MaxMem/MinMem 渲染的（见 renderCommand 与默认模板
+// `-Xms{min_mem} -Xmx{max_mem}`），所以改完必须重启才生效。
+func (i *Instance) SetJvmMem(maxMem, minMem string) {
+	i.mu.Lock()
+	i.MaxMem = maxMem
+	i.MinMem = minMem
+	i.mu.Unlock()
+}
+
 // renderCommand 替换启动命令模板中的占位符。
 // 支持：{jar} {max_mem} {min_mem} {java} {dir}
+//
+// 自己加锁，供**未持有 i.mu** 的调用者使用（Start 里就是这种）。
+// 已持锁的调用者必须用 renderCommandLocked，否则死锁。
 func (i *Instance) renderCommand(tpl string) string {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.renderCommandLocked(tpl)
+}
+
+// renderCommandLocked 是 renderCommand 的实现体，**要求调用者已持有 i.mu**。
+//
+// ⚠️ 2026-10-06：拆出这个变体是为了修一处**既有的死锁** ——
+// RenderStartCommand 先 LOCK 再调 renderCommand，而后者又去 LOCK，
+// 于是任何"带自定义启动命令 + 打开启动命令预览"的实例都会把 Daemon 卡住。
+// 那次改动（把默认模板也接上 resolveJavaBin）正好会踩到同一处，所以一并修掉。
+func (i *Instance) renderCommandLocked(tpl string) string {
 	// {java} 解析成具体的 JDK 路径：自定义启动命令里写 java 的话，
 	// "Java 版本"这个选择同样应当生效，否则它只在默认模板下有效，
 	// 而用自定义命令的实例往往才是更需要指定版本的（比如老版本核心）。
-	javaBin := i.resolveJavaBin()
+	javaBin := i.resolveJavaBinLocked()
 	replacer := map[string]string{
 		"{jar}":     i.JarPath,
 		"{max_mem}": normMem(i.MaxMem),

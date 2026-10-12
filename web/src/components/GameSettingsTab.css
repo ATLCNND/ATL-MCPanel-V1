@@ -1,0 +1,246 @@
+/* ============================================================================
+   「游戏设置」页：世界信息（只读）+ 原版规则管理
+   ============================================================================
+   容器契约同其它标签页：不自己加内边距、不自己滚动，交给外层 .tab-body。 */
+
+.gs-tab {
+  min-width: 0;
+}
+
+.gs-empty {
+  padding: 28px;
+  text-align: center;
+  color: var(--text-3);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  line-height: 1.8;
+}
+
+/* ---- 卡片 ---- */
+.gs-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+
+.gs-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.gs-card-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.gs-badge {
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-bg-2);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--r-full);
+  padding: 1px 8px;
+}
+
+/* ---- 信息网格：自适应列数，窄屏折行，不强制横向滚动 ---- */
+.gs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px 20px;
+}
+
+.gs-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.gs-item .k {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.gs-item .v {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.gs-item .v.small {
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.gs-item .sub {
+  font-size: 10.5px;
+  color: var(--text-3);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* ---- 规则列表 ---- */
+.gs-locked {
+  margin-bottom: 12px;
+  padding: 9px 12px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--warning);
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--r);
+}
+
+/* 保存时机说明：中性提示（不是警告），但必须显眼到能被读到 ——
+   这是最容易让人以为"点了没生效"的地方。 */
+.gs-timing {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--text-3);
+  background: var(--bg-subtle);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--r-sm);
+}
+
+.gs-group {
+  margin-bottom: 12px;
+}
+
+.gs-group-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-3);
+  margin-bottom: 6px;
+  cursor: default;
+}
+
+/* 未归类那一组用 <details>：默认收起（51 条全展开太长），但一条都不藏 */
+.gs-others > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 6px 0;
+}
+.gs-others > summary::-webkit-details-marker {
+  display: none;
+}
+.gs-others > summary::before {
+  content: '▸ ';
+  color: var(--text-3);
+}
+.gs-others[open] > summary::before {
+  content: '▾ ';
+}
+
+.gs-rule {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 7px 10px;
+  border-radius: var(--r);
+  border-bottom: 1px solid var(--border);
+}
+
+.gs-rule:last-child {
+  border-bottom: 0;
+}
+
+.gs-rule:hover {
+  background: var(--bg-hover);
+}
+
+.gs-rule-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.gs-rule-label {
+  font-size: 13px;
+  color: var(--text-1);
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+/* 真实规则名（keepInventory 这类）用等宽小字附在后面：
+   出问题时要能在控制台/日志里对上，但主标题仍用中文 */
+.gs-rule-name {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.gs-rule-hint {
+  font-size: 10.5px;
+  color: var(--text-3);
+  line-height: 1.5;
+}
+
+.gs-rule-ctl {
+  flex: 0 0 auto;
+}
+
+/* 布尔开关：用文字"开/关"而不是滑块 —— 状态一眼可读，不依赖颜色 */
+.gs-toggle {
+  min-width: 46px;
+  padding: 3px 10px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--text-3);
+  border-radius: var(--r);
+}
+
+.gs-toggle.on {
+  background: var(--success-bg);
+  border-color: var(--success-dark);
+  color: var(--success);
+  font-weight: 600;
+}
+
+.gs-num {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.gs-num input {
+  width: 82px;
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.gs-num button {
+  font-size: 12px;
+  padding: 3px 8px;
+}
+
+/* ---- 页脚 ---- */
+.gs-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+
+.gs-foot code {
+  font-family: var(--mono);
+  font-size: 11px;
+}

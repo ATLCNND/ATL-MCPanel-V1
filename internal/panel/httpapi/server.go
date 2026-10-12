@@ -288,8 +288,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/analysis/{record_id}", s.requireAuth(s.handleDeleteAnalysisRecord))
 
 	// 账号管理
-	// 注册由管理员控制，但「首个用户」需允许匿名自助创建为管理员 → 使用可选鉴权
-	mux.HandleFunc("POST /api/users", s.optionalAuth(s.handleRegister))
+	//
+	// ⚠️ POST /api/users 曾经是 s.optionalAuth —— 配上 handleRegister 里
+	// "users 表为空则第一个匿名请求者自动成为 admin" 的分支，等于给**任何**
+	// 能连上面板端口的人留了一条一条请求拿到管理员的路（2026-10-12 修）。
+	// 首个管理员现在只能从本机命令行创建（cmd/panel/user.go），
+	// 那需要 shell 权限，天然可信。
+	//
+	// 业界同类事故：Portainer 的 /api/restore 为了"首管创建前也能恢复备份"
+	// 而故意不鉴权，导致未初始化实例可被接管（GHSA-x626-fcwx-f5pc, High）。
+	// 「初始化端点必须免鉴权」这个前提本身就是漏洞源 —— 不要再加回来。
+	mux.HandleFunc("POST /api/users", s.requireAdmin(s.handleRegister))
 	mux.HandleFunc("GET /api/users", s.requireAdmin(s.handleListUsers))
 	mux.HandleFunc("PUT /api/users/{id}", s.requireAdmin(s.handleSetUserRole))
 	// 改用户名：**不是** requireAdmin —— 本人可以改自己（所以鉴权在 handler 里做）。
@@ -462,6 +471,13 @@ func (s *Server) Handler() http.Handler {
 	// 资源上限（CPU / 内存 / 磁盘）：实例 owner / 该节点的节点用户 / 总管理员可改，
 	// 鉴权在 handler 内做（与改名、公网端口同一套判据，见 instancelimits.go）
 	mux.HandleFunc("PUT /api/instances/{id}/limits", s.requireAuth(s.handleSetInstanceLimits))
+
+	// 世界信息与游戏规则（「游戏设置」页）。
+	//   读 —— viewer 及以上即可（世界信息是"这台机器长什么样"，不敏感）；
+	//   改规则 —— 需要能发控制台指令（owner/collab 及以上）。
+	//   改规则走**控制台 /gamerule**，不是改 level.dat —— 理由见 world.go 的说明。
+	mux.HandleFunc("GET /api/instances/{id}/world", s.requireAuth(s.handleGetWorldInfo))
+	mux.HandleFunc("PUT /api/instances/{id}/gamerule", s.requireAuth(s.handleSetGameRule))
 
 	// 审计日志（仅 admin）
 	// 审计日志仅管理员可见

@@ -20,7 +20,7 @@ func roleOfUser(t *testing.T, srv *Server, username string) string {
 // 以前角色只能在建号时定，改角色要删号重建（会丢实例授权）。
 func TestSetUserRoleUpgradeAndDowngrade(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "r1", "password": "r1234567", "role": "user"})
 	uid := uidOf(t, srv, "r1")
@@ -51,7 +51,7 @@ func TestSetUserRoleUpgradeAndDowngrade(t *testing.T) {
 // 将来再升回来配置还在。顺手清掉属于"降级即销毁配置"，更难挽回。
 func TestSetUserRoleKeepsNodeConfig(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "r2", "password": "r1234567", "role": "nodeuser"})
 	uid := uidOf(t, srv, "r2")
@@ -89,7 +89,7 @@ func TestSetUserRoleKeepsNodeConfig(t *testing.T) {
 // 表现会非常费解）。升/降都拒。
 func TestSetUserRoleRejectsSelf(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	uid := uidOf(t, srv, "admin")
 
 	code, body := doJSON(t, ts, "PUT", "/api/users/"+itoa(uid), adminTok, map[string]string{"role": "user"})
@@ -104,7 +104,7 @@ func TestSetUserRoleRejectsSelf(t *testing.T) {
 // 非法角色要挡在建表之前（别把 users.role 写进奇怪的值，鉴权全靠它）。
 func TestSetUserRoleRejectsInvalidRole(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "r3", "password": "r1234567", "role": "user"})
 	uid := uidOf(t, srv, "r3")
@@ -123,14 +123,14 @@ func TestSetUserRoleRejectsInvalidRole(t *testing.T) {
 // 只有总管理员能改角色。
 func TestSetUserRoleForbiddenForNonAdmin(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "r4", "password": "r1234567", "role": "user"})
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "r5", "password": "r1234567", "role": "user"})
 	uid := uidOf(t, srv, "r5")
 
-	userTok := loginAs(t, ts, "r4", "r1234567")
+	userTok := loginAs(t, srv, ts, "r4", "r1234567")
 	code, _ := doJSON(t, ts, "PUT", "/api/users/"+itoa(uid), userTok, map[string]string{"role": "admin"})
 	if code != http.StatusForbidden {
 		t.Fatalf("普通用户改角色应 403，实际 %d", code)
@@ -142,8 +142,8 @@ func TestSetUserRoleForbiddenForNonAdmin(t *testing.T) {
 
 // 目标用户不存在 → 404（别静默成功）。
 func TestSetUserRoleUnknownUser(t *testing.T) {
-	_, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	srv, ts := newTestServer(t)
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	code, _ := doJSON(t, ts, "PUT", "/api/users/99999", adminTok, map[string]string{"role": "user"})
 	if code != http.StatusNotFound {
 		t.Fatalf("不存在的用户应 404，实际 %d", code)
@@ -153,7 +153,7 @@ func TestSetUserRoleUnknownUser(t *testing.T) {
 // 角色没变时给一句人话，而不是假装改动成功。
 func TestSetUserRoleSameRole(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "r6", "password": "r1234567", "role": "user"})
 	uid := uidOf(t, srv, "r6")

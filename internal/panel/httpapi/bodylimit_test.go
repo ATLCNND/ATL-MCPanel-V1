@@ -63,7 +63,7 @@ func TestLoginRejectsHugeBody(t *testing.T) {
 	}
 
 	// 正常大小的请求不受影响（体限不能误伤真实客户端）
-	loginAs(t, ts, "admin", "admin123")
+	loginAs(t, srv, ts, "admin", "admin123")
 	code, body = doJSON(t, ts, "POST", "/api/auth/login", "",
 		map[string]string{"username": "admin", "password": "admin123"})
 	if code != http.StatusOK {
@@ -77,7 +77,7 @@ func TestLoginRejectsHugeBody(t *testing.T) {
 // 否则会先撞上"节点不可达"之类的错误，就测不到体限本身了。
 func TestWriteFileRejectsHugeBody(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	seedInstance(t, srv, "inst1", 1)
 
 	huge, err := json.Marshal(map[string]string{

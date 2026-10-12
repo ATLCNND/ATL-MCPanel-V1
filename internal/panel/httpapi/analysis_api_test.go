@@ -17,7 +17,7 @@ import (
 // 一旦放开，任何普通用户都能借面板的出站能力访问任意目标 —— 那正是 SSRF 的入口。
 func TestAnalysisProviderPermissions(t *testing.T) {
 	srv, ts := newTestServer(t)
-	admin := loginAs(t, ts, "adm1", "adm1-pass-1234")
+	admin := loginAs(t, srv, ts, "adm1", "adm1-pass-1234")
 	normal := mkUser(t, srv, ts, admin, "pl1", "pl1-pass-1234", RoleUser)
 	nodeUser := mkUser(t, srv, ts, admin, "nu1", "nu1-pass-1234", RoleNodeUser)
 
@@ -57,7 +57,7 @@ func TestAnalysisProviderPermissions(t *testing.T) {
 // 明文落库等于"谁拿到数据库备份谁就拿到所有人的 key"。
 func TestAnalysisProviderKeyNeverLeaks(t *testing.T) {
 	srv, ts := newTestServer(t)
-	admin := loginAs(t, ts, "adm2", "adm2-pass-1234")
+	admin := loginAs(t, srv, ts, "adm2", "adm2-pass-1234")
 	const plainKey = "sk-super-secret-key-9999"
 
 	if code, body := doJSON(t, ts, "POST", "/api/analysis/providers", admin, map[string]interface{}{
@@ -98,8 +98,8 @@ func TestAnalysisProviderKeyNeverLeaks(t *testing.T) {
 //
 // 这是"填完能当场验证"的能力，缺了它用户只能靠"分析失败"反推配置问题。
 func TestAnalysisProviderTestEndpoint(t *testing.T) {
-	_, ts := newTestServer(t)
-	admin := loginAs(t, ts, "adm3", "adm3-pass-1234")
+	srv, ts := newTestServer(t)
+	admin := loginAs(t, srv, ts, "adm3", "adm3-pass-1234")
 
 	code, body := doJSON(t, ts, "POST", "/api/analysis/providers", admin, map[string]interface{}{
 		"name": "坏地址", "kind": "openai", "base_url": "https://this-does-not-exist-atl.invalid/v1",
@@ -125,7 +125,7 @@ func TestAnalysisProviderTestEndpoint(t *testing.T) {
 // 分析设置：只有总管理员能改；限额要做范围校验；改完立即生效。
 func TestAnalysisSettingsEndpoint(t *testing.T) {
 	srv, ts := newTestServer(t)
-	admin := loginAs(t, ts, "adm4", "adm4-pass-1234")
+	admin := loginAs(t, srv, ts, "adm4", "adm4-pass-1234")
 	other := mkUser(t, srv, ts, admin, "pl4", "pl4-pass-1234", RoleUser)
 
 	// 默认值：顺序为空（走内置默认），限额是默认值
@@ -178,8 +178,8 @@ func TestAnalysisSettingsEndpoint(t *testing.T) {
 
 // 内网地址在**没打开开关**时要被拒绝（D2 的 HTTP 层断言）。
 func TestAnalysisProviderRejectsPrivateURLByDefault(t *testing.T) {
-	_, ts := newTestServer(t)
-	admin := loginAs(t, ts, "adm5", "adm5-pass-1234")
+	srv, ts := newTestServer(t)
+	admin := loginAs(t, srv, ts, "adm5", "adm5-pass-1234")
 
 	code, body := doJSON(t, ts, "POST", "/api/analysis/providers", admin, map[string]interface{}{
 		"name": "内网网关", "kind": "openai", "base_url": "http://10.1.2.3:8000/v1",
@@ -215,7 +215,7 @@ func TestAnalysisProviderRejectsPrivateURLByDefault(t *testing.T) {
 // 发起分析必须先勾选同意（服务端校验，前端藏不住）。
 func TestAnalyseRequiresConsent(t *testing.T) {
 	srv, ts := newTestServer(t)
-	admin := loginAs(t, ts, "adm6", "adm6-pass-1234")
+	admin := loginAs(t, srv, ts, "adm6", "adm6-pass-1234")
 	seedInstance(t, srv, "ins-a", 1)
 
 	code, body := doJSON(t, ts, "POST", "/api/instances/ins-a/analyse", admin, map[string]interface{}{
@@ -232,7 +232,7 @@ func TestAnalyseRequiresConsent(t *testing.T) {
 // 提供方列表要带上"这条链现在会按什么顺序尝试"，界面据此解释回退行为。
 func TestAnalysisChainExposed(t *testing.T) {
 	srv, ts := newTestServer(t)
-	admin := loginAs(t, ts, "adm7", "adm7-pass-1234")
+	admin := loginAs(t, srv, ts, "adm7", "adm7-pass-1234")
 
 	code, raw := call(t, ts, "GET", "/api/analysis/providers", admin, nil)
 	if code != 200 {
@@ -283,7 +283,7 @@ func TestAnalysisChainExposed(t *testing.T) {
 // "全新安装的面板，模板不能是空的"。
 func TestAnalysisHelpTemplate(t *testing.T) {
 	srv, ts := newTestServer(t)
-	admin := loginAs(t, ts, "adm9", "adm9-pass-1234")
+	admin := loginAs(t, srv, ts, "adm9", "adm9-pass-1234")
 	other := mkUser(t, srv, ts, admin, "pl9", "pl9-pass-1234", RoleUser)
 
 	code, body := doJSON(t, ts, "GET", "/api/analysis/settings", admin, nil)
@@ -349,7 +349,7 @@ func TestAnalysisHelpTemplate(t *testing.T) {
 // 用户根本不知道成品长什么样，那正是"描述误区"的来源。
 func TestHelpPreviewEndpoint(t *testing.T) {
 	srv, ts := newTestServer(t)
-	admin := loginAs(t, ts, "adm10", "adm10-pass-1234")
+	admin := loginAs(t, srv, ts, "adm10", "adm10-pass-1234")
 	// 直接写库建实例：预览不依赖 Daemon（节点离线也要能给预览）
 	seedInstance(t, srv, "prev01", 1)
 
@@ -390,7 +390,7 @@ func TestHelpPreviewEndpoint(t *testing.T) {
 // 这也是"既有测试只跑了管理员那条路"漏掉它的原因（见 TestAnalysisProviderPermissions）。
 func TestAnalysisGlobalProviderOnlyAdminCanManage(t *testing.T) {
 	srv, ts := newTestServer(t)
-	admin := loginAs(t, ts, "adm8", "adm8-pass-1234")
+	admin := loginAs(t, srv, ts, "adm8", "adm8-pass-1234")
 	nodeUser := mkUser(t, srv, ts, admin, "nu8", "nu8-pass-1234", RoleNodeUser)
 
 	const globalBase = "https://api.deepseek.com/v1"
@@ -470,7 +470,7 @@ func TestAnalysisGlobalProviderOnlyAdminCanManage(t *testing.T) {
 // id 枚举的探测器（对不存在的 id 给 404、对存在的给 200）。
 func TestHelpPreviewRequiresInstanceAccess(t *testing.T) {
 	srv, ts := newTestServer(t)
-	admin := loginAs(t, ts, "adm11", "adm11-pass-1234")
+	admin := loginAs(t, srv, ts, "adm11", "adm11-pass-1234")
 	outsider := mkUser(t, srv, ts, admin, "pl11", "pl11-pass-1234", RoleUser)
 	seedInstance(t, srv, "prev02", 1)
 
@@ -507,7 +507,7 @@ func TestHelpPreviewRequiresInstanceAccess(t *testing.T) {
 // 用户会以为数据没出门，于是照传不误。
 func TestAnalyseBlockedWhenThirdPartyDisabled(t *testing.T) {
 	srv, ts := newTestServer(t)
-	admin := loginAs(t, ts, "adm12", "adm12-pass-1234")
+	admin := loginAs(t, srv, ts, "adm12", "adm12-pass-1234")
 	seedInstance(t, srv, "sw01", 1)
 
 	// 管理员关掉总开关（运行时设置，优先级高于 config.yaml）
@@ -599,9 +599,11 @@ func TestFilterChatDefaultsOn(t *testing.T) {
 }
 
 // mkUser 建一个用户并拿到**带正确角色**的令牌。
-// 两个坑（都是跑出来才发现的）：
-//  1. `POST /api/users` 用非管理员令牌会被拒 —— 只有库里的**第一个**用户能自助注册；
-//  2. 注册接口**不认 role=nodeuser**（非 admin 一律落成 user），角色只能建完再改，
+//
+// 两个必须记住的点：
+//  1. `POST /api/users` 只接受**管理员**令牌（2026-10-12 起；此前它允许匿名创建
+//     库里的第一个用户并自动给 admin —— 那条路是漏洞，已关闭）；
+//  2. 建号接口**不认 role=nodeuser**（非 admin 一律落成 user），角色只能建完再改，
 //     而角色写在 JWT 里 —— 所以改完必须**重新登录**才拿到带新角色的令牌。
 func mkUser(t *testing.T, srv *Server, ts *httptest.Server, adminTok, username, password, role string) string {
 	t.Helper()
@@ -621,9 +623,9 @@ func mkUser(t *testing.T, srv *Server, ts *httptest.Server, adminTok, username, 
 
 // loginAsToken 用**已存在**的账号登录（不尝试注册）。
 //
-// 为什么需要它：api_test.go 的 loginAs 会先 POST /api/users（不带令牌）——
-// 那只对**库里的第一个用户**有效（首个用户自动成为 admin），
-// 第二个用户起就必须带管理员令牌创建。
+// 与 api_test.go 的 loginAs 的分工：loginAs 会在账号不存在时**直接写库**补建
+// （并给 admin），适合"测试开头造一个管理员"；本函数只登录，适合账号已由管理员
+// 用 API 建好、且角色**不是** admin 的场合（避免被 loginAs 的补建语义污染）。
 func loginAsToken(t *testing.T, ts *httptest.Server, username, password string) string {
 	t.Helper()
 	code, body := doJSON(t, ts, "POST", "/api/auth/login", "",

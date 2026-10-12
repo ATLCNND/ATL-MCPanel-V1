@@ -23,7 +23,7 @@
 - [ ] 推送到 GitHub，Debian 上 clone + 编译验证
 
 **验收**：
-- `go build ./...` 产出 `dsh-panel`、`dsh-daemon`
+- `go build ./...` 产出 `atl-panel`、`atl-daemon`
 - Panel 启动可访问健康检查接口
 - 能注册账号并登录
 

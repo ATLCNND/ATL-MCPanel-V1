@@ -1,4 +1,4 @@
-// dsh-daemon 是 ATL-MCPanel 的节点守护进程入口（部署在每台 MC 实例 VM）。
+// atl-daemon 是 ATL-MCPanel 的节点守护进程入口（部署在每台 MC 实例 VM）。
 package main
 
 import (

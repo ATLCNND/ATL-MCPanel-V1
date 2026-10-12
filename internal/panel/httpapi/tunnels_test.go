@@ -66,7 +66,7 @@ func TestPublicAddress(t *testing.T) {
 // 而不是 `节点IP:端口` —— 后者会让用户一转发就把节点真实入口公布出去。
 func TestInstancePortsUseLineDomain(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 
 	frpsID := seedFrps(t, srv, "10.0.0.1", 25565, 25600)
 	seedInstance(t, srv, "inst1", 1)
@@ -118,7 +118,7 @@ func TestInstancePortsUseLineDomain(t *testing.T) {
 // TestFrpsDomainInList 列表接口也要带上 display_domain，否则前端没法回填输入框。
 func TestFrpsDomainInList(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	frpsID := seedFrps(t, srv, "10.0.0.1", 25565, 25600)
 
 	doJSON(t, ts, "PUT", "/api/frps/"+itoa(frpsID), adminTok,
@@ -140,7 +140,7 @@ func TestFrpsDomainInList(t *testing.T) {
 // TestUpdateFrpsGuards 非法 id / 空名称要有明确状态码，且**不允许**改 host 等字段。
 func TestUpdateFrpsGuards(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	frpsID := seedFrps(t, srv, "10.0.0.1", 25565, 25600)
 
 	if code, _ := doJSON(t, ts, "PUT", "/api/frps/99999", adminTok,
@@ -166,7 +166,7 @@ func TestUpdateFrpsGuards(t *testing.T) {
 // TestCreateFrpsWithDomain 创建时就填域名（归一化同样生效）。
 func TestCreateFrpsWithDomain(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 
 	code, body := doJSON(t, ts, "POST", "/api/frps", adminTok,
 		map[string]any{

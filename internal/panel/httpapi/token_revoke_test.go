@@ -16,7 +16,7 @@ import (
 // 只有数据库里的世代号变了。任何"把校验退回成纯 JWT 解析"的改动都会让它失败。
 func TestTokenRevokedAfterPasswordChange(t *testing.T) {
 	srv, ts := newTestServer(t)
-	admin := loginAs(t, ts, "adm_rev1", "adm_rev1-pass-1234")
+	admin := loginAs(t, srv, ts, "adm_rev1", "adm_rev1-pass-1234")
 	old := mkUser(t, srv, ts, admin, "revoke1", "revoke1-pass-1234", RoleUser)
 
 	if code, _ := doJSON(t, ts, "GET", "/api/auth/me", old, nil); code != http.StatusOK {
@@ -55,7 +55,7 @@ func TestTokenRevokedAfterPasswordChange(t *testing.T) {
 // 完全不看库，于是"已经不存在的人"还能继续操作面板。
 func TestTokenRevokedAfterUserDeleted(t *testing.T) {
 	srv, ts := newTestServer(t)
-	admin := loginAs(t, ts, "adm_rev2", "adm_rev2-pass-1234")
+	admin := loginAs(t, srv, ts, "adm_rev2", "adm_rev2-pass-1234")
 	tok := mkUser(t, srv, ts, admin, "revoke2", "revoke2-pass-1234", RoleUser)
 
 	if code, _ := doJSON(t, ts, "GET", "/api/auth/me", tok, nil); code != http.StatusOK {
@@ -77,7 +77,7 @@ func TestTokenRevokedAfterUserDeleted(t *testing.T) {
 // 管理员把一个 admin 降级之后，对方的旧令牌在 24 小时内**仍然是管理员**。
 func TestRoleDowngradeTakesEffectImmediately(t *testing.T) {
 	srv, ts := newTestServer(t)
-	admin := loginAs(t, ts, "adm_rev3", "adm_rev3-pass-1234")
+	admin := loginAs(t, srv, ts, "adm_rev3", "adm_rev3-pass-1234")
 	other := mkUser(t, srv, ts, admin, "revoke3", "revoke3-pass-1234", RoleAdmin)
 
 	if code, _ := doJSON(t, ts, "GET", "/api/users", other, nil); code != http.StatusOK {

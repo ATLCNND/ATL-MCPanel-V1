@@ -22,7 +22,7 @@ func nameOfUser(t *testing.T, srv *Server, id int64) string {
 // 少了它，改名之后用户会认不出自己的账号（自己那行不再被拦）。
 func TestLoginReturnsUID(t *testing.T) {
 	srv, ts := newTestServer(t)
-	loginAs(t, ts, "admin", "admin123")
+	loginAs(t, srv, ts, "admin", "admin123")
 	uid := uidOf(t, srv, "admin")
 
 	code, body := doJSON(t, ts, "POST", "/api/auth/login", "",
@@ -39,11 +39,11 @@ func TestLoginReturnsUID(t *testing.T) {
 // 改自己的用户名：这是本次要解决的问题（原来根本没有改名的地方）。
 func TestRenameSelf(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "oldname", "password": "pw123456", "role": "user"})
 	uid := uidOf(t, srv, "oldname")
-	tok := loginAs(t, ts, "oldname", "pw123456")
+	tok := loginAs(t, srv, ts, "oldname", "pw123456")
 
 	code, body := doJSON(t, ts, "PUT", "/api/users/"+itoa(uid)+"/username", tok,
 		map[string]string{"username": "newname"})
@@ -82,14 +82,14 @@ func TestRenameSelf(t *testing.T) {
 // 管理员可以改别人；普通用户改不了别人（但能改自己）。
 func TestRenamePermission(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "ua", "password": "pw123456", "role": "user"})
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "ub", "password": "pw123456", "role": "user"})
 	uaID := uidOf(t, srv, "ua")
 	ubID := uidOf(t, srv, "ub")
-	uaTok := loginAs(t, ts, "ua", "pw123456")
+	uaTok := loginAs(t, srv, ts, "ua", "pw123456")
 
 	// 普通用户改别人 → 403
 	if code, _ := doJSON(t, ts, "PUT", "/api/users/"+itoa(ubID)+"/username", uaTok,
@@ -121,13 +121,13 @@ func TestRenamePermission(t *testing.T) {
 // 重名与非法输入。
 func TestRenameValidation(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "taken", "password": "pw123456", "role": "user"})
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "me", "password": "pw123456", "role": "user"})
 	meID := uidOf(t, srv, "me")
-	meTok := loginAs(t, ts, "me", "pw123456")
+	meTok := loginAs(t, srv, ts, "me", "pw123456")
 
 	cases := []struct {
 		name string

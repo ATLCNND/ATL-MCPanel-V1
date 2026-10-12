@@ -22,7 +22,7 @@ func nameOfInstance(t *testing.T, srv *Server, instanceID string) string {
 // 也是授权 / 端口 / 启动记录的钥匙 —— 改名如果动了它，等于给实例搬家换户籍。
 func TestRenameInstanceKeepsIDAndPort(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	seedInstance(t, srv, "inst-a", 1)
 
 	// 记录改名前后的端口，确保端口没被顺手改掉
@@ -69,7 +69,7 @@ func TestRenameInstanceKeepsIDAndPort(t *testing.T) {
 // 与"开端口"一样属于对外呈现，不是"只被授权启停 + 看控制台"的人该做的。
 func TestRenameInstancePermission(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	seedInstance(t, srv, "inst-b", 1)
 
 	doJSON(t, ts, "POST", "/api/users", adminTok,
@@ -78,9 +78,9 @@ func TestRenameInstancePermission(t *testing.T) {
 		map[string]string{"username": "owner1", "password": "pw123456", "role": "user"})
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "stranger", "password": "pw123456", "role": "user"})
-	cbTok := loginAs(t, ts, "collabber", "pw123456")
-	ownTok := loginAs(t, ts, "owner1", "pw123456")
-	stTok := loginAs(t, ts, "stranger", "pw123456")
+	cbTok := loginAs(t, srv, ts, "collabber", "pw123456")
+	ownTok := loginAs(t, srv, ts, "owner1", "pw123456")
+	stTok := loginAs(t, srv, ts, "stranger", "pw123456")
 
 	for _, c := range []struct {
 		user, level string
@@ -108,7 +108,7 @@ func TestRenameInstancePermission(t *testing.T) {
 // 非法名称与"名称未变化"。
 func TestRenameInstanceValidation(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	seedInstance(t, srv, "inst-c", 1)
 
 	// 允许：带普通空格、中文、emoji（服务器名是人话，不该逼用户用下划线）

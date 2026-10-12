@@ -93,7 +93,7 @@ func seedTunnel(t *testing.T, srv *Server, tunnelID, instanceID string, frpsID i
 // 而 collab 必须被挡住 —— 开端口等于扩大对外暴露面。
 func TestPortPermission_OwnerAllowedCollabDenied(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "own1", "password": "own12345", "role": "user"})
 	doJSON(t, ts, "POST", "/api/users", adminTok,
@@ -133,7 +133,7 @@ func TestPortPermission_OwnerAllowedCollabDenied(t *testing.T) {
 // TestPortPermission_ViewerDenied 确认 viewer 依然什么都改不了。
 func TestPortPermission_ViewerDenied(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "vw1", "password": "vw123456", "role": "user"})
 
@@ -160,7 +160,7 @@ func TestPortPermission_ViewerDenied(t *testing.T) {
 // 等于那台实例的端口永远不消耗任何人的配额，普通用户的配额也就永远用不上。
 func TestQuotaOwner_PrefersOwnerAssignment(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "bob1", "password": "bob12345", "role": "user"})
 
@@ -178,7 +178,7 @@ func TestQuotaOwner_PrefersOwnerAssignment(t *testing.T) {
 // TestQuotaOwner_FallsBackToCreatedBy 覆盖没有 owner 授权时的回退。
 func TestQuotaOwner_FallsBackToCreatedBy(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "car1", "password": "car12345", "role": "user"})
 
@@ -204,7 +204,7 @@ func TestQuotaOwner_FallsBackToCreatedBy(t *testing.T) {
 // 而不是按 created_by —— 否则管理员替建的实例，用量永远记不到用户头上。
 func TestPortUsage_CountsOwnedInstances(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "dave1", "password": "dv123456", "role": "user"})
 
@@ -277,10 +277,10 @@ func TestDaemonTunnelStatus_BoundedToCallerScope(t *testing.T) {
 // 普通用户被授权为 owner + 拿到配额 → 能给自己那台实例开端口。
 func TestAddPort_PlainUserAsOwnerSucceeds(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "erin1", "password": "er123456", "role": "user"})
-	erinTok := loginAs(t, ts, "erin1", "er123456")
+	erinTok := loginAs(t, srv, ts, "erin1", "er123456")
 
 	adminID := uidOf(t, srv, "admin")
 	erinID := uidOf(t, srv, "erin1")
@@ -329,10 +329,10 @@ func TestAddPort_PlainUserAsOwnerSucceeds(t *testing.T) {
 // TestAddPort_CollabDenied 确认协作者即使实例可见也开不了端口。
 func TestAddPort_CollabDenied(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "frank1", "password": "fr123456", "role": "user"})
-	frankTok := loginAs(t, ts, "frank1", "fr123456")
+	frankTok := loginAs(t, srv, ts, "frank1", "fr123456")
 
 	frpsID := seedFrps(t, srv, "10.0.0.8", 25565, 25600)
 	seedInstance(t, srv, "inst1", 1)
@@ -351,10 +351,10 @@ func TestAddPort_CollabDenied(t *testing.T) {
 // 且线路是按**实例归属者**算的（不是操作者的）。
 func TestListPorts_CanEditAndLines(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "gina1", "password": "gi123456", "role": "user"})
-	ginaTok := loginAs(t, ts, "gina1", "gi123456")
+	ginaTok := loginAs(t, srv, ts, "gina1", "gi123456")
 
 	adminID := uidOf(t, srv, "admin")
 	ginaID := uidOf(t, srv, "gina1")
@@ -399,7 +399,7 @@ func TestListPorts_CanEditAndLines(t *testing.T) {
 // TestPortGrant_PlainUserAllowed 确认「必须是节点用户」的限制已去掉。
 func TestPortGrant_PlainUserAllowed(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "hank1", "password": "hk123456", "role": "user"})
 	frpsID := seedFrps(t, srv, "10.0.0.6", 25565, 25600)
@@ -426,7 +426,7 @@ func TestPortGrant_PlainUserAllowed(t *testing.T) {
 // 若扣操作者的配额，"用量永远不涨" → 节点用户可以无限制地给别人的实例开端口。
 func TestAddPort_QuotaChargedToInstanceOwner(t *testing.T) {
 	srv, ts := newTestServer(t)
-	adminTok := loginAs(t, ts, "admin", "admin123")
+	adminTok := loginAs(t, srv, ts, "admin", "admin123")
 	doJSON(t, ts, "POST", "/api/users", adminTok,
 		map[string]string{"username": "nu1", "password": "nu123456", "role": "user"})
 	doJSON(t, ts, "POST", "/api/users", adminTok,
@@ -447,7 +447,7 @@ func TestAddPort_QuotaChargedToInstanceOwner(t *testing.T) {
 	}
 	// 必须在提权**之后**登录：角色是写在 JWT 里的，
 	// 先登录拿到的令牌里还是 user，权限判定的第一关就过不去
-	nuTok := loginAs(t, ts, "nu1", "nu123456")
+	nuTok := loginAs(t, srv, ts, "nu1", "nu123456")
 	nuID := uidOf(t, srv, "nu1")
 
 	// nu1 自己有配额 → 但归属者 ivy1 没有 → 必须被拒

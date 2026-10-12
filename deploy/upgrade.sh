@@ -7,7 +7,7 @@
 #   只看会做什么、不真改：追加 --dry-run
 #
 # 脚本假设当前目录（解压后的包目录）包含：
-#   bin/dsh-panel 或 bin/dsh-daemon、deploy/、config.example.yaml（面板包另有 web-dist/）
+#   bin/atl-panel 或 bin/atl-daemon、deploy/、config.example.yaml（面板包另有 web-dist/）
 #
 # ---------------------------------------------------------------------------
 # 这个脚本**只做四件事**，每件都刻意做得保守
@@ -62,7 +62,7 @@ if [ ! -d "$INSTALL_DIR" ]; then
   exit 1
 fi
 
-BIN_NAME="dsh-$MODE"
+BIN_NAME="atl-$MODE"
 if [ ! -f "$SRC_DIR/bin/$BIN_NAME" ]; then
   echo "错误：包里缺少 bin/$BIN_NAME" >&2
   exit 1
@@ -140,9 +140,28 @@ fi
 echo
 echo "==> 备份当前二进制"
 run "mkdir -p '$BACKUP'"
+
+# 备份哪个文件：通常是 bin/$BIN_NAME。但**首次跨改名升级**（0.9.x 的 dsh-* 升到
+# 改名后的 atl-*）时，bin/atl-panel 还不存在 —— 只有旧名 bin/dsh-panel 那个真实文件。
+# 不认它的话，这一节的备份会"跳过"，而末尾那段"启动失败就自动回滚"就会因为
+# 备份不存在而形同虚设：**恰好在改名这一次升级上失去回滚能力**。
+#
+# 所以显式认旧名。`[ ! -L ]` 不能省：本次改名自己会造一个 dsh-* 软链接，
+# 它不是"另一个版本"，只是个指向新名的入口。
+PREV_BIN=""
 if [ -f "$INSTALL_DIR/bin/$BIN_NAME" ]; then
-  run "cp -p '$INSTALL_DIR/bin/$BIN_NAME' '$BACKUP/$BIN_NAME'"
-  echo "    已备份到 $BACKUP/$BIN_NAME"
+  PREV_BIN="$INSTALL_DIR/bin/$BIN_NAME"
+else
+  for cand in "$INSTALL_DIR/bin/atl-$MODE" "$INSTALL_DIR/bin/dsh-$MODE"; do
+    if [ -f "$cand" ] && [ ! -L "$cand" ]; then PREV_BIN="$cand"; break; fi
+  done
+fi
+PREV_NAME="$(basename "${PREV_BIN:-$BIN_NAME}")"
+
+if [ -n "$PREV_BIN" ]; then
+  run "cp -p '$PREV_BIN' '$BACKUP/$PREV_NAME'"
+  echo "    已备份到 $BACKUP/$PREV_NAME"
+  [ "$PREV_NAME" != "$BIN_NAME" ] && echo "    （旧名二进制：这次升级会把内容装到 $BIN_NAME 上）"
 else
   echo "    （没有旧二进制，跳过 —— 全新装的话应该用 install.sh）"
 fi
@@ -190,9 +209,65 @@ if [ "$MODE" = "panel" ]; then
     echo "提示：包内没有 web-dist，前端保持原样"
   fi
   # 面板包里带了同版本 daemon，一并更新，保证"一键部署节点"下发的是配套版本
-  if [ -f "$SRC_DIR/bin/dsh-daemon" ]; then
-    run "install -m 0755 '$SRC_DIR/bin/dsh-daemon' '$INSTALL_DIR/bin/dsh-daemon'"
-    echo "    已同步更新 dsh-daemon（供一键部署节点下发）"
+  if [ -f "$SRC_DIR/bin/atl-daemon" ]; then
+    run "install -m 0755 '$SRC_DIR/bin/atl-daemon' '$INSTALL_DIR/bin/atl-daemon'"
+    echo "    已同步更新 atl-daemon（供一键部署节点下发）"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 3b. 旧名兼容软链接 + systemd 单元改名（**过渡用，下个版本删这一步**）
+#
+# 二进制在 2026-10-12 由 dsh-panel / dsh-daemon 改名成 atl-panel / atl-daemon。
+#
+# 为什么必须专门处理：本脚本与 install.sh 不同，**从不重写单元文件**
+#（第 0.5 节只"读" ExecStart 用来校验安装目录对不对）。于是升级到改名后的版本时，
+# 老单元的 ExecStart 仍指向 bin/dsh-panel，而那个路径下已经是新名字的文件 ——
+# 不处理的话**升级后面板会因为"可执行文件不存在"直接起不来**，报错还埋在
+# journal 里（systemd 只会说一句 status=203/EXEC）。
+#
+# 两道一起做，互为兜底：
+#   1) 留旧名软链接：任何还引用旧名的外部脚本 / 别名继续可用；
+#   2) 把单元里的旧名改成新名：让 `systemctl cat` 与实际一致，将来软链接删掉
+#      也不会把服务带崩。
+#
+# 位置：必须排在上面**所有文件替换之后**（面板模式的 atl-daemon 是后装的），
+# 否则检查 [ -f bin/atl-daemon ] 会落空、链接建不出来。
+# ---------------------------------------------------------------------------
+if [ -n "$DRY" ]; then
+  echo "    [dry-run] ln -sfn atl-panel  '$INSTALL_DIR/bin/dsh-panel'"
+  echo "    [dry-run] ln -sfn atl-daemon '$INSTALL_DIR/bin/dsh-daemon'"
+  echo "    [dry-run] sed -i 's|bin/dsh-|bin/atl-|' '$UNIT_PATH'（若单元里还写着旧名）"
+else
+  echo
+  echo "==> 旧名兼容软链接（dsh-* → atl-*）"
+  if [ -f "$INSTALL_DIR/bin/atl-panel" ]; then
+    ln -sfn atl-panel "$INSTALL_DIR/bin/dsh-panel"
+    echo "    已创建 dsh-panel → atl-panel"
+  fi
+  if [ -f "$INSTALL_DIR/bin/atl-daemon" ]; then
+    ln -sfn atl-daemon "$INSTALL_DIR/bin/dsh-daemon"
+    echo "    已创建 dsh-daemon → atl-daemon"
+  fi
+fi
+
+# 单元里若还写着旧名，就地改掉。只在 SERVICE_OK=1 时动 —— 那个标志的意思是
+# "单元确实属于本次的安装目录"；为 0 说明这台机器上可能有另一套部署，动它就是误伤。
+if [ "$SERVICE_OK" -eq 1 ] && grep -qE 'bin/dsh-(panel|daemon)' "$UNIT_PATH" 2>/dev/null; then
+  OLD_EXEC=$(grep -E '^ExecStart=' "$UNIT_PATH" 2>/dev/null | head -1 || true)
+  if [ -z "$DRY" ]; then
+    echo "==> 更新 systemd 单元里的二进制名"
+    sed -i 's|bin/dsh-panel|bin/atl-panel|g; s|bin/dsh-daemon|bin/atl-daemon|g' "$UNIT_PATH"
+    NEW_EXEC=$(grep -E '^ExecStart=' "$UNIT_PATH" 2>/dev/null | head -1 || true)
+    echo "    旧: $OLD_EXEC"
+    echo "    新: $NEW_EXEC"
+    if [ "$NEW_EXEC" = "$OLD_EXEC" ]; then
+      # sed 没生效就是真出问题了（只读挂载、权限、单元被改得不像样），
+      # 这时**必须让升级失败**：默默留下一份指向不存在文件的单元，
+      # 后果是服务再也起不来，而人往往很久之后才发现。
+      echo "    ❌ 单元改写没有生效，请手动把 ExecStart 改成 $INSTALL_DIR/bin/$BIN_NAME" >&2
+      exit 1
+    fi
   fi
 fi
 
@@ -234,9 +309,12 @@ else
   journalctl -u "$UNIT" -n 30 --no-pager >&2 || true
   echo >&2
 
-  if [ -f "$BACKUP/$BIN_NAME" ]; then
+  if [ -n "$PREV_BIN" ] && [ -f "$BACKUP/$PREV_NAME" ]; then
     echo "==> 自动回滚到升级前的二进制" >&2
-    install -m 0755 "$BACKUP/$BIN_NAME" "$INSTALL_DIR/bin/$BIN_NAME"
+    # 把备份的**内容**装回 $BIN_NAME，而不是装回它原来的文件名：
+    # 上面可能已经把单元的 ExecStart 改成了新名，回滚到旧文件名会让单元继续
+    # 指向不存在的东西 —— "回滚"要回的是**旧版本**，不是旧文件名。
+    install -m 0755 "$BACKUP/$PREV_NAME" "$INSTALL_DIR/bin/$BIN_NAME"
     systemctl restart "$UNIT"
     sleep 3
     if systemctl is-active --quiet "$UNIT"; then

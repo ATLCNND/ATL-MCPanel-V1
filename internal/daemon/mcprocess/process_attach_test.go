@@ -64,6 +64,19 @@ func TestAttachConsoleSnapshotAndLivePartitionExactlyOnce(t *testing.T) {
 	// 每一行先写日志文件、再 broadcast —— 顺序刻意如此：反过来的话，
 	// 快照可能读到一行而它还没被广播，用例就会把"实现正确"误判成丢行。
 	// 写入是 O_APPEND 的完整小行，快照读到的只会是完整行。
+	//
+	// ⚠️ 2026-10-03：**"写文件 + broadcast" 必须在同一把 subMu 内完成**，
+	// 否则这条用例断言的是一个实现给不出的保证（`-count=N` 连跑时会稳定失败，
+	// 报 "live-1 被推送了 2 次"）。原因是这两个动作在真实代码里是分开的事件：
+	//   · 锁只能给"广播 vs 快照+订阅"排序（AttachConsole 与 broadcast 都用 subMu）；
+	//   · 管不住"这一行什么时候落盘"。若一行先落盘、后广播，而 AttachConsole
+	//     恰好落在两者之间，它就会既在快照里、又走实时通道 —— 控制台多显示一行。
+	// 生产上写文件的是服务端进程（不是 Daemon），那个窗口无法用锁关掉。
+	//
+	// 这里选择**在同一把锁内发布**，是为了让用例精确地测它要测的东西：
+	// "AttachConsole 把快照与订阅做成原子之后，不会再把同一行同时给出两遍"。
+	// 上面那个残余窗口不在这里断言（它不可避免），而是在 AttachConsole 的
+	// 注释里写清楚了 —— 用测试假装它不存在，比不写测试更糟。
 	const liveLines = 4000
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -72,10 +85,15 @@ func TestAttachConsoleSnapshotAndLivePartitionExactlyOnce(t *testing.T) {
 		defer wg.Done()
 		for i := 1; i <= liveLines; i++ {
 			line := fmt.Sprintf("live-%d\n", i)
-			if _, err := f.WriteString(line); err != nil {
+			inst.subMu.Lock()
+			_, err := f.WriteString(line)
+			if err == nil {
+				inst.broadcastLocked(line)
+			}
+			inst.subMu.Unlock()
+			if err != nil {
 				return
 			}
-			inst.broadcast(line)
 		}
 		close(stop)
 	}()
@@ -247,6 +265,13 @@ func TestAttachConsoleCancelIsolatesOtherSubscribers(t *testing.T) {
 //
 // 与第一条用例的区别：那条是**确定性地数行号**，这条是把不同 goroutine 的
 // 附加/取消与广播交错起来，专门逼出竞态窗口（旧写法在这条用例下会稳定出现重复行）。
+//
+// ⚠️ 2026-10-03：发布动作（写文件 + 广播）同样必须**在同一把 subMu 内**完成，
+// 理由与第一条用例逐字相同 —— "写文件"与"广播"是两个独立事件，锁只给
+// "广播 vs 快照+订阅"排序。不持锁地先写后播时，这一行可能已经落盘（进而进快照）
+// 而广播又发生在订阅之后（进而进实时），于是这条用例断言的是一个实现给不出的
+// 保证：`-count=10` 连跑时会稳定报 "同一行同时进了快照与实时通道"。
+// 那个残余窗口（附加时偶尔多显示一行）是已知且被接受的，写在 AttachConsole 的注释里。
 func TestAttachConsoleConcurrentWithBroadcast(t *testing.T) {
 	inst, logPath := newTailingInstance(t)
 	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o644)
@@ -267,10 +292,16 @@ func TestAttachConsoleConcurrentWithBroadcast(t *testing.T) {
 			default:
 			}
 			line := fmt.Sprintf("c-%d\n", i)
-			if _, err := f.WriteString(line); err != nil {
+			// 写文件与广播在同一临界区内 —— 见上面的说明
+			inst.subMu.Lock()
+			_, werr := f.WriteString(line)
+			if werr == nil {
+				inst.broadcastLocked(line)
+			}
+			inst.subMu.Unlock()
+			if werr != nil {
 				return
 			}
-			inst.broadcast(line)
 		}
 	}()
 

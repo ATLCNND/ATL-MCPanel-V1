@@ -1,0 +1,27 @@
+/* 「实例设置」页（原「核心 / 启动 / 公网端口」三个顶层标签合并而来）。
+
+   容器契约：不自己加内边距、不自己滚动 —— 交给外层 `.tab-body`（见 InstanceDetail.css），
+   这样各标签页切换时内边距与滚动位置一致（用户报的"切页时布局有差异"）。
+
+   子导航用共享的 `.connected-tabs`（styles/components.css），
+   **不要在这里再定义一份** —— 以前 `.kind-tabs` / `.settings-tabs` 两份定义已经漂移过。 */
+
+.instance-settings {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.instance-settings .connected-tabs {
+  margin-bottom: 14px;
+}
+
+.settings-tab-icon {
+  margin-right: 5px;
+}
+
+.settings-panel {
+  min-height: 0;
+  min-width: 0;
+}

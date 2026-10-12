@@ -139,24 +139,21 @@ func requireAdminIn(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// optionalAuth 若请求携带合法 token 则注入用户上下文，但不强制要求登录。
-// 用于「首个用户可自助注册成为管理员」这类需要区分匿名/登录态、但又不强制登录的接口。
-func (s *Server) optionalAuth(next func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if token := extractToken(r); token != "" {
-			// 与 requireAuth 同一条规矩：令牌里的角色**不作数**，以库里的为准。
-			// 校验不过就当作匿名 —— 这个中间件本来就不强制登录。
-			if claims, err := s.auth.ParseToken(token); err == nil {
-				if uid, role, ok := s.authUser(claims); ok {
-					ctx := context.WithValue(r.Context(), ctxKeyUserID, uid)
-					ctx = context.WithValue(ctx, ctxKeyRole, role)
-					r = r.WithContext(ctx)
-				}
-			}
-		}
-		next(w, r)
-	}
-}
+// 这里原先还有一个 optionalAuth（"有令牌就注入上下文、没有也照常放行"）。
+// 2026-10-12 随 POST /api/users 一起删掉了，理由是它是那条漏洞的载体：
+//
+//	它唯一的用途是给「首个用户可自助注册成为管理员」开口子，而那条路让
+//	**未初始化面板**的管理员可以被任何能访问该端口的人抢注 —— 体检时实测
+//	匿名 POST /api/users 直接返回 201 + role=admin。更要命的是前端从未调用过
+//	它，运维者根本不知道这条入口存在。
+//
+//	"初始化端点必须免鉴权"这个前提本身就是漏洞源：Portainer 的 /api/restore
+//	为了让"首管创建前也能恢复备份"而故意不鉴权，结果未初始化实例可被接管
+//	（GHSA-x626-fcwx-f5pc, High）。首个管理员现在只能由本机 CLI 创建
+//	（cmd/panel/user.go 的 `user create`，默认角色就是 admin），那需要 shell 权限。
+//
+// 将来若真需要"匿名与登录态都接受"的接口，请在该接口处显式论证为什么安全，
+// 不要恢复这个通用中间件 —— 它太容易被顺手接到新的初始化端点上。
 
 // currentUserID 从 context 取当前用户 ID。
 func currentUserID(r *http.Request) int64 {
