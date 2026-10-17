@@ -67,6 +67,20 @@ type Instance struct {
 	// Start() 对 status 的防重入检查拦不住它 —— 那拦的是"两次调用"，而这是两条协程。
 	tailGen uint64
 
+	// procGen "当前这一代进程"的世代号（由 mu 保护）。
+	//
+	// 与 tailGen 同一个思路，但守的是**进程收尾协程**：Stop() 与 watchAdopted
+	// 都会起一个协程等进程退出，退出后把状态改成 stopped、删掉 pid 记录。
+	// 而重启路径会在进程退出后**立刻**拉起新进程、写好新的 running 与 pid 记录 ——
+	// 于是那些按 1s / 2s 轮询的收尾协程可能在**新进程起来之后**才轮到检查，
+	// 结果把新进程的状态清成 stopped、pid 记录也删掉。
+	//
+	// 2026-10-17 真机实测（0.9.21，重启一个"接管态"实例）：服务器 21:30:41 正常
+	// `Done (40.783s)`、25565 在听、daemon 就是它的父进程，而面板与 daemon 都显示
+	// stopped，`state/<id>/daemon.pid` 也不见了 —— 查下来正是这条竞态。
+	// 收尾协程创建时记下当时的 procGen，收尾前先比一次；不是当前世代就什么都不做。
+	procGen uint64
+
 	// pidFile 记录子进程 PID（供 Daemon 重启后接管）。
 	//
 	// **不在实例目录里**：它虽然只是一个数字，却被 root 的 Daemon 当作
@@ -351,9 +365,13 @@ func NewAdopted(id, dir, stateDir, jarPath, maxMem, minMem, startCommand string,
 	inst.mu.Lock()
 	inst.tailGen++
 	adoptGen := inst.tailGen
+	// 接管也算"一代进程"：watchAdopted 记下这个世代，只有它还是当前世代时
+	// 才会在进程退出后收尾（否则会清掉后来重启出来的新进程的状态）。
+	inst.procGen++
+	procGen := inst.procGen
 	inst.mu.Unlock()
 	go inst.tailLog(filepath.Join(dir, "logs", "console.log"), adoptGen)
-	go inst.watchAdopted(pid)
+	go inst.watchAdopted(pid, procGen)
 	return inst
 }
 
@@ -739,6 +757,9 @@ func (i *Instance) Start() error {
 	// 且退出前不再广播（见 tailGen 字段的说明与 tailLog 里的 stale）。
 	i.tailGen++
 	tailGen := i.tailGen
+	// 进程世代也 +1：从这一刻起，任何"等旧进程退出再收尾"的协程都过期了，
+	// 它们不该再动这个实例的状态与 pid 记录（见 procGen 字段的说明）。
+	i.procGen++
 	go i.tailLog(logPath, tailGen)
 
 	// 等待进程退出
@@ -1206,7 +1227,11 @@ func (i *Instance) isActive() bool {
 }
 
 // watchAdopted 监视接管进程，退出时更新状态。
-func (i *Instance) watchAdopted(pid int) {
+//
+// gen 是创建本协程时的 procGen：只有它仍是当前世代，才说明"我们守的就是现在这个
+// 进程"。进程退出后重启路径可能已经拉起新进程并写好新的状态与 pid 记录，此时本协程
+// 什么都不该动（见 procGen 字段的说明；2026-10-17 真机实测的"面板说已停止、其实在跑"）。
+func (i *Instance) watchAdopted(pid int, gen uint64) {
 	for {
 		time.Sleep(2 * time.Second)
 		if !IsAlive(pid) {
@@ -1216,25 +1241,52 @@ func (i *Instance) watchAdopted(pid int) {
 			fireExit(i.ID)
 
 			i.mu.Lock()
-			// exited 表示进程是「自行退出」而非被面板停止：
-			// 主动停止会先把 adoptedPID 清零，此处就不会命中，
-			// 从而避免与 Stop() 里的回调重复计数。
+			// 两道判断，缺一不可：
+			//   mine —— 我们守的还是当前这一代进程吗（不是就别动新进程的状态）
+			//   exited —— 进程是「自行退出」而非被面板停止（主动停止会先把
+			//             adoptedPID 清零，从而避免与 Stop() 里的回调重复计数）
+			mine := i.procGen == gen
 			exited := i.adoptedPID == pid
-			if exited {
+			if mine && exited {
 				i.adoptedPID = 0
 				i.status = "stopped"
 			}
 			recorded := i.stopRecorded
 			i.mu.Unlock()
-			_ = os.Remove(i.pidFile)
-			i.broadcast("\n[进程已退出]\n")
+			// pid 记录只在"还是我们这一代"时删：它可能已经是新进程写的了。
+			if mine {
+				_ = os.Remove(i.pidFile)
+				i.broadcast("\n[进程已退出]\n")
+			}
 			// 接管进程崩溃时无人调用 Stop()，需在此补记停机 ——
 			// 否则关机次数偏低，也看不出实例是否频繁崩溃。
-			if exited && !recorded {
+			if mine && exited && !recorded {
 				go fireLifecycle(i.ID, false)
 			}
 			return
 		}
+	}
+}
+
+// watchAdoptedStop 等一个"被 SIGTERM 的接管进程"退出，然后收尾。
+//
+// ⚠️ gen 同样必须校验：本协程按 1 秒轮询，而重启是 Stop → 立刻 Start，
+// 新进程起来后会把 status 置为 running、把 pid 记录写成自己的 —— 如果本协程
+// 在那之后才轮到检查，就会把**新进程**的状态清成 stopped 并删掉它的 pid 记录。
+func (i *Instance) watchAdoptedStop(pid int, gen uint64) {
+	for n := 0; n < 30; n++ {
+		time.Sleep(time.Second)
+		if IsAlive(pid) {
+			continue
+		}
+		i.mu.Lock()
+		if i.procGen == gen {
+			i.status = "stopped"
+			i.adoptedPID = 0
+			_ = os.Remove(i.pidFile)
+		}
+		i.mu.Unlock()
+		return
 	}
 }
 
@@ -1267,19 +1319,10 @@ func (i *Instance) Stop() error {
 				return fmt.Errorf("发送停止信号失败: %v", err2)
 			}
 		}
-		go func(pid int) {
-			for n := 0; n < 30; n++ {
-				time.Sleep(time.Second)
-				if !IsAlive(pid) {
-					i.mu.Lock()
-					i.status = "stopped"
-					i.adoptedPID = 0
-					_ = os.Remove(i.pidFile)
-					i.mu.Unlock()
-					return
-				}
-			}
-		}(i.adoptedPID)
+		// 收尾交给 watchAdoptedStop，并把**当前世代**一起传下去：
+		// 若这次停下之后实例又被启动了（重启路径就是这么做的），本协程就成了
+		// 过期的一代，不该再去动新进程的状态与 pid 记录。
+		go i.watchAdoptedStop(i.adoptedPID, i.procGen)
 		return nil
 	}
 	if i.stdin != nil {
