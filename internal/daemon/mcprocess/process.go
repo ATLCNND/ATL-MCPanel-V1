@@ -601,7 +601,14 @@ func (i *Instance) Start() error {
 	//（start.sh → 自定义 → 默认 java），容器模式只是把它搬进容器执行。
 	// 这样"面板里选 Java 版本""自定义启动命令""启动脚本"这些既有功能
 	// 在两种模式下语义一致，不会出现"只有容器模式才有的启动方式"。
-	if i.Container != nil {
+	// 判据必须是 **wantContainer**（元数据要求容器化），不能只看 `i.Container != nil`。
+	//
+	// why（2026-10-17 真机事故）：`i.Container` 的含义其实是"这台节点有可用的容器
+	// 运行时"（见 SetContainer：rt 非 nil 就一律赋给它），而**接管**一个 native 实例时
+	// registry 也会调 bindContainer（registry.go:430）。于是"节点装了 docker +
+	// 实例是接管来的"两个条件凑在一起时，任何实例的启动都会走进这里 ——
+	// 哪怕它根本没开容器化，接着就会踩到 containerJava 里的自死锁。
+	if i.wantContainer && i.Container != nil {
 		if identity == nil {
 			// 没有 uid 就写不出 --user；而容器里的 root 就是宿主 root。
 			i.status = "error"
@@ -840,7 +847,24 @@ func (i *Instance) toContainerPaths(s string) string {
 // 要么根本没解析到具体 JDK（那就只能指望镜像 PATH 上的 java —— 基础镜像里
 // 没有 java，所以这种情况会在容器里以"找不到 java"失败，属于应当让人看见的错误）。
 func (i *Instance) containerJava() (javaBin, javaHome string) {
-	bin := i.resolveJavaBin()
+	// ⚠️ 必须用 resolveJavaBinLocked：本函数**只**被 containerArgv 调用，
+	// 而 containerArgv 只被 Start() 调用 —— Start 全程持有 i.mu。
+	// 这里若调 resolveJavaBin()（它会自己 Lock）就是**自死锁**：Go 的 sync.Mutex
+	// 不可重入，于是 Start 永远不返回、i.mu 永远不放，该实例的 Status / 控制台
+	// 尾随 / 容器查询全部跟着堵死（面板只会显示一个陈旧的 running）。
+	//
+	// 2026-10-17 真机事故：节点升级 daemon → 实例被接管 → 面板点「重启实例」→
+	// 实例停了不再起来、状态卡在 running、面板查节点实时状态超时。
+	// 协程栈（SIGQUIT 抓的）：
+	//	Instance.resolveJavaBin   process.go:1661  ← 在等自己已经持有的锁
+	//	Instance.containerJava    process.go:843
+	//	Instance.containerArgv    process.go:788
+	//	Instance.Start            process.go:616   ← 持锁者
+	//	Instance.Restart          process.go:1297
+	//
+	// 同一个坑 2026-10-06 已经修过一次（当时为 renderCommand 拆出 Locked 变体，
+	// 见 resolveJavaBin 的注释），但漏掉了这条 containerJava 的调用点。
+	bin := i.resolveJavaBinLocked()
 	if bin == "" {
 		return "", ""
 	}

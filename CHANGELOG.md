@@ -4,6 +4,50 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### 缺陷修复
+
+- **daemon 重启后，启动/重启实例会永久卡死**（2026-10-17 在真机上抓到，**严重**）：
+
+  触发路径（每次升级 daemon 都会满足前两步）：daemon 重启时实例还在跑 → 实例被"接管" →
+  面板点「启动」或「重启」→ **实例优雅关服后不再起来**，面板状态永远停在 `running`，
+  而且连面板查节点的实时状态都会超时；daemon 日志里只有「重启实例」，
+  既没有「重启完成」也没有「重启失败」。
+
+  根因是**自死锁**，协程栈（`systemctl kill -s QUIT` 抓的）：
+
+  ```
+  Instance.resolveJavaBin   process.go:1661   ← 在等一把自己已经持有的锁
+  Instance.containerJava    process.go:843
+  Instance.containerArgv    process.go:788
+  Instance.Start            process.go:616    ← 持锁者（Start 全程持 i.mu）
+  Instance.Restart          process.go:1297
+  ```
+
+  `Start()` 持有 `i.mu` 时调进 `containerJava()`，而它调的是**会自己加锁**的
+  `resolveJavaBin()` —— Go 的 `sync.Mutex` 不可重入，于是永久阻塞；锁被一直攥着，
+  该实例的 `Status()`、控制台尾随协程、容器查询全部跟着卡死，所以外面看到的是
+  "状态卡在 running、实例其实没起来"。同一个坑 2026-10-06 已经修过一次
+  （当时为 `renderCommand` 拆出 `resolveJavaBinLocked`，函数注释里就写着"否则会死锁"），
+  但漏了 `containerJava` 这个调用点。
+
+  为什么会在这时走进容器分支：`Start()` 原先按 `i.Container != nil` 判断，
+  而这个字段的含义其实是"**这台节点有可用的容器运行时**"（`container.Detect` 只查
+  docker 可执行文件是否存在），接管一个 native 实例时 registry 也会把它设上
+  （`registry.go:430`）。于是"节点装了 docker + 实例是接管来的"这两件事凑在一起时，
+  任何实例的启动都会走进容器分支 —— 哪怕它根本没开容器化。
+
+  两处都修了：
+  1. `containerJava` 改用 `resolveJavaBinLocked()`（调用者已持锁）；
+  2. `Start()` 的容器分支判据改成 `i.wantContainer && i.Container != nil`
+     （元数据要求容器化才走容器）。
+
+  回归用例：`process_container_lock_test.go` 两条 —— 一条**复现调用方的持锁姿势**
+  （老代码在这里永久卡住，用例以超时失败），一条用源码级判据钉住容器分支的判据。
+  反向验证：把第 1 处改回 `resolveJavaBin()` → 用例 5 秒超时失败；把第 2 处改回
+  `i.Container != nil` → 源码判据用例失败；还原后 sha256 一致、全量测试通过。
+
 ## [0.9.20] - 2026-10-17
 
 > 两个"用户看得见"的显示/行为缺陷：控制台整屏重复输出、以及「分析平台」页的

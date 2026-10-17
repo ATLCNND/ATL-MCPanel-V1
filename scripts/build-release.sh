@@ -53,7 +53,18 @@ case "$ARCH" in
   *) echo "不支持的 --arch: $ARCH（可用 amd64 / arm64 / all）" >&2; exit 1 ;;
 esac
 
-COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+# COMMIT 用 BUILD_COMMIT 覆盖，理由与 build.sh 里那条一样，但这里还多一层：
+#
+#   构建机（内测 VM）上那棵源码树的 `.git` 是**很久以前的克隆**（工作区里几百个
+#   文件都是"已修改"），`git rev-parse` 会报一个早已作废的 commit —— 而它会被写进
+#   包内的 VERSION 文件。于是出现"包里的 VERSION 说 A、二进制自报说 B"这种
+#   自相矛盾的状态，事后完全看不出装的是哪一版。
+#   2026-10-17 实测踩到：二进制是 BUILD_COMMIT 传进去的（对），包内 VERSION 却是
+#   陈旧 .git 的 008b311（错）。
+#
+# 所以这里既读 BUILD_COMMIT，也把它 export 给子进程 build.sh —— 两边必须同源。
+COMMIT="${BUILD_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")}"
+export BUILD_COMMIT="$COMMIT"
 BUILD_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
 echo "==> 版本 ${VERSION}（commit ${COMMIT}）"

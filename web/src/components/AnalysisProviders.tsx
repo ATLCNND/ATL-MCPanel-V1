@@ -28,6 +28,26 @@ const KIND_LABEL: Record<string, string> = {
   'builtin-rules': '内置规则（离线）',
 }
 
+/** 类型标签的短文案：挂在名字后面当胶囊用，**不含名字本身**（见 kindBadge）。 */
+const KIND_SHORT: Record<string, string> = {
+  logshare: 'AI 分析',
+  mclogs: '分享链接',
+  openai: '自配平台',
+  'builtin-rules': '内置规则',
+}
+
+/**
+ * 卡片/链条上的类型胶囊写什么。
+ *
+ * 为什么不能直接用 KIND_LABEL：它是"独立显示时的完整名字"（`LogShare（AI 分析）`），
+ * 而胶囊紧跟在 `p.name` 后面 —— 两个拼起来会读成
+ * **`LogShare LogShare（AI 分析）`**，看着就像名字被重复印了一遍。
+ * 2026-10-17 在真机上核对内置提供方那两张卡时才注意到这一点
+ *（当时更严重的问题已经修掉：字段名对不上导致两张卡是空白的，见 analysis_wire_test.go）。
+ * 短文案在 LogShareTab.tsx 里早就有同一份，这里补齐。
+ */
+const kindBadge = (kind: string) => KIND_SHORT[kind] || KIND_LABEL[kind] || kind
+
 function emptyForm() {
   return {
     id: 0,
@@ -179,7 +199,7 @@ export default function AnalysisProviders({ role }: { role?: string }) {
           {(data?.chain || []).map((c, i) => (
             <div key={`${c.kind}-${c.id}-${i}`} className="ap-chain-item">
               <span className="ap-chain-idx">{i + 1}</span>
-              <span className={`ap-kind kind-${c.kind}`}>{KIND_LABEL[c.kind] || c.kind}</span>
+              <span className={`ap-kind kind-${c.kind}`}>{kindBadge(c.kind)}</span>
               <span className="ap-chain-name">{c.name}</span>
               <span className="ap-chain-reason">{c.reason}</span>
             </div>
@@ -200,7 +220,7 @@ export default function AnalysisProviders({ role }: { role?: string }) {
               <div className="ap-item-main">
                 <div className="ap-item-name">
                   {p.name}
-                  <span className={`ap-kind kind-${p.kind}`}>{KIND_LABEL[p.kind] || p.kind}</span>
+                  <span className={`ap-kind kind-${p.kind}`}>{kindBadge(p.kind)}</span>
                   {!p.enabled && <span className="ap-off">已停用</span>}
                 </div>
                 <div className="ap-item-desc">
@@ -253,7 +273,7 @@ export default function AnalysisProviders({ role }: { role?: string }) {
               <div className="ap-item-main">
                 <div className="ap-item-name">
                   {p.name}
-                  <span className={`ap-kind kind-${p.kind}`}>{KIND_LABEL[p.kind] || p.kind}</span>
+                  <span className={`ap-kind kind-${p.kind}`}>{kindBadge(p.kind)}</span>
                   {p.owner_id === 0 && <span className="ap-global">全局</span>}
                   {!p.enabled && <span className="ap-off">已停用</span>}
                 </div>
