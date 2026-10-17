@@ -1111,8 +1111,19 @@ export async function setWhitelist(instanceId: string, enabled: boolean): Promis
 /** 提供方类型 */
 export type AnalysisKind = 'logshare' | 'mclogs' | 'openai' | 'builtin-rules'
 
+/**
+ * 分析提供方。
+ *
+ * ⚠️ 字段名必须与**后端 JSON 的键名逐字一致**（snake_case）。
+ * 这里曾经多写过一个 PascalCase 的 `ID?: number`，那是一次事故留下的化石：
+ * 后端 `analysis.Provider` 当时没有 json tag，于是 `GET /api/analysis/providers`
+ * 的 `builtin` / `custom` 返回的是 `ID`/`Name`/`Kind`/`Enabled`，
+ * 而前端读 `p.name` 拿到的是 undefined —— 「内置提供方」两张卡片没有名字、
+ * 都显示"已停用"、说明文字也全错。服务端测试没能拦住它，因为 Go 的 json
+ * 反序列化大小写不敏感（详见 internal/panel/httpapi/analysis_wire_test.go）。
+ * 后端已补 json tag；这个多余的 `ID` 一并删掉，避免下一个人照着它写出第二个坑。
+ */
 export interface AnalysisProvider {
-  ID?: number
   id: number
   name: string
   kind: AnalysisKind

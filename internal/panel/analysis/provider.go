@@ -18,19 +18,34 @@ const (
 //
 // APIKey 只在**当次调用**里出现：接口层解密后构造客户端，用完即弃，
 // 不回显、不写日志、不进审计（见 secret.go 与 docs/ANALYSIS-PLUGGABLE.md 3.3）。
+//
+// ⚠️ json tag 不是装饰，是**契约**（2026-10-17 真机事故，别删）：
+// 这个结构体会被 `GET /api/analysis/providers` 直接序列化进 `builtin` / `custom`
+// 两个数组。没有 tag 时字段名是 PascalCase（`Name` / `Kind` / `Enabled` / `BaseURL`），
+// 而前端（web/src/api.ts 的 AnalysisProvider）读的是 snake_case —— 于是**每个字段都是
+// undefined**：「内置提供方」两张卡片没有名字、都显示"已停用"、说明文字因为
+// `kind === 'logshare'` 判不成立而全走了 mclo.gs 那一支；自配平台那一栏同样全空。
+//
+// 为什么服务端测试拦不住：Go 的 encoding/json **反序列化是大小写不敏感的**，
+// 测试里写 `json:"kind"` 的字段照样能被响应里的 `"Kind"` 填上 —— 服务端测试全绿，
+// 浏览器里全是 undefined。回归用例因此改成**逐字钉死键名**
+// （httpapi/analysis_wire_test.go::TestAnalysisProvidersWireKeys）。
+//
+// APIKey 用 `json:"-"`：它在任何响应里都不该出现。以前它只是个"恰好没被填上"的
+// 空串（列表接口不解密），属于**靠调用顺序维持的安全**，换成 `-` 之后是结构上不可能。
 type Provider struct {
-	ID         int64
-	Name       string
-	Kind       string
-	BaseURL    string
-	Model      string
-	APIKey     string
-	KeyHint    string
-	MaxBytes   int64
-	TimeoutSec int
-	Prompt     string
-	OwnerID    int64 // 0 = 全局
-	Enabled    bool
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	Kind       string `json:"kind"`
+	BaseURL    string `json:"base_url"`
+	Model      string `json:"model"`
+	APIKey     string `json:"-"`
+	KeyHint    string `json:"key_hint"`
+	MaxBytes   int64  `json:"max_bytes"`
+	TimeoutSec int    `json:"timeout_sec"`
+	Prompt     string `json:"prompt"`
+	OwnerID    int64  `json:"owner_id"` // 0 = 全局
+	Enabled    bool   `json:"enabled"`
 }
 
 // RequiresKey 该类型是否需要 API Key。

@@ -53,7 +53,14 @@ func collect(sub <-chan string, n int, timeout time.Duration) []string {
 // 直到收到当前这一条为止（收到即证明 tail 已就位）。返回时通道里保证没有残留的哨兵。
 func attachTail(t *testing.T, inst *Instance, sub <-chan string, logPath string) *os.File {
 	t.Helper()
-	go inst.tailLog(logPath)
+	// 世代号按真实链路取：Start() 每启动一次就 +1，本条即当前世代。
+	// 测试里必须走同一条路，否则「老世代自动退出」的逻辑测不到
+	//（process_tailgen_test.go 专门守这个）。
+	inst.mu.Lock()
+	inst.tailGen++
+	gen := inst.tailGen
+	inst.mu.Unlock()
+	go inst.tailLog(logPath, gen)
 
 	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {

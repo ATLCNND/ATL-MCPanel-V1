@@ -19,6 +19,7 @@
 #   ./build-release.sh --version 1.0.0
 #   ./build-release.sh --skip-build       # 复用 bin/ 里已有的二进制
 #   ./build-release.sh --skip-web         # 复用 web/dist（不重跑 npm）
+#   ./build-release.sh --allow-missing-runtime   # 明确接受"节点包不带运行时镜像"
 # ---------------------------------------------------------------------------
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -27,13 +28,15 @@ VERSION=""
 ARCH=""
 SKIP_BUILD=""
 SKIP_WEB=""
+ALLOW_NO_RUNTIME=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) VERSION="${2:-}"; shift 2 ;;
     --arch) ARCH="${2:-}"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     --skip-web) SKIP_WEB=1; shift ;;
-    -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --allow-missing-runtime) ALLOW_NO_RUNTIME=1; shift ;;
+    -h|--help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "未知参数: $1" >&2; exit 1 ;;
   esac
 done
@@ -199,15 +202,26 @@ make_pkg() {
     #
     # 为什么不放到面板包里：只有跑实例的机器才需要它，而它有 44MB ——
     # 放进面板包会让每台管理机都白白多下载一次。
-    # 镜像不存在时只提示、不算失败：容器化是可选能力，没有它节点照常跑 native。
+    #
+    # ⚠️ 找不到镜像**不再是"只提示"**（2026-10-17 改）：
+    # 0.9.19 就是这么漏掉的 —— 打包时只打印了一行提示，一路发到用户手里，
+    # 症状是"从这一版全新安装的节点，容器化隔离用不了"，而发布者和用户
+    # 都要过很久才会发现。规格是"节点包自带运行时镜像"，那就该在打包时**拦住**。
+    # 真的不需要容器化（比如没有 docker/debootstrap 的构建机）时，
+    # 显式加 `--allow-missing-runtime` 才是诚实的选择。
     img="dist/atl-mcpanel-runtime-${VERSION}-${arch}.tar.gz"
     if [ -f "$img" ]; then
       mkdir -p "$out/runtime"
       cp "$img" "$out/runtime/"
       echo "    含运行时镜像 $(du -h "$img" | cut -f1)"
+    elif [ -n "$ALLOW_NO_RUNTIME" ]; then
+      echo "    注意：按 --allow-missing-runtime 跳过了运行时镜像（该节点包用不了容器化）" >&2
     else
-      echo "    提示：未找到 $img（容器化隔离将不可用）" >&2
-      echo "          生成：bash scripts/build-runtime-image.sh --version ${VERSION} --arch ${arch}" >&2
+      echo "    ❌ 缺少 $img" >&2
+      echo "       这个节点包会缺容器化隔离能力（0.9.19 就是这么漏出去的）" >&2
+      echo "       生成：bash scripts/build-runtime-image.sh --version ${VERSION} --arch ${arch}" >&2
+      echo "       确实不需要容器化时，显式加 --allow-missing-runtime" >&2
+      return 1
     fi
   fi
 
@@ -284,6 +298,14 @@ for f in dist/atl-mcpanel-${VERSION}-linux-*.tar.gz; do
     need="$need bin/atl-panel web-dist/index.html deploy/systemd/atlmcpanel-panel.service"
   else
     need="$need bin/atl-daemon deploy/systemd/atlmcpanel-daemon.service"
+    # 节点包必须自带运行时镜像（容器化隔离的前提）。
+    # 这一条以前**没人查** —— R1 就是这么漏的：包里少了 44MB 的镜像，
+    # 打包校验全绿，用户却在"新建容器实例"时才发现。用 --allow-missing-runtime
+    # 显式跳过时不查（那是发布者明确接受的降级）。
+    if [ -z "$ALLOW_NO_RUNTIME" ]; then
+      a=$(echo "$base" | sed -nE 's/.*-linux-(amd64|arm64)-node$/\1/p')
+      need="$need runtime/atl-mcpanel-runtime-${VERSION}-${a}.tar.gz"
+    fi
     # 节点包里不该有面板专属文件
     if echo "$list" | grep -qE 'bin/atl-panel|web-dist'; then
       echo "    ❌ $base 里混进了面板专属文件" >&2

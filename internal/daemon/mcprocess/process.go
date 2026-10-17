@@ -54,6 +54,19 @@ type Instance struct {
 	started   bool
 	startMode string // 实际使用的启动方式：start.sh / custom / default
 
+	// tailGen 控制台 tailer 的世代号（由 mu 保护）。
+	//
+	// 每启动一次实例就 +1，tailLog 拿到自己的世代号，发现不再是当前世代就退出。
+	//
+	// 为什么需要它（2026-10-12 实测事故）：tailLog 原先只靠 "status != running"
+	// 判断该不该退出，而 Restart 是 Stop → Start —— 老 tailer 一旦在它下一次轮询
+	// **之前**就看到 status 又被改回 running（新进程已经起来），它就永远认为
+	// 自己在岗，继续读同一个日志文件并广播。结果是**一个实例上可能同时跑着多条
+	// tailer**，每一行被广播多次：端到端实测一条 `say` 在 563ms 后被投递了 **3 次**，
+	// 时间戳完全相同（用户看到的就是"控制台里同一行出现好几遍"，刷新也不消失）。
+	// Start() 对 status 的防重入检查拦不住它 —— 那拦的是"两次调用"，而这是两条协程。
+	tailGen uint64
+
 	// pidFile 记录子进程 PID（供 Daemon 重启后接管）。
 	//
 	// **不在实例目录里**：它虽然只是一个数字，却被 root 的 Daemon 当作
@@ -330,8 +343,16 @@ func NewAdopted(id, dir, stateDir, jarPath, maxMem, minMem, startCommand string,
 	inst.StartCommand = startCommand
 	inst.adoptedPID = pid
 	inst.status = "running"
-	// 接管实例仍可通过 tail 日志文件提供只读控制台输出
-	go inst.tailLog(filepath.Join(dir, "logs", "console.log"))
+	// 接管实例仍可通过 tail 日志文件提供只读控制台输出。
+	//
+	// 世代号同样要占一个（2026-10-12 修「控制台重复」）：接管实例之后一旦被
+	// Stop → Start，Start 会把世代 +1，这条尾随协程就会自己退出，不会再和
+	// 新的尾随协程一起读同一个文件、把每行广播两遍。
+	inst.mu.Lock()
+	inst.tailGen++
+	adoptGen := inst.tailGen
+	inst.mu.Unlock()
+	go inst.tailLog(filepath.Join(dir, "logs", "console.log"), adoptGen)
 	go inst.watchAdopted(pid)
 	return inst
 }
@@ -705,8 +726,13 @@ func (i *Instance) Start() error {
 	// 记录 PID，供 Daemon 重启后接管
 	_ = os.WriteFile(i.pidFile, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0o644)
 
-	// 通过 tail 日志文件广播控制台输出
-	go i.tailLog(logPath)
+	// 通过 tail 日志文件广播控制台输出。
+	//
+	// 世代号一起传下去：老的一轮一旦发现自己的世代不是当前世代就退出，
+	// 且退出前不再广播（见 tailGen 字段的说明与 tailLog 里的 stale）。
+	i.tailGen++
+	tailGen := i.tailGen
+	go i.tailLog(logPath, tailGen)
 
 	// 等待进程退出
 	go func() {
@@ -1048,7 +1074,22 @@ const (
 //
 // 所以这里只广播**以换行结尾**的完整行，半行留在缓冲里等下一轮补齐；
 // 半行若长时间补不齐（服务端本来就不发换行），按上面的 idle 规则兜底推出。
-func (i *Instance) tailLog(path string) {
+func (i *Instance) tailLog(path string, gen uint64) {
+	// stale 本 tailer 是否已被**更新的一轮**取代。
+	//
+	// 必须看世代号，不能只看 status：Restart 走 Stop → Start，status 很快又回到
+	// running，只看 status 的老 tailer 会永远不退出 —— 那样同一个实例上就会有多条
+	// tailer 各自读同一个文件、各自广播一遍，控制台上每行都翻倍
+	//（2026-10-12 实测：一条 `say` 被投递 3 次，时间戳完全相同）。
+	//
+	// 取 i.mu 是安全的：本函数其余部分不持 i.mu（isActive 同样按这个方式取）。
+	// 也不会与 subMu 形成环 —— 没有任何路径是"先持 subMu 再取 i.mu"。
+	stale := func() bool {
+		i.mu.Lock()
+		defer i.mu.Unlock()
+		return i.tailGen != gen
+	}
+
 	// O_NOFOLLOW：这条路径也可能来自接管（NewAdopted 直接用 dir 拼出来），
 	// 而 console.log 是租户随时可替换的软链接 —— 跟着它读就等于把节点上的文件
 	//（比如 /etc/shadow）当作控制台内容推送给该实例的所有观看者。
@@ -1076,12 +1117,25 @@ func (i *Instance) tailLog(path string) {
 		if pending.Len() == 0 {
 			return
 		}
+		// 已被更新的一轮取代：**丢弃**而不是广播。
+		// 新一代 tailer 会从当前文件末尾继续读，这一行不会被它重复发出；
+		// 而让僵尸 tailer 再发一次才是真正的伤害（重复比丢一行刺眼得多，
+		// 且这里丢的只是"重启瞬间的老进程尾巴"，文件里仍然完整、回放时看得到）。
+		if stale() {
+			pending.Reset()
+			return
+		}
 		i.broadcast(pending.String())
 		pending.Reset()
 		idle = 0
 	}
 
 	for {
+		// 每一轮都先确认自己还在岗：被取代就立刻退出，连残余的 pending 都不发。
+		if stale() {
+			pending.Reset()
+			return
+		}
 		chunk, err := reader.ReadString('\n')
 		if chunk != "" {
 			pending.WriteString(chunk)
