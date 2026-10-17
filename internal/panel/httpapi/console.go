@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -16,6 +17,10 @@ import (
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true }, // 开发阶段允许所有来源
 }
+
+// maxConsoleSpamParam 浏览器 `?spam=` 参数的长度上限（防御性；Daemon 侧另有
+// 规则条数与单条长度的上限）。超限就忽略，回放退回"不过滤"，不会报错。
+const maxConsoleSpamParam = 4096
 
 // consoleFrame 控制台流发给浏览器的消息。
 //
@@ -86,7 +91,24 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 先发送 ATTACH
-	if err := stream.Send(&pb.ConsoleFrame{Type: pb.ConsoleFrame_ATTACH, InstanceId: instanceID}); err != nil {
+	attach := &pb.ConsoleFrame{Type: pb.ConsoleFrame_ATTACH, InstanceId: instanceID}
+	// 浏览器可以在 URL 上带 `spam=<json>`：它**当前生效的刷屏屏蔽规则**
+	//（预制规则里开着的那些 + 用户自定义正则）。Daemon 用同一套规则去数
+	// "回放多少行"，于是被屏蔽的心跳不占那 500 行的额度。
+	//
+	// 面板**不解释**这些规则，只做长度上限校验后原样转发：判定标准只有一份，
+	// 必须在前端与 Daemon 之间直传，多一层解释就会多一处走偏的机会。
+	// 长度上限是防御性的：这个参数来自 URL，不能让它变成内存/CPU 放大器
+	//（Daemon 侧还有规则条数与单条长度的上限）。
+	if raw := r.URL.Query().Get("spam"); raw != "" {
+		if len(raw) <= maxConsoleSpamParam {
+			attach.Data = raw
+		} else {
+			slog.Warn("控制台 spam 参数过长，已忽略（回放将不按刷屏过滤）",
+				"instance", instanceID, "bytes", len(raw), "limit", maxConsoleSpamParam)
+		}
+	}
+	if err := stream.Send(attach); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

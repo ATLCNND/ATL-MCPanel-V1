@@ -3,6 +3,7 @@ package grpcapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -492,11 +493,40 @@ func (s *Server) Console(stream pb.DaemonService_ConsoleServer) error {
 		return fmt.Errorf("实例 %s 不存在", instanceID)
 	}
 
+	// 客户端（浏览器）在附加请求里带着它**当前生效的刷屏屏蔽规则**。
+	//
+	// 为什么要这样传：判定"什么算周期性刷屏"的规则只活在前端（预制规则 + 用户自定义
+	// 正则，可逐条开关），Daemon 自己再写一套就是"第二份实现，迟早走偏"
+	//（同一个理由见 internal/panel/httpapi/console.go 里关于级别判定的注释）。
+	// 拿到规则后，回放窗口的 maxLines 就按"用户实际看得到的行"来数：
+	// 被屏蔽的心跳不再占额度（用户 2026-10-17 明确要求）。
+	var attachOpts struct {
+		Spam struct {
+			Rules []mcprocess.SpamRule `json:"rules"`
+		} `json:"spam"`
+	}
+	var spam *mcprocess.SpamFilter
+	if d := strings.TrimSpace(first.Data); d != "" {
+		if err := json.Unmarshal([]byte(d), &attachOpts); err != nil {
+			// 解析失败就按"没有规则"处理（多回放一些行，不会误删用户想看的内容）
+			s.log.Warn("控制台附加参数解析失败，按不过滤处理", "instance", instanceID, "error", err)
+		} else if len(attachOpts.Spam.Rules) > 0 {
+			var skipped []string
+			spam, skipped = mcprocess.NewSpamFilter(attachOpts.Spam.Rules)
+			if len(skipped) > 0 {
+				// 跳过的规则要记下来：多半是用了 RE2 不支持的写法（如 lookahead），
+				// 不提示的话用户只会觉得"我明明开了这条规则，回放里还是刷屏"
+				s.log.Warn("部分刷屏规则无法编译（已跳过，这些行仍会出现在回放里）",
+					"instance", instanceID, "rules", skipped)
+			}
+		}
+	}
+
 	// 取历史快照与订阅实时输出必须**原子完成**：分开做时，两步之间的输出要么
 	// 进快照又进实时（控制台上显示两遍，即用户报的"控制台输出会输出两遍"），
 	// 要么两边都不进（永久丢行）。AttachConsole 在同一把 subMu 里完成这两件事，
 	// 而 broadcast 持的也是那把锁，于是不存在"夹在中间"的行 —— 详见其注释。
-	history, outCh, cancel := inst.AttachConsole(consoleHistoryLines)
+	history, outCh, cancel := inst.AttachConsole(consoleHistoryLines, spam)
 	defer cancel()
 
 	s.log.Info("控制台附加", "instance", instanceID)
@@ -506,10 +536,15 @@ func (s *Server) Console(stream pb.DaemonService_ConsoleServer) error {
 
 	// 回放最近的历史输出，使重连后能看到之前的日志
 	if len(history) > 0 {
+		note := fmt.Sprintf("\x1b[90m[以下为最近 %d 行历史输出]\x1b[0m\n", len(history))
+		if spam != nil {
+			// 过滤生效时必须说明，否则用户会以为"日志怎么少了"（其实是被屏蔽的那几类）
+			note = fmt.Sprintf("\x1b[90m[以下为最近 %d 行历史输出（已跳过被屏蔽的周期性刷屏行）]\x1b[0m\n", len(history))
+		}
 		_ = stream.Send(&pb.ConsoleFrame{
 			Type:       pb.ConsoleFrame_OUTPUT,
 			InstanceId: instanceID,
-			Data:       fmt.Sprintf("\x1b[90m[以下为最近 %d 行历史输出]\x1b[0m\n", len(history)),
+			Data:       note,
 			IsStdout:   true,
 		})
 		// 历史回放与实时输出各用一个装饰器实例：堆栈续行靠"上一行是不是错误"

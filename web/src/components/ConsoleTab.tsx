@@ -3,6 +3,7 @@ import { Terminal } from 'xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import 'xterm/css/xterm.css'
 import { consoleWsUrl, isTokenExpired, notifyAuthExpired, tokenRejectedByServer } from '../api'
+import { clampRetain, needsTrim, trimByUseful } from './consoleBuffer'
 import { onThemeChange } from '../styles/theme'
 import './ConsoleTab.css'
 
@@ -76,6 +77,14 @@ interface ConsoleFrame {
 interface BufferedLine {
   level: Level
   text: string
+  /**
+   * 这一行是否属于"被屏蔽的周期性刷屏"（判定发生在**收行那一刻**）。
+   *
+   * 只用于**裁剪计数**：设置里的「保留行数」现在按"非刷屏行"算，被屏蔽的行不占额度
+   *（用户 2026-10-17 要求）。重放时的屏蔽判定仍按**当前规则**现算 ——
+   * 用户改了规则之后，旧行也要跟着变。
+   */
+  spam?: boolean
 }
 
 /**
@@ -90,10 +99,47 @@ interface PendingLine {
 }
 
 /**
- * 本地保留的行数上限。
+ * 把**当前生效**的刷屏屏蔽规则序列化，交给服务端（见 api.ts 的 consoleWsUrl）。
  *
- * 与 xterm 的 scrollback 取同一个数量级：留得比终端能显示的更多没有意义
- * （终端本来就只记得住这么多），留得太少则切换筛选时会缺内容。
+ * 为什么要给服务端：控制台附加时会回放最近 500 行，而回放窗口现在也按"非刷屏行"计数
+ *（用户 2026-10-17 要求）—— 判"什么算刷屏"的规则只有这一份（就下面这张表 + 用户自定义），
+ * 服务端不该另写一套，否则两边迟早走偏。所以把规则直传下去。
+ *
+ * 三种情况不给规则（服务端退回"不过滤"，即改动前的行为）：
+ *   ① 总开关关着（用户在界面上选了"显示刷屏"，那就别在回放里偷偷丢掉这些行）；
+ *   ② 一条规则都没开；
+ *   ③ 序列化失败（理论上不会）。
+ */
+function spamConfigFor(
+  ruleEnabled: Record<string, boolean>,
+  customRules: { id: string; label: string; pattern: string }[],
+  hideHeartbeat: boolean,
+): string {
+  if (!hideHeartbeat) return ''
+  const rules: { id: string; pattern: string; flags: string; block: boolean }[] = []
+  for (const r of HEARTBEAT_PRESETS) {
+    if (!ruleEnabled[r.id]) continue
+    rules.push({ id: r.id, pattern: r.re.source, flags: r.re.flags, block: !!r.block })
+  }
+  for (const c of customRules) {
+    // 自定义规则一律逐行（与前端 regRef 的用法一致），大小写不敏感
+    if (ruleEnabled[c.id] === false) continue
+    rules.push({ id: c.id, pattern: c.pattern, flags: 'i', block: false })
+  }
+  if (rules.length === 0) return ''
+  try {
+    return JSON.stringify({ spam: { rules } })
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 本地缓冲的保留条数**默认值**。
+ *
+ * ⚠️ 2026-10-17 起，实际保留条数跟着设置里的「保留行数」（xterm scrollback）走，
+ * 而且按**非刷屏行**计数 —— 见 consoleBuffer.ts 里的说明与 trimByUseful。
+ * 这个常量只作为 opts 读不到时的兜底。
  */
 const BUFFER_MAX = 5000
 
@@ -293,6 +339,8 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
   const initialRules = useMemo(() => loadRules(), [])
   const [hideHeartbeat, setHideHeartbeat] = useState(true)
   const hideHbRef = useRef(true)
+  /** 当前生效的屏蔽规则（JSON）。连接时随 URL 带给服务端，见 spamConfigFor。 */
+  const spamCfgRef = useRef('')
   /** 被心跳屏蔽掉的行数（显示在开关旁边，让人知道藏了多少） */
   const [hbHidden, setHbHidden] = useState(0)
 
@@ -342,7 +390,72 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
    * 这样无论控制台容器多高、页面滚到哪里，面板都能完整显示。
    */
   const settingsBtnRef = useRef<HTMLDivElement>(null)
-  const [settingsPos, setSettingsPos] = useState<{ right: number; top: number } | null>(null)
+  const [settingsPos, setSettingsPos] = useState<
+    { right: number; top?: number; bottom?: number; maxHeight: number } | null
+  >(null)
+
+  /**
+   * 算悬浮窗的位置与**可用高度**。
+   *
+   * ⚠️ 2026-10-17 实测缺陷（用户报"还有BUG以及界面设计不合理"）：原先无论下方有没有
+   * 空间都往下展开（`top: r.bottom + 8`），而 CSS 里的 `max-height: calc(100vh - 96px)`
+   * 用的是**固定 96px**（注释写的却是"减去面板顶端到顶部的距离"）。窗口高 607px 时：
+   * 面板 top=285、高 511 → 底边 796，**超出视口 189px**；而面板自己是 `overflow:auto`、
+   * 页面又不可滚动 —— 底部那截（「复制」那一块）**既看不到也滚不到**。
+   *
+   * 现在按真实剩余空间算：下方够用就向下、不够就改向上，并把 max-height 内联成
+   * 那个真实可用高度，保证底边永远在视口内。
+   */
+  const computeSettingsPos = (r: DOMRect) => {
+    const GAP = 8        // 与按钮的间距
+    const MARGIN = 12    // 与视口边的留白
+    const MIN_USABLE = 240  // 再小就只能靠内部滚动，但至少给这么多
+    const below = window.innerHeight - r.bottom - GAP - MARGIN
+    const above = r.top - GAP - MARGIN
+    const right = Math.max(MARGIN, window.innerWidth - r.right)
+    if (below >= MIN_USABLE || below >= above) {
+      return { right, top: r.bottom + GAP, maxHeight: Math.max(MIN_USABLE, below) }
+    }
+    // 下方不够、上方更宽裕：贴着按钮向上展开
+    return {
+      right,
+      bottom: window.innerHeight - r.top + GAP,
+      maxHeight: Math.max(MIN_USABLE, above),
+    }
+  }
+
+  /**
+   * 悬浮窗开着时的三个"桌面端该有"的行为：Esc 关闭、点外部关闭、窗口尺寸变化后重算位置。
+   *
+   * 之前**只有**右上角那个 ✕ 一个关闭入口（代码里确实没有这三样）：
+   * 用户在设置里改完字号想关掉，只能去精准点那个小叉；而把窗口缩小之后再打开设置，
+   * 位置还是按旧尺寸算的，又会溢出视口 —— 这正是上面那个"底部够不着"的另一半成因。
+   */
+  useEffect(() => {
+    if (!showSettings) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowSettings(false)
+    }
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null
+      if (!t) return
+      if (t.closest('.console-settings') || t.closest('.console-settings-wrap')) return
+      setShowSettings(false)
+    }
+    const onResize = () => {
+      const r = settingsBtnRef.current?.getBoundingClientRect()
+      if (r) setSettingsPos(computeSettingsPos(r))
+    }
+    window.addEventListener('keydown', onKey)
+    // capture 阶段：避免别处 stopPropagation 把这次点击吃掉
+    window.addEventListener('mousedown', onDown, true)
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('mousedown', onDown, true)
+      window.removeEventListener('resize', onResize)
+    }
+  }, [showSettings])
 
   /**
    * "复制全部可见内容"的实现（由终端初始化时挂上，头部按钮调用）。
@@ -451,6 +564,34 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
   // 就必须能重放 —— 切筛选时清屏，再把符合条件的行重新写一遍。
   const bufRef = useRef<BufferedLine[]>([])
   const pendingRef = useRef<PendingLine | null>(null)
+
+  /**
+   * 缓冲的保留条数（=「保留行数」滑块的值）。
+   *
+   * 用 ref 而不是直接在回调里读 opts：onFrame 是在建立连接的那个 effect 里定义的，
+   * 直接闭包 opts 会拿到**建立连接那一刻**的旧值（用户后来改了滑块就不生效了）。
+   */
+  const retainRef = useRef(clampRetain(BUFFER_MAX))
+
+  /**
+   * 收一行进缓冲，并按「保留行数」裁剪 —— **只数非刷屏行**。
+   *
+   * 用户 2026-10-17 要求：被屏蔽的周期性刷屏不该占用保留行数的计数。
+   * 被屏蔽的行本身仍然留在缓冲里（关掉屏蔽要能立刻看到，见上面的说明），
+   * 只是**不参与计数**；另外还有一道总行数硬上限防止内存被刷屏撑爆（见 consoleBuffer.ts）。
+   *
+   * 两个写入点（实时输出、本地命令回显）都走这里，保证口径只有一个。
+   */
+  const pushBuf = (entry: BufferedLine) => {
+    const buf = bufRef.current
+    buf.push(entry)
+    const retain = retainRef.current
+    if (needsTrim(buf.length, retain)) {
+      const kept = trimByUseful(buf, retain)
+      // 原地裁剪（splice）而不是替换数组：别处可能还持有这个数组的引用
+      if (kept.length < buf.length) buf.splice(0, buf.length - kept.length)
+    }
+  }
 
   /** 是否显示某级别的行 */
   const visible = (lv: Level, f: Filter) => f === 'all' || f === lv
@@ -784,24 +925,22 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
       for (let i = 0; i < parts.length; i++) {
         const line = parts[i] + '\n'
         const out = i === 0 ? line.slice(written) : line
-        const entry: BufferedLine = { level: lv, text: line }
-        bufRef.current.push(entry)
         // 实时通道也要过**块判定**（与 replay 一致）：
         //   块开始 → 隐藏并进入块；块续行 → 隐藏；否则按逐行规则
-        if (out) {
-          let hideLive = false
-          if (hideHbRef.current) {
-            if (startsBlock(line)) {
-              liveBlockRef.current = true
-              hideLive = true
-            } else if (liveBlockRef.current) {
-              if (isBlockContinuation(line)) hideLive = true
-              else liveBlockRef.current = false // 块结束，这行照常显示
-            }
-            if (!hideLive && blockedLine(line)) hideLive = true
+        let hideLive = false
+        if (hideHbRef.current) {
+          if (startsBlock(line)) {
+            liveBlockRef.current = true
+            hideLive = true
+          } else if (liveBlockRef.current) {
+            if (isBlockContinuation(line)) hideLive = true
+            else liveBlockRef.current = false // 块结束，这行照常显示
           }
-          if (!hideLive) t.write(out)
+          if (!hideLive && blockedLine(line)) hideLive = true
         }
+        // spam 标记记在缓冲里：裁剪时按"非刷屏行"计数，被屏蔽的行不占保留额度
+        pushBuf({ level: lv, text: line, spam: hideLive })
+        if (out && !hideLive) t.write(out)
         grew = true
       }
       if (parts.length > 0) written = 0
@@ -844,7 +983,7 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
       // 拼出 `?token=` 的请求必然 401，而 WS 握手失败读不到响应体，
       // 用户只能看到笼统的"连接错误"，白白刷一屏报错。
       // 这里直接给出可操作的提示，并交给全局的"会话失效"流程把界面切回登录页。
-      const url = consoleWsUrl(instanceId)
+      const url = consoleWsUrl(instanceId, spamCfgRef.current || undefined)
       if (!url) {
         setConnected(false)
         t.writeln('\x1b[91m[未登录或登录状态已失效，请刷新页面并重新登录]\x1b[0m')
@@ -1027,6 +1166,27 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
     term.current?.scrollToBottom()
   }, [ruleEnabled, customRules])
 
+  // 规则或总开关变化 → 更新给服务端的那份规则（**不重连**，只是下次连接时带上）。
+  //
+  // 说明一处有意的取舍：改完规则后，**当前这条连接**里的回放仍是按旧规则生成的
+  //（回放发生在附加那一刻），但前端会就地按新规则重新过滤已有内容，
+  // 所以用户看到的立即是对的；新规则对"回放窗口算多少行"生效于下一次连接。
+  useEffect(() => {
+    spamCfgRef.current = spamConfigFor(ruleEnabled, customRules, hideHeartbeat)
+  }, [ruleEnabled, customRules, hideHeartbeat])
+
+  // 「保留行数」变化 → 更新缓冲的保留条数，并**立刻按新值裁一次**。
+  // 不立刻裁的话要等到攒够两倍才会裁剪，用户会以为"改了没生效"。
+  useEffect(() => {
+    const r = clampRetain(opts.scrollback)
+    retainRef.current = r
+    const buf = bufRef.current
+    if (buf.length > r) {
+      const kept = trimByUseful(buf, r)
+      if (kept.length < buf.length) buf.splice(0, buf.length - kept.length)
+    }
+  }, [opts.scrollback])
+
   // 显示参数变化 → 写回终端 + 持久化 + 重新 fit（字号变了列数会变）
   useEffect(() => {
     try { localStorage.setItem(OPTS_KEY, JSON.stringify(opts)) } catch { /* 忽略 */ }
@@ -1076,14 +1236,11 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
       // 命令产生的输出，不记录输入本身），所以"发了什么"必须由前端自己写出来 ——
       // 否则用户敲完一条命令，屏幕上什么都没有，会以为面板没收到
       //（2026-10-02 用户反馈"没显示输入的指令"）。
-      // 走 bufRef 一起进缓冲：切换级别筛选时重放也能看到自己发过的命令。
-      const line = { level: 'info' as Level, text: '\x1b[90m› ' + cmd + '\x1b[0m\n' }
-      bufRef.current.push(line)
-      if (bufRef.current.length > BUFFER_MAX) {
-        bufRef.current.splice(0, bufRef.current.length - BUFFER_MAX)
-      }
+      // 走缓冲一起进缓冲：切换级别筛选时重放也能看到自己发过的命令。
+      // 本地回显不是刷屏（spam: false），它要占保留额度 —— 用户自己敲的命令不该被裁掉。
+      pushBuf({ level: 'info' as Level, text: '\x1b[90m› ' + cmd + '\x1b[0m\n', spam: false })
       if (filterRef.current === 'all' || filterRef.current === 'info') {
-        term.current?.write(line.text)
+        term.current?.write('\x1b[90m› ' + cmd + '\x1b[0m\n')
       }
       recount()
       term.current?.scrollToBottom()
@@ -1190,7 +1347,7 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
               // 打开前先量按钮位置 —— 面板用 position:fixed 定位（见 CSS 里的说明），
               // 必须拿到视口坐标，不能靠父元素的 absolute 定位。
               const r = settingsBtnRef.current?.getBoundingClientRect()
-              if (r) setSettingsPos({ right: window.innerWidth - r.right, top: r.bottom + 8 })
+              if (r) setSettingsPos(computeSettingsPos(r))
               setShowSettings((v) => !v)
             }}
             title="控制台设置：字体 / 行间距 / 屏蔽规则"
@@ -1205,7 +1362,13 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
               role="dialog"
               aria-label="控制台设置"
               style={settingsPos
-                ? { position: 'fixed', right: settingsPos.right, top: settingsPos.top }
+                ? {
+                    position: 'fixed',
+                    right: settingsPos.right,
+                    ...(settingsPos.top !== undefined ? { top: settingsPos.top } : {}),
+                    ...(settingsPos.bottom !== undefined ? { bottom: settingsPos.bottom } : {}),
+                    maxHeight: settingsPos.maxHeight,
+                  }
                 : undefined}
             >
               <div className="cs-head">

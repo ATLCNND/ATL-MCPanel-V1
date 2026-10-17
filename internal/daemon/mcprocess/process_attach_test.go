@@ -99,7 +99,7 @@ func TestAttachConsoleSnapshotAndLivePartitionExactlyOnce(t *testing.T) {
 	}()
 
 	// 附加：快照 + 订阅一次拿到。
-	history, sub, cancel := inst.AttachConsole(consoleAttachLines)
+	history, sub, cancel := inst.AttachConsole(consoleAttachLines, nil)
 
 	// 实时通道必须**边产边收**：真实链路里转发循环是立刻开始消费的，
 	// 而 consoleSubBuf（1024）装不下 liveLines（4000）行 —— 攒到最后再收的话
@@ -212,7 +212,7 @@ func TestAttachConsoleSnapshotAndLivePartitionExactlyOnce(t *testing.T) {
 func TestAttachConsoleSubscribesLiveOutput(t *testing.T) {
 	inst, _ := newTailingInstance(t)
 
-	history, sub, cancel := inst.AttachConsole(consoleAttachLines)
+	history, sub, cancel := inst.AttachConsole(consoleAttachLines, nil)
 	defer cancel()
 	if len(history) != 0 {
 		t.Fatalf("空日志不该有历史，实际 %v", history)
@@ -236,7 +236,7 @@ func TestAttachConsoleCancelIsolatesOtherSubscribers(t *testing.T) {
 	other, otherCancel := inst.Subscribe()
 	defer otherCancel()
 
-	_, _, cancel := inst.AttachConsole(consoleAttachLines)
+	_, _, cancel := inst.AttachConsole(consoleAttachLines, nil)
 	cancel()
 
 	inst.broadcast("still-here\n")
@@ -306,7 +306,7 @@ func TestAttachConsoleConcurrentWithBroadcast(t *testing.T) {
 	}()
 
 	for i := 0; i < 30; i++ {
-		history, sub, cancel := inst.AttachConsole(consoleAttachLines)
+		history, sub, cancel := inst.AttachConsole(consoleAttachLines, nil)
 		// 立刻排空实时通道：这里不断言"不丢"（consoleSubBuf 溢出时 broadcast
 		// 本来就会丢帧），只断言**不重** —— 快照里的行不该再出现在实时通道里。
 		live := drain(sub)

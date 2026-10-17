@@ -694,11 +694,18 @@ export async function monitorInstances(): Promise<MonitorInstance[]> {
  * 语义上这是对的：**没有令牌就不存在"控制台连接"这件事**，
  * 发一个必然失败的请求只会污染控制台（用户那次截了一屏 281 条错误）。
  */
-export function consoleWsUrl(instanceId: string): string | null {
+export function consoleWsUrl(instanceId: string, spam?: string): string | null {
   const token = getToken()
   if (!token) return null
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${proto}://${window.location.host}/ws/console/${instanceId}?token=${encodeURIComponent(token)}`
+  // spam：**当前生效的刷屏屏蔽规则**（JSON），由调用方（ConsoleTab）序列化。
+  //
+  // 为什么要把它带给服务端：判"什么算周期性刷屏"的规则只活在前端，而服务端的
+  // 回放窗口（500 行）也要按"非刷屏行"来数 —— 否则被屏蔽的心跳会白占额度，
+  // 用户看到的"最近 500 行"里可能大半是心跳。规则由前端直传给 Daemon
+  //（面板只做长度校验后原样转发），判定标准因此只有一份。
+  const extra = spam ? `&spam=${encodeURIComponent(spam)}` : ''
+  return `${proto}://${window.location.host}/ws/console/${instanceId}?token=${encodeURIComponent(token)}${extra}`
 }
 
 // ---- 实例授权 ----

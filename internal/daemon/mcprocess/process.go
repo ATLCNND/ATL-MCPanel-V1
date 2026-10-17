@@ -1505,16 +1505,16 @@ func (i *Instance) Subscribe() (<-chan string, func()) {
 // 读的是本地文件尾部、窗口是毫秒级，换来的是"既不丢也不重"；而反过来（锁外读文件）
 // 就等于把这个窗口重新打开。调用方因此必须尽快排空返回的通道（Console 里紧随其后
 // 就进入转发循环）。
-func (i *Instance) AttachConsole(maxLines int) (history []string, out <-chan string, cancel func()) {
+func (i *Instance) AttachConsole(maxLines int, spam *SpamFilter) (history []string, out <-chan string, cancel func()) {
 	sub := &consoleSub{ch: make(chan string, consoleSubBuf)}
 
 	i.subMu.Lock()
 	defer i.subMu.Unlock()
 	i.subs = append(i.subs, sub)
-	// RecentOutput 只读文件、不碰 subMu（也不碰 mu），因此这里再调它是安全的 ——
+	// RecentOutputFiltered 只读文件、不碰 subMu（也不碰 mu），因此这里再调它是安全的 ——
 	// 它内部只有阻塞的文件 IO，不存在反向取锁的路径。stdin 也重定向到同一个文件，
 	// 而文件的写入方（服务端进程与 tailLog）都不会去抢 subMu，所以不会互相卡住。
-	history = i.RecentOutput(maxLines)
+	history = i.RecentOutputFiltered(maxLines, spam)
 
 	return history, sub.ch, func() {
 		i.subMu.Lock()
@@ -1586,8 +1586,25 @@ func (i *Instance) broadcastLocked(line string) {
 // 的快照），但不要拿它和 Subscribe 拼成"订阅 + 回放" —— 两步之间的窗口会让输出
 // 重复或丢失。控制台附加请用 AttachConsole，那里把两件事合并成了一次原子操作。
 func (i *Instance) RecentOutput(maxLines int) []string {
+	return i.recentOutput(maxLines, nil)
+}
+
+// RecentOutputFiltered 与 RecentOutput 相同，但**只数"非刷屏"行**。
+//
+// maxLines 的语义因此变成"用户实际能看到多少行有用输出"：被屏蔽的周期性日志
+// （玩家数统计、TPS 报告等）不占额度。spam 为 nil 时与 RecentOutput 等价。
+func (i *Instance) RecentOutputFiltered(maxLines int, spam *SpamFilter) []string {
+	return i.recentOutput(maxLines, spam)
+}
+
+// recentOutput 读取控制台日志尾部并按需过滤，见上面两个导出函数的说明。
+func (i *Instance) recentOutput(maxLines int, spam *SpamFilter) []string {
 	if maxLines <= 0 {
 		return nil
+	}
+	readCap := int64(consoleTailMaxBytes)
+	if spam != nil {
+		readCap = consoleTailMaxBytesFiltered
 	}
 	// 与控制台日志的写入侧同一套检查：读方向同样是以 root 打开，
 	// 指向 /etc/shadow 的软链接会把节点机密送进控制台回放给协作者看。
@@ -1610,8 +1627,8 @@ func (i *Instance) RecentOutput(maxLines int) []string {
 	}
 	size := fi.Size()
 	truncated := false
-	if size > consoleTailMaxBytes {
-		if _, err := f.Seek(size-consoleTailMaxBytes, io.SeekStart); err != nil {
+	if size > readCap {
+		if _, err := f.Seek(size-readCap, io.SeekStart); err != nil {
 			return nil
 		}
 		truncated = true
@@ -1635,9 +1652,10 @@ func (i *Instance) RecentOutput(maxLines int) []string {
 	if n := len(lines); n > 0 && lines[n-1] == "" {
 		lines = lines[:n-1]
 	}
-	if len(lines) > maxLines {
-		lines = lines[len(lines)-maxLines:]
-	}
+	// 过滤在**取尾部之前**做：屏蔽掉的行不该占"保留 N 行"的额度
+	//（用户 2026-10-17 要求：daemon 回放窗口也按"非刷屏行"计 500 行）。
+	// 没有规则时 UsefulTail 就是"取尾部 maxLines 行"，行为与改动前完全一致。
+	lines = spam.UsefulTail(lines, maxLines)
 
 	out := make([]string, 0, len(lines))
 	for _, l := range lines {
@@ -1648,6 +1666,13 @@ func (i *Instance) RecentOutput(maxLines int) []string {
 
 // consoleTailMaxBytes 控制台历史回放时单次读取的日志上限。
 const consoleTailMaxBytes = 512 * 1024
+
+// consoleTailMaxBytesFiltered 带刷屏过滤时允许读得更多。
+//
+// 为什么：过滤后"要凑够 N 条非刷屏行"可能需要往回读得更远 —— 长期运行的服务器上
+// 心跳占了很大比例（实测 Paper 每 5 秒一条玩家数 + 每 15 秒一条 TPS），
+// 512KB 里可能只剩几十条有用输出。仍然有上限，避免一次附加读入过多导致卡顿。
+const consoleTailMaxBytesFiltered = 2 * 1024 * 1024
 
 // 控制台日志轮转参数
 const (
