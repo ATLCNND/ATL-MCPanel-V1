@@ -135,6 +135,13 @@ type Instance struct {
 	containerized bool
 	// wantContainer 元数据要求该实例容器化（即使运行时暂不可用）。
 	wantContainer bool
+	// publishPublic 容器端口要对外发布（公网直出，底账 F16）。
+	//
+	// 由 Daemon 在启动实例前依据"该实例是否有直连隧道"设置：
+	// 容器默认只把端口发布到回环（给 frpc 用），直连线路下必须发到 0.0.0.0，
+	// 否则玩家连节点公网 IP 是连不上的 —— 而这一点在容器里**改不了**，
+	// 只能在 docker run 时决定，所以必须在启动前就知道。
+	publishPublic bool
 
 	limitWarn string // 最近一次资源限制应用失败的原因
 	// javaNote 最近一次 Java 版本解析的说明（回退时会写明原因）
@@ -844,11 +851,30 @@ func (i *Instance) containerArgv(native *exec.Cmd, identity *runas.Identity) ([]
 		MemoryBytes:  i.MemLimitBytes,
 		CPUPercent:   i.CPUQuotaPercent,
 		Port:         i.Port,
+		PublishHost:  i.containerPublishHost(),
 		JavaHome:     javaHome,
 		ResourcesDir: i.ContainerResourcesDir,
 		Command:      inner,
 	}
 	return i.Container.Argv(spec)
+}
+
+// containerPublishHost 容器端口发布到哪个宿主地址。
+//
+// 公网直出（有直连隧道）时发到 0.0.0.0，让玩家能直接连节点公网 IP；
+// 其余情况只发回环 —— 这样端口不会被无意暴露，也保持与历史行为一致。
+func (i *Instance) containerPublishHost() string {
+	if i.publishPublic {
+		return "0.0.0.0"
+	}
+	return "127.0.0.1"
+}
+
+// SetPublishPublic 由 Daemon 在启动前调用（见字段说明）。
+func (i *Instance) SetPublishPublic(v bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.publishPublic = v
 }
 
 // toContainerPaths 把命令行里指向实例目录的路径改写为容器内路径。

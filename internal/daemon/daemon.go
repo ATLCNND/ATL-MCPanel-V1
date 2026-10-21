@@ -456,6 +456,12 @@ func (d *Daemon) Run() error {
 			d.log.Warn("恢复隧道定义失败", "instance", id, "error", err)
 			continue
 		}
+		// 公网直出（底账 F16）：从磁盘恢复的隧道定义里若有直连条目，
+		// 就要在**该实例下次启动前**标记"端口对外发布"。
+		// 容器化实例的端口发布地址在 docker run 那一刻就定死了，晚了改不了。
+		if d.frp.HasDirect(id) {
+			inst.SetPublishPublic(true)
+		}
 		// 实例进程还在（含被接管的）才拉 frpc
 		if inst.Status() != "running" {
 			continue

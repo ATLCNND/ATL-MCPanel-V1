@@ -2779,6 +2779,18 @@ type TunnelRequest struct {
 	Enabled       bool                   `protobuf:"varint,9,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	Name          string                 `protobuf:"bytes,10,opt,name=name,proto3" json:"name,omitempty"`                                        // 隧道显示名（用于 frp 代理名）
 	DisplayDomain string                 `protobuf:"bytes,11,opt,name=display_domain,json=displayDomain,proto3" json:"display_domain,omitempty"` // 对外展示的域名（管理员配置，可含端口）；为空则展示 IP:端口
+	// subdomain / custom_domain：vhost 方式（http/https）用哪条路由。
+	// 第三方服务商给的配置里通常只有其中之一，面板照原样下发。
+	Subdomain    string `protobuf:"bytes,12,opt,name=subdomain,proto3" json:"subdomain,omitempty"`
+	CustomDomain string `protobuf:"bytes,13,opt,name=custom_domain,json=customDomain,proto3" json:"custom_domain,omitempty"`
+	// use_tls：传输层 TLS（对应 frpc 的 transport.tls.enable）。
+	UseTls bool `protobuf:"varint,14,opt,name=use_tls,json=useTls,proto3" json:"use_tls,omitempty"`
+	// publish_mode：这条隧道怎么出网。
+	//
+	//	"frpc"（默认/空）—— 在节点上跑 frpc，按上面的字段生成代理
+	//	"direct"        —— 公网直出：**不跑 frpc**，端口由实例自己对外监听；
+	//	                   容器化实例据此把端口发布到 0.0.0.0 而不是回环。
+	PublishMode   string `protobuf:"bytes,15,opt,name=publish_mode,json=publishMode,proto3" json:"publish_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2886,6 +2898,34 @@ func (x *TunnelRequest) GetName() string {
 func (x *TunnelRequest) GetDisplayDomain() string {
 	if x != nil {
 		return x.DisplayDomain
+	}
+	return ""
+}
+
+func (x *TunnelRequest) GetSubdomain() string {
+	if x != nil {
+		return x.Subdomain
+	}
+	return ""
+}
+
+func (x *TunnelRequest) GetCustomDomain() string {
+	if x != nil {
+		return x.CustomDomain
+	}
+	return ""
+}
+
+func (x *TunnelRequest) GetUseTls() bool {
+	if x != nil {
+		return x.UseTls
+	}
+	return false
+}
+
+func (x *TunnelRequest) GetPublishMode() string {
+	if x != nil {
+		return x.PublishMode
 	}
 	return ""
 }
@@ -5487,7 +5527,7 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\x13DeleteBackupRequest\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x1b\n" +
-	"\tbackup_id\x18\x02 \x01(\tR\bbackupId\"\xd7\x02\n" +
+	"\tbackup_id\x18\x02 \x01(\tR\bbackupId\"\xd6\x03\n" +
 	"\rTunnelRequest\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x1b\n" +
@@ -5504,7 +5544,11 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\aenabled\x18\t \x01(\bR\aenabled\x12\x12\n" +
 	"\x04name\x18\n" +
 	" \x01(\tR\x04name\x12%\n" +
-	"\x0edisplay_domain\x18\v \x01(\tR\rdisplayDomain\"5\n" +
+	"\x0edisplay_domain\x18\v \x01(\tR\rdisplayDomain\x12\x1c\n" +
+	"\tsubdomain\x18\f \x01(\tR\tsubdomain\x12#\n" +
+	"\rcustom_domain\x18\r \x01(\tR\fcustomDomain\x12\x17\n" +
+	"\ause_tls\x18\x0e \x01(\bR\x06useTls\x12!\n" +
+	"\fpublish_mode\x18\x0f \x01(\tR\vpublishMode\"5\n" +
 	"\x12ListTunnelsRequest\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\"\xda\x01\n" +

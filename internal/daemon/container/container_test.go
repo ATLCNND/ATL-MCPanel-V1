@@ -167,3 +167,48 @@ func TestJDKExtraMounts(t *testing.T) {
 		t.Error("空 JAVA_HOME 应返回 nil")
 	}
 }
+
+// 端口发布地址（底账 F16 公网直出）：
+//
+//   · 默认必须只发回环 —— 容器端口是给宿主上的 frpc 用的，
+//     发到 0.0.0.0 就等于把每个实例的游戏端口直接暴露到公网；
+//   · 公网直出时发到 0.0.0.0，玩家才能连节点公网 IP。
+//
+// 这两条**互为反向保护**：只测其中一条，将来把默认值改错也发现不了。
+func TestArgv_PublishHostDefaultLoopback(t *testing.T) {
+	r := &Runtime{bin: "/usr/bin/docker", image: DefaultImage}
+	argv, err := r.Argv(Spec{
+		InstanceID: "i1", Dir: "/data/i1", UID: 997, GID: 997,
+		MemoryBytes: 1 << 30, CPUPercent: 100,
+		Port:    25565,
+		Command: []string{"java", "-jar", "server.jar"},
+	})
+	if err != nil {
+		t.Fatalf("生成 argv 失败: %v", err)
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--publish 127.0.0.1:25565:25565") {
+		t.Errorf("默认应只发布到回环，实际：%s", joined)
+	}
+	if strings.Contains(joined, "0.0.0.0:25565") {
+		t.Errorf("默认**不应**对外发布，实际：%s", joined)
+	}
+}
+
+func TestArgv_PublishHostPublic(t *testing.T) {
+	r := &Runtime{bin: "/usr/bin/docker", image: DefaultImage}
+	argv, err := r.Argv(Spec{
+		InstanceID: "i2", Dir: "/data/i2", UID: 997, GID: 997,
+		MemoryBytes: 1 << 30, CPUPercent: 100,
+		Port:        25565,
+		PublishHost: "0.0.0.0",
+		Command:     []string{"java", "-jar", "server.jar"},
+	})
+	if err != nil {
+		t.Fatalf("生成 argv 失败: %v", err)
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--publish 0.0.0.0:25565:25565") {
+		t.Errorf("公网直出应发布到 0.0.0.0，实际：%s", joined)
+	}
+}

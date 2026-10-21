@@ -613,6 +613,32 @@ var migrations = []migration{
 			`ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0`,
 		},
 	},
+	{
+		Version: 24,
+		Name:    "frp_line_types",
+		Statements: []string{
+			// 线路类型（底账 F16）。三种出网方式，用一个字段区分：
+			//
+			//   self_hosted  自建 frps —— 现有的那套：有端口段，面板从段里分配 remote_port
+			//   third_party  第三方单隧道 —— 服务商给一条固定隧道（远端端口或子域），
+			//                没有端口段，值来自用户导入的配置
+			//   direct       公网直出 —— 节点自己有公网 IP，**不走任何穿透**：
+			//                地址就是「线路主机:本地端口」，面板不跑 frpc
+			//
+			// 为什么放在 frps_servers 上而不是新开一张表：这三种在面板里都是「一条出网线路」，
+			// 隧道（tunnels.frps_id）已经指向它了。为新类型另开一张表，等于让
+			// "按线路查隧道"这件事裂成两套查询。
+			`ALTER TABLE frps_servers ADD COLUMN line_type TEXT NOT NULL DEFAULT 'self_hosted'`,
+
+			// 第三方隧道的域名方式（vhost）与 TLS 开关。
+			//
+			// 照 panel_tunnel 表里那几列搬过来（那边早就有了），**不再另造一套命名**：
+			// 同一个概念在两处用两个名字，是这类项目最常见的返工来源。
+			`ALTER TABLE tunnels ADD COLUMN subdomain TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE tunnels ADD COLUMN custom_domain TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE tunnels ADD COLUMN use_tls INTEGER NOT NULL DEFAULT 0`,
+		},
+	},
 }
 
 // migrate 应用尚未执行的迁移。

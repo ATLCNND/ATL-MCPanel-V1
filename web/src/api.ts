@@ -787,6 +787,9 @@ export interface FrpsServer {
    */
   display_domain: string
   used_ports: number
+  /** 线路类型（底账 F16）：self_hosted / third_party / direct */
+  line_type?: string
+  line_type_label?: string
 }
 
 export interface Tunnel {
@@ -814,6 +817,91 @@ export async function listFrps(): Promise<FrpsServer[]> {
 
 export async function createFrps(payload: Partial<FrpsServer>): Promise<any> {
   return apiFetch('/api/frps', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+// ---- 穿透配置的导出 / 导入预览（底账 F15）----
+
+export interface FrpsExport {
+  /** 标准 frpc TOML 文本 */
+  text: string
+  tunnel_count: number
+  /** 这次导出是否**包含 token**（含凭据，界面上必须提示） */
+  includes_token: boolean
+  line: { name: string; host: string; bind_port: number }
+}
+
+/**
+ * 导出一条线路（含其隧道）为标准 frpc 配置。
+ *
+ * ⚠️ withToken 为 true 时导出的是**含凭据的文本**，服务端会记一条审计。
+ * 默认不带 —— 只是看一眼结构、或贴到别处时不必冒这个险。
+ */
+export async function exportFrps(id: number, opts?: { withToken?: boolean; loliaStyle?: boolean }): Promise<FrpsExport> {
+  const q = new URLSearchParams()
+  if (opts?.withToken) q.set('token', '1')
+  if (opts?.loliaStyle) q.set('style', 'metadatas')
+  const qs = q.toString()
+  return apiFetch(`/api/frps/${id}/export${qs ? '?' + qs : ''}`)
+}
+
+export interface ImportProxy {
+  name: string
+  type: string
+  local_ip: string
+  local_port: number
+  remote_port: number
+  subdomain?: string
+  custom_domains?: string[]
+  bandwidth_limit?: string
+}
+
+export interface ImportPreview {
+  ok: boolean
+  error?: string
+  line?: {
+    server_addr: string
+    server_port: number
+    user: string
+    /** token 的**打码**值（不回传明文） */
+    token_masked: string
+    has_token: boolean
+    tls_enable: boolean
+  }
+  proxies?: ImportProxy[]
+  warnings?: string[]
+}
+
+/**
+ * 解析一份第三方 frpc 配置并回显（**不落库**）。
+ *
+ * 之所以先做"预览"而不是"贴进来就建线路"：导入的东西会直接决定
+ * 往哪台公网服务器连、开哪个端口，用户必须先看清解析出了什么。
+ * 落库要等线路类型模型（自建 / 第三方单隧道 / 公网直出）落地，见底账 F16。
+ */
+export async function previewFrpcImport(config: string): Promise<ImportPreview> {
+  return apiFetch('/api/frp/import/preview', { method: 'POST', body: JSON.stringify({ config }) })
+}
+
+export interface ImportApplyResult {
+  line_id: number
+  line_name: string
+  tunnels: { tunnel_id: string; name: string; type: string; local_port: number; remote_port: number }[]
+  warnings?: string[]
+  message: string
+}
+
+/**
+ * 把配置**真正落库**：建一条第三方线路 + 若干隧道。
+ *
+ * 与 preview 分开是刻意的：preview 不改任何东西，apply 会新增数据。
+ * 界面上必须先 preview 给用户看清，再让他点这个（否则就是"贴进去就建"）。
+ * 服务端会拒绝同名线路，并在任何一步失败时整体回滚。
+ */
+export async function applyFrpcImport(config: string, name?: string): Promise<ImportApplyResult> {
+  return apiFetch('/api/frp/import/apply', {
+    method: 'POST',
+    body: JSON.stringify({ config, name: name || '' }),
+  })
 }
 
 /**
@@ -888,6 +976,12 @@ export async function createTunnel(payload: {
   name?: string
   /** 对外展示域名（可含端口）；留空则展示 IP:端口 */
   display_domain?: string
+  /**
+   * http/https 的 vhost 路由，二选一（会真的写进 frpc 配置）。
+   * ⚠️ 与 display_domain 不同：那个只是给人看的地址，这两个决定 frps 按什么路由。
+   */
+  subdomain?: string
+  custom_domain?: string
 }): Promise<any> {
   return apiFetch('/api/tunnels', { method: 'POST', body: JSON.stringify(payload) })
 }

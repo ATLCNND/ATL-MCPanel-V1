@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { ImportConfigDialog, ExportConfigDialog } from './FrpConfigIO'
 import {
   FrpsServer, Tunnel, Instance, PanelTunnelState,
   listFrps, createFrps, deleteFrps, updateFrps,
@@ -27,6 +28,9 @@ export default function TunnelsPage() {
   const [fStart, setFStart] = useState('25565')
   const [fEnd, setFEnd] = useState('25600')
   const [fDomain, setFDomain] = useState('')
+  // 线路类型（底账 F16）：自建 frps / 第三方单隧道 / 公网直出。
+  // 三种类型决定"要不要端口段、节点上要不要跑 frpc"，所以必须显式选，不能靠推断。
+  const [fLineType, setFLineType] = useState<'self_hosted' | 'third_party' | 'direct'>('self_hosted')
 
   // 线路「对外域名」的就地编辑草稿：{ frpsId: 当前输入值 }
   //
@@ -40,6 +44,10 @@ export default function TunnelsPage() {
   // 用 key 区分来源：'form' = 尚未保存的新线路（测表单里填的值），
   // 数字 = 已保存线路的 id。这样"加线路前先测一次"和"回头复测某条线路"
   // 两种场景共用一套 UI，且结果不会互相覆盖。
+  // 导入/导出弹窗（底账 F15）。导出记录的是"哪条线路"，null 表示关着。
+  const [showImport, setShowImport] = useState(false)
+  const [exportTarget, setExportTarget] = useState<{ id: number; name: string } | null>(null)
+
   const [testResult, setTestResult] = useState<Record<string, FrpsTestResult>>({})
   const [testing, setTesting] = useState<string | null>(null)
 
@@ -53,6 +61,10 @@ export default function TunnelsPage() {
   // 对外展示的域名（可含端口）。填了之后实例页的「公网域名」会显示它，
   // 而不是 IP:端口 —— 玩家看到的地址更友好。
   const [tDomain, setTDomain] = useState('')
+  // vhost 路由（底账 F16）：http/https 隧道用子域名或自定义域名，二选一。
+  // 与 tDomain 是两件事：那个只是"展示用地址"，这两个会真的写进 frpc 配置。
+  const [tSubdomain, setTSubdomain] = useState('')
+  const [tCustomDomain, setTCustomDomain] = useState('')
 
   const load = async () => {
     try {
@@ -100,9 +112,11 @@ export default function TunnelsPage() {
         name: fName, host: fHost,
         bind_port: Number(fBindPort) || 7000,
         token: fToken,
-        port_start: Number(fStart) || 25565,
-        port_end: Number(fEnd) || 25600,
+        // 端口段只对自建 frps 有意义；直连/第三方传 0，服务端也会归零
+        port_start: fLineType === 'self_hosted' ? (Number(fStart) || 25565) : 0,
+        port_end: fLineType === 'self_hosted' ? (Number(fEnd) || 25600) : 0,
         display_domain: fDomain.trim(),
+        line_type: fLineType,
       })
       setMsg(`frps 服务器「${fName}」已添加`)
       setFName(''); setFHost(''); setFToken(''); setFDomain('')
@@ -204,6 +218,11 @@ export default function TunnelsPage() {
     }
   }
 
+  /** 当前选中的线路是不是公网直出 —— 决定"要不要填公网端口/要不要走 frpc"。 */
+  const selectedLineIsDirect = frpsList.some(
+    (f) => String(f.id) === tFrps && f.line_type === 'direct',
+  )
+
   const submitTunnel = async () => {
     setBusy(true); setError(''); setMsg('')
     try {
@@ -215,13 +234,17 @@ export default function TunnelsPage() {
         remote_port: Number(tRemotePort) || 0,
         name: tName,
         display_domain: tDomain.trim(),
+        // vhost 路由：只有 http/https 才传，避免把域名塞给 tcp 隧道（服务端会拒绝）
+        subdomain: (tProtocol === 'http' || tProtocol === 'https') ? tSubdomain.trim() : '',
+        custom_domain: (tProtocol === 'http' || tProtocol === 'https') ? tCustomDomain.trim() : '',
       })
-      if (r.status === 'running') {
-        setMsg(`隧道已建立：${r.public_address}`)
+      // 直连隧道不跑 frpc，状态是 direct —— 这不是失败，界面要如实夸它一句
+      if (r.status === 'running' || r.status === 'direct') {
+        setMsg(r.status === 'direct' ? `公网直出已登记：${r.message}` : `隧道已建立：${r.public_address}`)
       } else {
         setError(`隧道下发未成功：${r.message}`)
       }
-      setTName(''); setTRemotePort(''); setTLocalPort(''); setTDomain('')
+      setTName(''); setTRemotePort(''); setTLocalPort(''); setTDomain(''); setTSubdomain(''); setTCustomDomain('')
       await load()
     } catch (e: any) {
       setError(e.message)
@@ -264,6 +287,12 @@ export default function TunnelsPage() {
     <div className="tunnels-page">
       <div className="page-toolbar">
         <button onClick={load}>刷新</button>
+        <button
+          onClick={() => setShowImport(true)}
+          title="粘贴服务商给的标准 frpc 配置，先解析看清内容（不会创建线路）"
+        >
+          导入配置
+        </button>
       </div>
 
       {error && <div className="tunnels-error">{error}</div>}
@@ -370,12 +399,35 @@ export default function TunnelsPage() {
         <section className="panel">
           <h3>公网服务器（frps）</h3>
           <div className="form-row">
+            <select
+              value={fLineType}
+              onChange={(e) => setFLineType(e.target.value as 'self_hosted' | 'third_party' | 'direct')}
+              title="线路类型决定这条线路怎么出网"
+            >
+              <option value="self_hosted">自建 frps（有端口段）</option>
+              <option value="third_party">第三方单隧道（固定远端端口/域名）</option>
+              <option value="direct">公网直出（不走穿透）</option>
+            </select>
             <input placeholder="名称（如：香港高防线路）" value={fName} onChange={(e) => setFName(e.target.value)} />
-            <input placeholder="公网地址（IP 或域名）" value={fHost} onChange={(e) => setFHost(e.target.value)} />
-            <input placeholder="frps 端口" value={fBindPort} onChange={(e) => setFBindPort(e.target.value)} style={{ width: 90 }} />
-            <input placeholder="认证 token（可选）" value={fToken} onChange={(e) => setFToken(e.target.value)} />
-            <input placeholder="端口起" value={fStart} onChange={(e) => setFStart(e.target.value)} style={{ width: 90 }} />
-            <input placeholder="端口止" value={fEnd} onChange={(e) => setFEnd(e.target.value)} style={{ width: 90 }} />
+            <input
+              placeholder={fLineType === 'direct' ? '节点公网 IP（玩家直连它）' : '公网地址（IP 或域名）'}
+              value={fHost}
+              onChange={(e) => setFHost(e.target.value)}
+            />
+            {fLineType !== 'direct' && (
+              <input placeholder="frps 端口" value={fBindPort} onChange={(e) => setFBindPort(e.target.value)} style={{ width: 90 }} />
+            )}
+            {fLineType !== 'direct' && (
+              <input placeholder="认证 token（可选）" value={fToken} onChange={(e) => setFToken(e.target.value)} />
+            )}
+            {/* 端口段只对自建 frps 有意义：第三方单隧道的远端端口是服务商给的，
+                公网直出根本没有"远端端口"这个概念 —— 给它们显示一段没人用的数字只会误导。 */}
+            {fLineType === 'self_hosted' && (
+              <>
+                <input placeholder="端口起" value={fStart} onChange={(e) => setFStart(e.target.value)} style={{ width: 90 }} />
+                <input placeholder="端口止" value={fEnd} onChange={(e) => setFEnd(e.target.value)} style={{ width: 90 }} />
+              </>
+            )}
             <input
               placeholder="对外域名（如 mc.example.com）"
               value={fDomain}
@@ -420,9 +472,22 @@ export default function TunnelsPage() {
                 const dirty = draft !== (f.display_domain || '')
                 return (
                   <tr key={f.id}>
-                    <td>{f.name}</td>
-                    <td className="mono">{f.host}:{f.bind_port}</td>
-                    <td className="mono">{f.port_start}-{f.port_end}</td>
+                    <td>
+                      {f.name}
+                      {/* 线路类型徽标：三种出网方式的运维含义完全不同，
+                          不标出来就得靠记忆（这条到底是自建还是直连？） */}
+                      <div className="mono small" style={{ opacity: 0.75 }}>
+                        {f.line_type === 'direct' ? '公网直出 · 不跑 frpc'
+                          : f.line_type === 'third_party' ? '第三方单隧道'
+                          : '自建 frps'}
+                      </div>
+                    </td>
+                    <td className="mono">{f.host}{f.line_type === 'direct' ? '' : ':' + f.bind_port}</td>
+                    <td className="mono">
+                      {f.line_type === 'self_hosted'
+                        ? f.port_start + '-' + f.port_end
+                        : (f.line_type === 'direct' ? '直连（无分配）' : '服务商指定')}
+                    </td>
                     <td>
                       <span className="domain-edit">
                         <input
@@ -448,6 +513,12 @@ export default function TunnelsPage() {
                     <td>{f.used_ports}</td>
                     <td>
                       <div className="frps-row-actions">
+                        <button
+                          onClick={() => setExportTarget({ id: f.id, name: f.name })}
+                          title="把这条线路（含其隧道）导出成标准 frpc 配置，可复制"
+                        >
+                          导出
+                        </button>
                         <button
                           onClick={() => runTest(String(f.id), f)}
                           disabled={testing !== null}
@@ -488,9 +559,33 @@ export default function TunnelsPage() {
             <select value={tProtocol} onChange={(e) => setTProtocol(e.target.value)} style={{ width: 90 }}>
               <option value="tcp">TCP</option>
               <option value="udp">UDP</option>
+              {/* http/https 走 frpc 的 vhost：不用公网端口，而是一个域名 */}
+              <option value="http">HTTP</option>
+              <option value="https">HTTPS</option>
             </select>
             <input placeholder="实例内端口（留空=游戏端口）" value={tLocalPort} onChange={(e) => setTLocalPort(e.target.value)} style={{ width: 180 }} />
-            <input placeholder="公网端口（留空=自动分配）" value={tRemotePort} onChange={(e) => setTRemotePort(e.target.value)} style={{ width: 180 }} />
+            {/* 域名协议不需要公网端口，直连线路也不需要（远端就是本地端口） */}
+            {tProtocol !== 'http' && tProtocol !== 'https' && !selectedLineIsDirect && (
+              <input placeholder="公网端口（留空=自动分配）" value={tRemotePort} onChange={(e) => setTRemotePort(e.target.value)} style={{ width: 180 }} />
+            )}
+            {(tProtocol === 'http' || tProtocol === 'https') && (
+              <>
+                <input
+                  placeholder="子域名（如 mc）"
+                  value={tSubdomain}
+                  onChange={(e) => setTSubdomain(e.target.value)}
+                  style={{ width: 150 }}
+                  title="frps 配了 subdomainHost 时可用；与自定义域名二选一"
+                />
+                <input
+                  placeholder="自定义域名（如 mc.example.com）"
+                  value={tCustomDomain}
+                  onChange={(e) => setTCustomDomain(e.target.value)}
+                  style={{ width: 240 }}
+                  title="会写进 frpc 的 customDomains；与子域名二选一"
+                />
+              </>
+            )}
             <input placeholder="线路备注" value={tName} onChange={(e) => setTName(e.target.value)} style={{ width: 140 }} />
             <input
               placeholder="对外域名（如 mc.example.com:25570）"
@@ -540,6 +635,21 @@ export default function TunnelsPage() {
           </div>
         </section>
       </div>
+
+      {/* 导入/导出（底账 F15）：都在弹窗里"先看清再动"，不在列表页直接生效 */}
+      {showImport && (
+        <ImportConfigDialog
+          onClose={() => setShowImport(false)}
+          onApplied={() => { void load() }}
+        />
+      )}
+      {exportTarget && (
+        <ExportConfigDialog
+          lineId={exportTarget.id}
+          lineName={exportTarget.name}
+          onClose={() => setExportTarget(null)}
+        />
+      )}
     </div>
   )
 }

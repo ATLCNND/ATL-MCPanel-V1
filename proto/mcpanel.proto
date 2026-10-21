@@ -563,6 +563,20 @@ message TunnelRequest {
   bool enabled = 9;
   string name = 10;          // 隧道显示名（用于 frp 代理名）
   string display_domain = 11; // 对外展示的域名（管理员配置，可含端口）；为空则展示 IP:端口
+
+  // ---- 第三方单隧道 / 公网直出（底账 F16）----
+
+  // subdomain / custom_domain：vhost 方式（http/https）用哪条路由。
+  // 第三方服务商给的配置里通常只有其中之一，面板照原样下发。
+  string subdomain = 12;
+  string custom_domain = 13;
+  // use_tls：传输层 TLS（对应 frpc 的 transport.tls.enable）。
+  bool use_tls = 14;
+  // publish_mode：这条隧道怎么出网。
+  //   "frpc"（默认/空）—— 在节点上跑 frpc，按上面的字段生成代理
+  //   "direct"        —— 公网直出：**不跑 frpc**，端口由实例自己对外监听；
+  //                      容器化实例据此把端口发布到 0.0.0.0 而不是回环。
+  string publish_mode = 15;
 }
 
 message ListTunnelsRequest {

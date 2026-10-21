@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/portguard"
+	"github.com/ATLCNND/ATL-MCPanel/internal/frp"
 	pb "github.com/ATLCNND/ATL-MCPanel/internal/proto/mcpanel"
 )
 
@@ -131,7 +132,7 @@ func (s *Server) handleListFrps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := s.db.Query(`
-		SELECT id, name, host, bind_port, token, port_start, port_end, remark, display_domain
+		SELECT id, name, host, bind_port, token, port_start, port_end, remark, display_domain, line_type
 		FROM frps_servers ORDER BY id`)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -150,14 +151,19 @@ func (s *Server) handleListFrps(w http.ResponseWriter, r *http.Request) {
 		Remark        string `json:"remark"`
 		DisplayDomain string `json:"display_domain"`
 		UsedPorts     int32  `json:"used_ports"`
+		// LineType 线路类型（底账 F16）+ 给人看的中文名。
+		// 前端据此决定要不要显示端口段、要不要提示「直连不跑 frpc」。
+		LineType      string `json:"line_type"`
+		LineTypeLabel string `json:"line_type_label"`
 	}
 	list := []item{}
 	for rows.Next() {
 		var it item
 		if err := rows.Scan(&it.ID, &it.Name, &it.Host, &it.BindPort, &it.Token,
-			&it.PortStart, &it.PortEnd, &it.Remark, &it.DisplayDomain); err != nil {
+			&it.PortStart, &it.PortEnd, &it.Remark, &it.DisplayDomain, &it.LineType); err != nil {
 			continue
 		}
+		it.LineTypeLabel = frp.LineTypeLabel(it.LineType)
 		list = append(list, it)
 	}
 	// 逐条统计已用端口数必须等 rows 关掉之后再做：在遍历 *sql.Rows 的同时发新查询
@@ -186,6 +192,8 @@ func (s *Server) handleCreateFrps(w http.ResponseWriter, r *http.Request) {
 		PortEnd       int32  `json:"port_end"`
 		Remark        string `json:"remark"`
 		DisplayDomain string `json:"display_domain"`
+		// LineType 线路类型（底账 F16）：self_hosted / third_party / direct
+		LineType string `json:"line_type"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "无效请求体")
@@ -195,27 +203,44 @@ func (s *Server) handleCreateFrps(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "名称与地址不能为空")
 		return
 	}
-	if req.BindPort <= 0 {
+	lineType, err := frp.ValidateLineType(req.LineType)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// 端口段的默认值只对**自建 frps** 有意义：第三方单隧道的远端端口由服务商给定，
+	// 公网直出根本没有"远端端口"这个概念（远端就是节点自己）。给它们编一段端口
+	// 只会让界面上出现一段没人用的数字。
+	if frp.LineNeedsPortSegment(lineType) {
+		if req.BindPort <= 0 {
+			req.BindPort = 7000
+		}
+		if req.PortStart <= 0 {
+			req.PortStart = 25565
+		}
+		if req.PortEnd <= 0 || req.PortEnd < req.PortStart {
+			req.PortEnd = req.PortStart + 100
+		}
+	} else {
+		req.PortStart, req.PortEnd = 0, 0
+	}
+	// 直连/第三方的 bind_port 仍有意义（第三方要连服务商的端口；直连用不到，留 0）
+	if req.BindPort <= 0 && frp.LineNeedsPortSegment(lineType) {
 		req.BindPort = 7000
-	}
-	if req.PortStart <= 0 {
-		req.PortStart = 25565
-	}
-	if req.PortEnd <= 0 || req.PortEnd < req.PortStart {
-		req.PortEnd = req.PortStart + 100
 	}
 	domain := normalizeDisplayHost(req.DisplayDomain)
 
 	res, err := s.db.Exec(`
-		INSERT INTO frps_servers (name, host, bind_port, token, port_start, port_end, remark, display_domain)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		req.Name, req.Host, req.BindPort, req.Token, req.PortStart, req.PortEnd, req.Remark, domain)
+		INSERT INTO frps_servers (name, host, bind_port, token, port_start, port_end, remark, display_domain, line_type)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		req.Name, req.Host, req.BindPort, req.Token, req.PortStart, req.PortEnd, req.Remark, domain, lineType)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	id, _ := res.LastInsertId()
-	s.audit(r, "create_frps", req.Name, fmt.Sprintf("%s:%d domain=%s", req.Host, req.BindPort, domain))
+	s.audit(r, "create_frps", req.Name,
+		fmt.Sprintf("%s:%d domain=%s type=%s", req.Host, req.BindPort, domain, frp.LineTypeLabel(lineType)))
 	writeJSON(w, http.StatusCreated, map[string]interface{}{"id": id, "message": "frps 服务器已添加"})
 }
 
@@ -400,6 +425,13 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 		// DisplayDomain 对外展示的域名（可含端口）。管理员填写后，
 		// 实例详情页的「公网域名」会同步显示它，而不是 IP:端口。
 		DisplayDomain string `json:"display_domain"`
+		// ---- 第三方单隧道的 vhost 方式（底账 F16）----
+		// Subdomain / CustomDomain 二选一，只对 http/https 有意义，且会进 frpc 配置
+		//（subdomain = "x" / customDomains = [...]）。
+		// ⚠️ 与 DisplayDomain 是**两件事**：那个纯粹是给人看的展示地址。
+		Subdomain    string `json:"subdomain"`
+		CustomDomain string `json:"custom_domain"`
+		UseTLS       bool   `json:"use_tls"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "无效请求体")
@@ -411,6 +443,29 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Protocol == "" {
 		req.Protocol = "tcp"
+	}
+	req.Protocol = strings.ToLower(strings.TrimSpace(req.Protocol))
+	req.Subdomain = strings.TrimSpace(req.Subdomain)
+	req.CustomDomain = strings.TrimSpace(req.CustomDomain)
+	// 协议与域名必须自洽 —— 这是 frpc 侧的硬性要求，放过去只会换来一句难懂的 frpc 报错。
+	switch req.Protocol {
+	case "http", "https":
+		if req.Subdomain == "" && req.CustomDomain == "" {
+			writeErr(w, http.StatusBadRequest, "http/https 隧道必须填子域名或自定义域名")
+			return
+		}
+		if req.Subdomain != "" && req.CustomDomain != "" {
+			writeErr(w, http.StatusBadRequest, "子域名与自定义域名只能填一个")
+			return
+		}
+	case "tcp", "udp":
+		if req.Subdomain != "" || req.CustomDomain != "" {
+			writeErr(w, http.StatusBadRequest, "tcp/udp 隧道不使用域名（端口与域名二选一）")
+			return
+		}
+	default:
+		writeErr(w, http.StatusBadRequest, "不支持的协议："+req.Protocol)
+		return
 	}
 
 	// 实例必须存在
@@ -432,16 +487,30 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// frps 信息（含线路级对外域名，用于组装展示给用户的公网地址）
-	var frpsHost, frpsToken, lineDomain string
+	var frpsHost, frpsToken, lineDomain, lineType string
 	var bindPort, portStart, portEnd int32
-	if err := s.db.QueryRow(`SELECT host, bind_port, token, port_start, port_end, display_domain FROM frps_servers WHERE id = ?`, req.FrpsID).
-		Scan(&frpsHost, &bindPort, &frpsToken, &portStart, &portEnd, &lineDomain); err != nil {
+	if err := s.db.QueryRow(`SELECT host, bind_port, token, port_start, port_end, display_domain, line_type FROM frps_servers WHERE id = ?`, req.FrpsID).
+		Scan(&frpsHost, &bindPort, &frpsToken, &portStart, &portEnd, &lineDomain, &lineType); err != nil {
 		writeErr(w, http.StatusNotFound, "frps 服务器不存在")
 		return
 	}
 
-	// 公网端口：未指定则自动分配
-	if req.RemotePort <= 0 {
+	// 公网直出（底账 F16）：**不分配端口、不下发 frpc**。
+	//
+	// 直连的意思是「节点自己有公网 IP，玩家直接连 主机:本地端口」，所以：
+	//   · 远端端口就是本地端口（不存在"从端口段里分配"这件事）；
+	//   · 节点上不该起 frpc —— 起了反而多一跳、还多一条会坏的依赖。
+	//
+	// ⚠️ 已知限制（写在底账 F1 里）：**容器化实例此时不通** —— 容器目前只把端口
+	// 发布到回环（给 frpc 用），直连要求对外发布，那要改容器的发布方式。
+	// 这里不阻断创建（管理员可能就是想先登记），但界面上必须提示。
+	isDirect := frp.NormalizeLineType(lineType) == frp.LineDirect
+	if isDirect {
+		req.RemotePort = req.LocalPort
+	}
+
+	// 公网端口：未指定则自动分配（只有自建 frps 需要分配）
+	if frp.LineAllocatesPort(lineType) && req.RemotePort <= 0 {
 		// 避开设该节点上全部实例的端口：frps 与实例同机时，公网端口会和实例抢绑定
 		p, err := s.allocRemotePortAvoiding(req.FrpsID, portStart, portEnd, s.remotePortsToAvoid(req.FrpsID, req.InstanceID))
 		if err != nil {
@@ -449,8 +518,9 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		req.RemotePort = p
-	} else {
-		// 校验指定端口是否在范围内且未被占用
+	} else if frp.LineAllocatesPort(lineType) {
+		// 校验指定端口是否在范围内且未被占用（只对自建 frps 有意义：
+		// 第三方单隧道的远端端口是服务商给的，根本不在我们的端口段里）
 		if req.RemotePort < portStart || req.RemotePort > portEnd {
 			writeErr(w, http.StatusBadRequest, fmt.Sprintf("公网端口需在 %d-%d 范围内", portStart, portEnd))
 			return
@@ -470,18 +540,26 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res, err := s.db.Exec(`
-		INSERT INTO tunnels (tunnel_id, instance_id, frps_id, name, protocol, local_port, remote_port, display_domain, status)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
-		tunnelID, req.InstanceID, req.FrpsID, name, req.Protocol, req.LocalPort, req.RemotePort, req.DisplayDomain)
+		INSERT INTO tunnels (tunnel_id, instance_id, frps_id, name, protocol, local_port, remote_port, display_domain, subdomain, custom_domain, use_tls, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+		tunnelID, req.InstanceID, req.FrpsID, name, req.Protocol, req.LocalPort, req.RemotePort, req.DisplayDomain,
+		req.Subdomain, req.CustomDomain, boolToInt(req.UseTLS))
 	if err != nil {
 		writeErr(w, http.StatusConflict, "创建隧道失败（可能已存在相同配置）")
 		return
 	}
 	id, _ := res.LastInsertId()
 
-	// 立即下发到 Daemon
-	status, msg := s.daemonApplyTunnel(req.InstanceID, tunnelID, name, req.Protocol, req.LocalPort, req.RemotePort, req.DisplayDomain,
-		frpsHost, bindPort, frpsToken)
+	// 立即下发到 Daemon —— 直连线路**不下发**（那条链路上根本没有 frpc 这回事）
+	var status, msg string
+	if frp.LineRunsFrpc(lineType) {
+		status, msg = s.daemonApplyTunnelFull(req.InstanceID, tunnelID, name, req.Protocol, req.LocalPort,
+			req.RemotePort, req.DisplayDomain, frpsHost, bindPort, frpsToken,
+			tunExtra{Subdomain: req.Subdomain, CustomDomain: req.CustomDomain, UseTLS: req.UseTLS})
+	} else {
+		status = "direct"
+		msg = fmt.Sprintf("公网直出：不经过 frpc，玩家直接连接 %s:%d", frpsHost, req.RemotePort)
+	}
 	_, _ = s.db.Exec(`UPDATE tunnels SET status = ? WHERE id = ?`, status, id)
 
 	s.audit(r, "create_tunnel", req.InstanceID, fmt.Sprintf("公网 %s:%d -> %d", frpsHost, req.RemotePort, req.LocalPort))
@@ -668,9 +746,40 @@ func (s *Server) portsInUseOnNode(nodeID int64) map[int32]bool {
 	return out
 }
 
+// tunExtra 下发隧道时的可选信息（第三方单隧道的域名方式、公网直出的出网方式）。
+//
+// 单独一个结构而不是继续加参数：调用点有五个，参数表再长就没人读得懂了。
+type tunExtra struct {
+	Subdomain    string
+	CustomDomain string
+	UseTLS       bool
+	// PublishMode "direct" 表示公网直出（不跑 frpc）；空 = 走 frpc
+	PublishMode string
+}
+
 // daemonApplyTunnel 把隧道下发给 Daemon，返回 (状态, 提示信息)。
 func (s *Server) daemonApplyTunnel(instanceID, tunnelID, name, protocol string, localPort, remotePort int32, displayDomain string,
 	frpsHost string, frpsPort int32, frpsToken string) (string, string) {
+	return s.daemonApplyTunnelFull(instanceID, tunnelID, name, protocol, localPort, remotePort, displayDomain,
+		frpsHost, frpsPort, frpsToken, tunExtra{})
+}
+
+// daemonApplyTunnelFull 与上面相同，但可以带上域名/出网方式。
+func (s *Server) daemonApplyTunnelFull(instanceID, tunnelID, name, protocol string, localPort, remotePort int32, displayDomain string,
+	frpsHost string, frpsPort int32, frpsToken string, ex tunExtra) (string, string) {
+
+	// 线路类型决定出网方式。这里**再查一次库**而不是靠调用方传：
+	// 调用点有五个（含实例自助开端口那两条），漏一个就会出现
+	// "直连线路却按 frpc 下发"的错配 —— 那种错误在真机上表现为端口不通，极难查。
+	if ex.PublishMode == "" {
+		var lt string
+		if err := s.db.QueryRow(`SELECT COALESCE(f.line_type,'self_hosted') FROM tunnels t
+			LEFT JOIN frps_servers f ON f.id = t.frps_id WHERE t.tunnel_id = ?`, tunnelID).Scan(&lt); err == nil {
+			if frp.NormalizeLineType(lt) == frp.LineDirect {
+				ex.PublishMode = "direct"
+			}
+		}
+	}
 
 	nodeID, ok := s.instanceNodeID(instanceID)
 	if !ok {
@@ -692,6 +801,10 @@ func (s *Server) daemonApplyTunnel(instanceID, tunnelID, name, protocol string, 
 		FrpsToken:     frpsToken,
 		Enabled:       true,
 		DisplayDomain: displayDomain,
+		Subdomain:     ex.Subdomain,
+		CustomDomain:  ex.CustomDomain,
+		UseTls:        ex.UseTLS,
+		PublishMode:   ex.PublishMode,
 	})
 	if err != nil {
 		return "error", "下发失败: " + err.Error()

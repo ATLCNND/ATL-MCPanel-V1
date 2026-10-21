@@ -493,6 +493,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/frps/test", s.requireAuth(s.handleTestFrps))
 	mux.HandleFunc("POST /api/frps/{id}/test", s.requireAuth(s.handleTestFrpsSaved))
 	mux.HandleFunc("DELETE /api/frps/{id}", s.requireAuth(s.handleDeleteFrps))
+	// 导入/导出（底账 F15）：导出把线路还原成标准 frpc 配置；导入**只做预览、不落库**
+	// （落库要等线路类型模型，见 F16 —— 理由写在 frp_io.go 顶部）
+	mux.HandleFunc("GET /api/frps/{id}/export", s.requireAuth(s.handleExportFrps))
+	mux.HandleFunc("POST /api/frp/import/preview", s.requireAuth(s.handlePreviewFrpcImport))
+	mux.HandleFunc("POST /api/frp/import/apply", s.requireAuth(s.handleApplyFrpcImport))
 	mux.HandleFunc("GET /api/tunnels", s.requireAuth(s.handleListTunnels))
 	mux.HandleFunc("POST /api/tunnels", s.requireAuth(s.handleCreateTunnel))
 	mux.HandleFunc("DELETE /api/tunnels/{id}", s.requireAuth(s.handleDeleteTunnel))

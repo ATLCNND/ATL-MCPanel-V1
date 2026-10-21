@@ -35,6 +35,13 @@ type Tunnel struct {
 	UseTLS   bool   `json:"use_tls,omitempty"`
 	CertFile string `json:"cert_file,omitempty"`
 	KeyFile  string `json:"key_file,omitempty"`
+
+	// Direct 公网直出（底账 F16）：这条"隧道"**不跑 frpc**，
+	// 端口由实例自己对外监听，玩家直连「节点公网 IP:本地端口」。
+	//
+	// 为什么仍然记在这张表里：它是**跨 daemon 重启**唯一活下来的地方
+	//（tunnels.json），而"容器要不要对外发布端口"这件事必须在实例启动前就知道。
+	Direct bool `json:"direct,omitempty"`
 }
 
 // Server frps 服务端连接信息。
@@ -142,7 +149,8 @@ func (m *Manager) Apply(instanceID, instanceDir string, srv Server, t Tunnel) er
 	if t.LocalPort <= 0 {
 		return fmt.Errorf("local_port 必须为正整数")
 	}
-	if (t.Protocol == "" || t.Protocol == "tcp" || t.Protocol == "udp") && t.RemotePort <= 0 {
+	// 直连隧道没有远端端口（远端就是节点自己），所以不参与这条校验
+	if !t.Direct && (t.Protocol == "" || t.Protocol == "tcp" || t.Protocol == "udp") && t.RemotePort <= 0 {
 		return fmt.Errorf("remote_port 必须为正整数")
 	}
 	if t.Protocol == "" {
@@ -160,8 +168,15 @@ func (m *Manager) Apply(instanceID, instanceDir string, srv Server, t Tunnel) er
 		}
 		m.byInst[instanceID] = st
 	}
-	// 服务端信息以最新下发为准
-	st.server = srv
+	// 服务端信息以最新下发为准 —— 但**空值不覆盖**。
+	//
+	// ⚠️ 这一条是测试逼出来的真 bug：直连隧道没有 frps 信息（ApplyDirect 传的是空 Server），
+	// 若无条件覆盖，会把同实例上已有 frpc 隧道的服务端信息抹掉 ——
+	// 那些隧道随即全部生成失败（"frps 服务端信息不完整"），表现为"加了一条直连，
+	// 另一条正常隧道反而坏了"。同一个实例上两种隧道并存是正常配置，不能互相踩。
+	if srv.Host != "" || srv.BindPort > 0 {
+		st.server = srv
+	}
 	st.dir = instanceDir
 	st.tunnels[t.TunnelID] = t
 	m.mu.Unlock()
@@ -169,7 +184,42 @@ func (m *Manager) Apply(instanceID, instanceDir string, srv Server, t Tunnel) er
 	if err := m.persist(instanceDir, st); err != nil {
 		return err
 	}
+	// 直连隧道不产生 frpc 代理，因此**不必**重启 frpc（重启只会白断一次别人）。
+	if t.Direct {
+		return nil
+	}
 	return m.restart(instanceID, instanceDir, st)
+}
+
+// ApplyDirect 登记一条公网直出隧道（不生成 frpc 配置）。
+//
+// 单独一个入口而不是塞进 Apply，是为了让调用点一眼看出"这条不会跑 frpc"。
+func (m *Manager) ApplyDirect(instanceID, instanceDir, tunnelID string, localPort int) error {
+	return m.Apply(instanceID, instanceDir, Server{}, Tunnel{
+		TunnelID:  tunnelID,
+		Protocol:  "tcp",
+		LocalPort: localPort,
+		Direct:    true,
+	})
+}
+
+// HasDirect 该实例是否有公网直出隧道。
+//
+// Daemon 在**启动实例之前**用它决定容器的端口发布地址：
+// 直连要求对外发布（0.0.0.0），否则玩家连不上。
+func (m *Manager) HasDirect(instanceID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, ok := m.byInst[instanceID]
+	if !ok {
+		return false
+	}
+	for _, t := range st.tunnels {
+		if t.Direct {
+			return true
+		}
+	}
+	return false
 }
 
 // Remove 移除一条隧道。
@@ -694,6 +744,11 @@ func renderConfig(st *instanceFRP, dir string) (string, error) {
 
 	for _, id := range ids {
 		t := st.tunnels[id]
+		// 直连隧道不属于 frpc 的职责（它不产生代理），生成配置时直接跳过。
+		// 跳过而不是报错：同一实例可以既有 frpc 隧道、又有直连隧道。
+		if t.Direct {
+			continue
+		}
 		proto := t.Protocol
 		if proto == "" {
 			proto = "tcp"

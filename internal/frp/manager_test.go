@@ -399,3 +399,38 @@ func TestApplyWithoutStateFnAlwaysStarts(t *testing.T) {
 		t.Fatalf("未注入判断时应照旧尝试启动 frpc，实际 err=%v", err)
 	}
 }
+
+// 公网直出（底账 F16）：登记后要能跨 daemon 重启活下来，且不生成 frpc 代理。
+func TestApplyDirectPersistsAndSkipsFrpc(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager("")
+	// 同一实例上**先有一条正常的 frpc 隧道**（这才能生成配置），
+	// 再加一条直连 —— 真实运维里两种隧道可以并存，配置里只能出现前者。
+	srv := Server{Host: "1.2.3.4", BindPort: 7000, Token: "tok"}
+	if err := m.Apply("inst1", dir, srv, Tunnel{
+		TunnelID: "t1", Protocol: "tcp", LocalPort: 25565, RemotePort: 25570,
+	}); err != nil {
+		t.Fatalf("登记 frpc 隧道失败: %v", err)
+	}
+	if err := m.ApplyDirect("inst1", dir, "d1", 25566); err != nil {
+		t.Fatalf("登记直连隧道失败: %v", err)
+	}
+	if !m.HasDirect("inst1") {
+		t.Fatal("HasDirect 应为 true")
+	}
+	st := m.byInst["inst1"]
+	cfg, err := renderConfig(st, dir)
+	if err != nil {
+		t.Fatalf("生成配置失败: %v", err)
+	}
+	if strings.Contains(cfg, "d1") || strings.Contains(cfg, "25566") {
+		t.Errorf("直连隧道不应出现在 frpc 配置里：\n%s", cfg)
+	}
+	if !strings.Contains(cfg, "t1") {
+		t.Errorf("正常的 frpc 隧道应当仍在配置里：\n%s", cfg)
+	}
+	// 换个实例，HasDirect 必须为 false（别把它做成"全局开关"）
+	if m.HasDirect("inst2") {
+		t.Error("HasDirect 不该串到别的实例上")
+	}
+}

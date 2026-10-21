@@ -374,8 +374,13 @@ type Spec struct {
 	// CPUPercent 100 = 1 核。二者都由 Docker 实施，Daemon 的 cgroup 不再插手。
 	MemoryBytes int64
 	CPUPercent  int
-	// Port 游戏端口（>0 时发布到宿主 127.0.0.1）。
+	// Port 游戏端口（>0 时发布到宿主；发布到哪个地址见 PublishHost）。
 	Port int
+	// PublishHost 端口发布到宿主的哪个地址。
+	//
+	// 空 / "127.0.0.1" = 只发布到回环（frpc 隧道模式，默认）；
+	// "0.0.0.0" = 对外发布（公网直出，底账 F16）。
+	PublishHost string
 	// JavaHome 宿主 JDK 根目录（只读挂入；空则不挂）。
 	JavaHome string
 	// ResourcesDir 节点共享资源目录（只读挂入；空或不存在则不挂）。
@@ -473,9 +478,17 @@ func (r *Runtime) Argv(spec Spec) ([]string, error) {
 		argv = append(argv, "-e", kv)
 	}
 
-	// 只发布到宿主回环：frpc 在宿主上连的就是它，而容器看不到宿主的回环服务。
+	// 发布到哪个宿主地址，取决于这条线路怎么出网（底账 F16）：
+	//   · frpc 隧道：只发布到**回环** —— frpc 在宿主上连的就是它，
+	//     而容器看不到宿主的回环服务，所以只能这么发；
+	//   · 公网直出：发布到 0.0.0.0，玩家直接连节点公网 IP:端口。
+	// PublishHost 为空时按回环处理（老行为），老实例不受影响。
 	if spec.Port > 0 {
-		argv = append(argv, "--publish", fmt.Sprintf("127.0.0.1:%d:%d", spec.Port, spec.Port))
+		host := spec.PublishHost
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		argv = append(argv, "--publish", fmt.Sprintf("%s:%d:%d", host, spec.Port, spec.Port))
 	}
 	argv = append(argv, "--network", NetworkOf(spec.InstanceID))
 	argv = append(argv, image)

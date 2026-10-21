@@ -3,6 +3,8 @@ package grpcapi
 import (
 	"context"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/portguard"
 	"github.com/ATLCNND/ATL-MCPanel/internal/frp"
@@ -13,6 +15,13 @@ import (
 func (s *Server) ApplyTunnel(ctx context.Context, req *pb.TunnelRequest) (*pb.OperationResponse, error) {
 	if req.InstanceId == "" || req.TunnelId == "" {
 		return &pb.OperationResponse{Success: false, Error: "instance_id 与 tunnel_id 必填"}, nil
+	}
+	// 公网直出（底账 F16）：这条隧道**不走 frpc**，端口由实例自己对宿主机发布。
+	// 所以它不需要 frps 信息，也不生成 frpc 配置；要做的只有两件事：
+	//   ① 记下"该实例要对外发布端口"，让容器在下次启动时发到 0.0.0.0；
+	//   ② 如实回执 —— 没在跑的实例要告诉管理员"重启后才生效"。
+	if req.PublishMode == "direct" {
+		return s.applyDirectTunnel(req)
 	}
 	if req.FrpsHost == "" || req.FrpsPort <= 0 {
 		return &pb.OperationResponse{Success: false, Error: "frps 服务端信息不完整"}, nil
@@ -44,11 +53,14 @@ func (s *Server) ApplyTunnel(ctx context.Context, req *pb.TunnelRequest) (*pb.Op
 		BindPort: int(req.FrpsPort),
 		Token:    req.FrpsToken,
 	}, frp.Tunnel{
-		TunnelID:   req.TunnelId,
-		Name:       name,
-		Protocol:   req.Protocol,
-		LocalPort:  int(req.LocalPort),
-		RemotePort: int(req.RemotePort),
+		TunnelID:      req.TunnelId,
+		Name:          name,
+		Protocol:      req.Protocol,
+		LocalPort:     int(req.LocalPort),
+		RemotePort:    int(req.RemotePort),
+		Subdomain:     req.Subdomain,
+		CustomDomains: splitDomains(req.CustomDomain),
+		UseTLS:        req.UseTls,
 	})
 	if err != nil {
 		s.log.Error("应用隧道失败", "instance", req.InstanceId, "tunnel", req.TunnelId, "error", err)
@@ -134,3 +146,59 @@ func (s *Server) ListTunnels(ctx context.Context, req *pb.ListTunnelsRequest) (*
 	}
 	return &pb.ListTunnelsResponse{Tunnels: out}, nil
 }
+
+// applyDirectTunnel 处理公网直出隧道：不生成 frpc 配置，只把"该实例要对外发布端口"记下来。
+//
+// 为什么要记在实例上而不是隧道里：端口发布方式是在 **docker run 那一刻**定死的
+//（容器的端口映射不能事后改），所以必须在实例**启动前**就知道；
+// 而隧道是独立的对象，实例启动时不会去挨个查隧道。
+func (s *Server) applyDirectTunnel(req *pb.TunnelRequest) (*pb.OperationResponse, error) {
+	inst, ok := s.reg.Get(req.InstanceId)
+	if !ok {
+		return &pb.OperationResponse{Success: false, Error: "实例不存在"}, nil
+	}
+	// 只标记"对外发布"，**不动**容器化开关：直连与容器化是可以并存的
+	//（容器化 + 端口对外发布），把它关掉反而是错的。
+	inst.SetPublishPublic(true)
+	// 同时登记进 frp manager 的持久化状态（tunnels.json）——
+	// 这是**跨 daemon 重启**唯一能活下来的地方；只放内存的话，
+	// 升级 daemon 之后实例再启动就会退回"只发布到回环"，直连静默失效。
+	if err := s.frp.ApplyDirect(req.InstanceId, s.frpDir(req.InstanceId), req.TunnelId, int(req.LocalPort)); err != nil {
+		s.log.Warn("登记直连隧道失败", "instance", req.InstanceId, "tunnel", req.TunnelId, "error", err)
+	}
+
+	running := inst.Status() == "running"
+	msg := "公网直出已登记：玩家直接连接节点公网 IP:" + itoa32(req.LocalPort)
+	if inst.Containerized() {
+		if running {
+			msg += "（容器端口需要重启实例后才会对外发布）"
+		} else {
+			msg += "（该实例是容器化的，已在下次启动时按对外发布处理）"
+		}
+	} else if !running {
+		msg += "（实例未运行，启动后端口即可访问）"
+	}
+	s.log.Info("公网直出隧道已登记", "instance", req.InstanceId, "tunnel", req.TunnelId,
+		"local_port", req.LocalPort, "containerized", inst.Containerized(), "running", running)
+	return &pb.OperationResponse{Success: true, Message: msg}, nil
+}
+
+// splitDomains 把面板传来的域名串（可能是逗号分隔的多个）拆成切片。
+//
+// 面板里的 custom_domain 是一列字符串，而 frpc 要的是数组；用逗号在线上传最简单，
+// 免得为一个字段再改一次 proto。空串与空白项直接丢掉。
+func splitDomains(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func itoa32(n int32) string { return strconv.Itoa(int(n)) }
