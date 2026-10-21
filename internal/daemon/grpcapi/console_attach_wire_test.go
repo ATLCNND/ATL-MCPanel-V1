@@ -82,7 +82,10 @@ func TestResolveConsoleHistory(t *testing.T) {
 		{"下限边界", consoleHistoryMin, consoleHistoryMin},
 		{"正常值原样", 1000, 1000},
 		{"上限边界", consoleHistoryMax, consoleHistoryMax},
-		{"超过上限被压住（前端滑块最大 50000）", 50000, consoleHistoryMax},
+		// 往上一版滑块最大是 50000、而这里只认到 5000，结果滑块后半段"拖了没反应"。
+		// 现在两端都是 consoleHistoryMax（前端 RETAIN_MAX/REPLAY_MAX 与之同值），
+		// 这条仍然保留：它保证**将来任何一端单独抬高**时，另一端至少不会越界。
+		{"超过上限被压住（前端滑块与这里同值）", 50000, consoleHistoryMax},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

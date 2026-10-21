@@ -1665,14 +1665,23 @@ func (i *Instance) recentOutput(maxLines int, spam *SpamFilter) []string {
 }
 
 // consoleTailMaxBytes 控制台历史回放时单次读取的日志上限。
-const consoleTailMaxBytes = 512 * 1024
+//
+// 2026-10-21 由 512KB 提到 2MB。原因：回放窗口现在跟着设置里的「保留行数」走，
+// 最大 10000 行；而实测这份日志约 64 字节/行 → 10000 行约 640KB，512KB 会
+// **先读完上限再截断**，于是用户把滑块拉到最大也拿不到那么多行 ——
+// 又变成一次"看起来没生效"（正是这轮在修的那类问题）。
+const consoleTailMaxBytes = 2 * 1024 * 1024
 
 // consoleTailMaxBytesFiltered 带刷屏过滤时允许读得更多。
 //
 // 为什么：过滤后"要凑够 N 条非刷屏行"可能需要往回读得更远 —— 长期运行的服务器上
 // 心跳占了很大比例（实测 Paper 每 5 秒一条玩家数 + 每 15 秒一条 TPS），
 // 512KB 里可能只剩几十条有用输出。仍然有上限，避免一次附加读入过多导致卡顿。
-const consoleTailMaxBytesFiltered = 2 * 1024 * 1024
+//
+// 2026-10-21 随 consoleTailMaxBytes 一起上调（2MB → 4MB）：过滤生效时它必须是
+// "不过滤上限"的若干倍才有意义 —— 按实测约 10% 有用行算，4MB 才能凑出
+// 10000 条非刷屏行。
+const consoleTailMaxBytesFiltered = 4 * 1024 * 1024
 
 // 控制台日志轮转参数
 const (

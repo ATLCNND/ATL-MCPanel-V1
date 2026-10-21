@@ -3,7 +3,7 @@ import { Terminal } from 'xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import 'xterm/css/xterm.css'
 import { consoleWsUrl, isTokenExpired, notifyAuthExpired, tokenRejectedByServer } from '../api'
-import { clampRetain, needsTrim, trimByUseful, REPLAY_MAX } from './consoleBuffer'
+import { clampRetain, needsTrim, trimByUseful, RETAIN_MIN, RETAIN_MAX, REPLAY_MAX } from './consoleBuffer'
 import { onThemeChange } from '../styles/theme'
 import './ConsoleTab.css'
 
@@ -356,7 +356,11 @@ function loadOpts(): ConsoleOpts {
   try {
     const raw = localStorage.getItem(OPTS_KEY)
     if (!raw) return { ...DEFAULT_OPTS }
-    return { ...DEFAULT_OPTS, ...JSON.parse(raw) }
+    const o = { ...DEFAULT_OPTS, ...JSON.parse(raw) } as ConsoleOpts
+    // 旧版本可能存着超过当前上限的值（上一版滑块到 50000）——
+    // 载入时就夹一次，否则界面会显示"50k"而滑块停在顶端，看着自相矛盾。
+    o.scrollback = clampRetain(o.scrollback)
+    return o
   } catch { return { ...DEFAULT_OPTS } }
 }
 
@@ -1491,12 +1495,14 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
 
                 <label className="cs-row">
                   <span>保留行数</span>
+                  {/* 上限必须与 REPLAY_MAX / Daemon 的 consoleHistoryMax 一致：
+                      能拖到的每一档都要真的生效，否则就是"拖了没反应"的 bug。 */}
                   <input
-                    type="range" min={1000} max={50000} step={1000}
-                    value={opts.scrollback}
+                    type="range" min={RETAIN_MIN} max={RETAIN_MAX} step={1000}
+                    value={clampRetain(opts.scrollback)}
                     onChange={(e) => setOpts({ ...opts, scrollback: Number(e.target.value) })}
                   />
-                  <b>{opts.scrollback >= 1000 ? `${opts.scrollback / 1000}k` : opts.scrollback}</b>
+                  <b>{`${clampRetain(opts.scrollback) / 1000}k`}</b>
                 </label>
 
                 <label className="cs-check">

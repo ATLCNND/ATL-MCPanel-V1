@@ -20,18 +20,25 @@ export const BUFFER_HARD_FACTOR = 10
  * retain 会被夹到这个区间里，避免异常值把缓冲撑爆或裁到空。
  */
 export const RETAIN_MIN = 1000
-export const RETAIN_MAX = 50000
+/**
+ * 滑块上限 = 服务端回放上限（两者必须是**同一个数**，见下）。
+ *
+ * 2026-10-21 第二版：由 50000 收到 10000。上一版滑块做到 50000、而服务端只认到
+ * 5000，于是 1K–5K 有对应、5K 之后拖了完全没反应 —— 用户一眼就发现。
+ * 规则：**界面上能拖到的每个档位都必须真的有用**；做不到就收窄范围，
+ * 而不是留一段"看起来能调、其实没用"的区间。
+ */
+export const RETAIN_MAX = 10000
 
 /**
  * 服务端**回放窗口**能接受的上限（与 internal/daemon/grpcapi/server.go 的
  * consoleHistoryMax 保持一致）。
  *
- * 为什么与 RETAIN_MAX 不是一回事：回放发生在**每一次**附加（切页签、刷新都算），
- * 一次要灌多少行受网络与首屏耗时约束，所以服务端有它自己的上限；
- * 而 RETAIN_MAX 是"本次会话里终端能滚多深"，只影响内存。
- * 界面上要按这个值如实标注，否则用户会以为"我设了 5 万却只有 5 千"。
+ * ⚠️ 它必须与 RETAIN_MAX **相等**（2026-10-21 第二版的教训）：两者一旦不同，
+ * 滑块超出 REPLAY_MAX 的那一段就是"能拖但没用"，用户会当成 bug 报上来。
+ * 界面上那枚徽标也按这里的值如实标注。
  */
-export const REPLAY_MAX = 5000
+export const REPLAY_MAX = 10000
 
 /** 把滑块的值夹成合法的保留条数。 */
 export function clampRetain(scrollback: number): number {
