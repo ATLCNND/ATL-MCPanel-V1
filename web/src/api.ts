@@ -698,12 +698,16 @@ export function consoleWsUrl(instanceId: string, spam?: string): string | null {
   const token = getToken()
   if (!token) return null
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  // spam：**当前生效的刷屏屏蔽规则**（JSON），由调用方（ConsoleTab）序列化。
+  // spam：**整份附加参数**（JSON），由调用方（ConsoleTab 的 attachPayloadFor）序列化：
+  //   { "spam": { "rules": [...] }, "history": 1000 }
   //
-  // 为什么要把它带给服务端：判"什么算周期性刷屏"的规则只活在前端，而服务端的
-  // 回放窗口（500 行）也要按"非刷屏行"来数 —— 否则被屏蔽的心跳会白占额度，
-  // 用户看到的"最近 500 行"里可能大半是心跳。规则由前端直传给 Daemon
-  //（面板只做长度校验后原样转发），判定标准因此只有一份。
+  // 为什么要把这些带给服务端：
+  //   · rules —— 判"什么算周期性刷屏"的规则只活在前端，而服务端的回放窗口
+  //     也要按"非刷屏行"来数，否则被屏蔽的心跳会白占额度；
+  //   · history —— "回放多深"是**用户**在设置里选的「保留行数」，
+  //     服务端原先写死 500，导致改滑块完全没效果（2026-10-21 用户报的缺陷）。
+  // 参数名沿用 `spam`（历史原因）。面板只做长度校验后原样转发给 Daemon，
+  // 判定标准因此只有一份。
   const extra = spam ? `&spam=${encodeURIComponent(spam)}` : ''
   return `${proto}://${window.location.host}/ws/console/${instanceId}?token=${encodeURIComponent(token)}${extra}`
 }

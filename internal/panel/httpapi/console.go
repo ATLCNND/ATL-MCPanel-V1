@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -18,9 +20,16 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true }, // 开发阶段允许所有来源
 }
 
-// maxConsoleSpamParam 浏览器 `?spam=` 参数的长度上限（防御性；Daemon 侧另有
-// 规则条数与单条长度的上限）。超限就忽略，回放退回"不过滤"，不会报错。
-const maxConsoleSpamParam = 4096
+// maxConsoleAttachParam 浏览器 `?spam=` 参数的长度上限（防御性；Daemon 侧另有
+// 规则条数、单条长度与回放行数的上限）。超限就忽略，回放退回默认行为，不会报错。
+//
+// 参数名沿用 `spam`（历史原因），但它承载的是**整份附加参数**：
+//
+//	{ "spam": { "rules": [...] }, "history": 1000 }
+//
+// 面板对内容一律不解释、只做长度校验后原样转发 —— 判定标准只有一份，
+// 必须在前端与 Daemon 之间直传，多一层解释就多一处走偏的机会。
+const maxConsoleAttachParam = 4096
 
 // consoleFrame 控制台流发给浏览器的消息。
 //
@@ -36,6 +45,28 @@ type consoleFrame struct {
 	// Level info / warn / error（取值见 internal/consolefmt）
 	Level string `json:"level"`
 	Data  string `json:"data"`
+	// Seq 这条连接的帧序号（从 1 开始，只在 line/status 上递增）。
+	//
+	// 为什么需要（B4 排查，2026-10-21）：现在帧里**没有任何序号**，于是
+	// "回放快照"与"实时直播"在浏览器侧长得一模一样 —— 出现"连上后先到的
+	// 是上一次启动的历史行"这种时间线错乱时无法区分，也说不清"到底收到了
+	// 几帧、第几帧开始断的"。加了序号之后：
+	//   · 前端可以识别"快照段 / 直播段"，也能按序插回（F14 双缓冲的前提）；
+	//   · 排查时只要看最后一个 seq，就知道断在哪一帧。
+	// 老前端会忽略这个字段（JSON 多一个键不影响解析），所以可以先行上线。
+	Seq uint64 `json:"seq,omitempty"`
+}
+
+// consoleConnSeq 给每条控制台连接一个自增编号（只用于日志串联）。
+var consoleConnSeq atomic.Uint64
+
+// consoleConnID 生成"实例 + 序号"的短标识。
+//
+// 为什么要它：控制台是**每次进页签就重连一次**的界面，一个实例上短时间内会有
+// 多条连接。没有标识时，多行日志只能靠时间戳猜哪几行属于同一次连接 ——
+// B4 这种"偶发、要按连接对齐时间线"的问题会因此完全查不动。
+func consoleConnID(instanceID string) string {
+	return instanceID + "#" + strconv.FormatUint(consoleConnSeq.Add(1), 10)
 }
 
 // handleConsole WS 控制台代理：
@@ -86,39 +117,77 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 
 	stream, err := cli.Console(ctx)
 	if err != nil {
+		slog.Warn("控制台：建立 gRPC 流失败", "instance", instanceID, "node", nodeID, "error", err)
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
+	// ---- B4 排查用的观测点（2026-10-21）----
+	//
+	// 现象：WS 建起来了，但一条 line 帧都收不到（连服务端每分钟的心跳都没有），
+	// 而 Daemon 侧**没有**「控制台附加」记录 —— 也就是面板侧的订阅没落到 Daemon。
+	// 在此之前这条链路在面板侧**一行日志都没有**（只有 Daemon 侧有），
+	// 排查只能靠猜。所以把关键节点都打出来，并给每条连接一个 conn 标识，
+	// 便于把同一连接的多行日志串起来：
+	//   ① 请求到达（谁 / 哪个实例 / 能不能发命令）
+	//   ② gRPC 流已建立
+	//   ③ ATTACH 已发送（带 payload 大小）—— 与 Daemon 的「控制台附加」对时间
+	//   ④ WS 升级完成
+	//   ⑤ **收到 Daemon 的第一个帧**（最关键：区分"Daemon 没回"与"回了但前端没收到"）
+	//   ⑥ 收尾：总帧数、存活时长、结束原因
+	//
+	// 判据怎么用（写在这里，免得下次接手重新推）：
+	//   · 有 ③ 无 Daemon 的「控制台附加」→ 问题在 gRPC 传输/路由这一层；
+	//   · Daemon 有「控制台附加」但无 ⑤ → 问题在 Daemon 回帧或面板 Recv；
+	//   · 有 ⑤ 但浏览器界面空白 → 问题在面板→浏览器这段（检查 seq 与 WS 状态）。
+	connID := consoleConnID(instanceID)
+	startedAt := time.Now()
+	slog.Info("控制台：请求受理", "conn", connID, "instance", instanceID,
+		"user", claims.UserID, "node", nodeID, "can_send", canSend)
+	defer func() {
+		// ⑥ 收尾：配合上面"收到首帧/接收结束"两行，可以把一次连接的完整时间线拼出来
+		slog.Info("控制台：会话结束", "conn", connID, "instance", instanceID,
+			"elapsed_ms", time.Since(startedAt).Milliseconds())
+	}()
+	slog.Info("控制台：gRPC 流已建立", "conn", connID, "instance", instanceID, "node", nodeID)
+
 	// 先发送 ATTACH
 	attach := &pb.ConsoleFrame{Type: pb.ConsoleFrame_ATTACH, InstanceId: instanceID}
-	// 浏览器可以在 URL 上带 `spam=<json>`：它**当前生效的刷屏屏蔽规则**
-	//（预制规则里开着的那些 + 用户自定义正则）。Daemon 用同一套规则去数
-	// "回放多少行"，于是被屏蔽的心跳不占那 500 行的额度。
+	// 浏览器可以在 URL 上带 `spam=<json>`：它是**整份附加参数** ——
+	// 既包含当前生效的刷屏屏蔽规则（预制里开着的 + 用户自定义正则），
+	// 也包含设置里的「保留行数」（history）。前者决定回放窗口**按什么计数**
+	// （被屏蔽的心跳不占额度），后者决定**回放多深**（2026-10-21 之前写死 500，
+	// 于是前端滑块改了也不生效）。
 	//
-	// 面板**不解释**这些规则，只做长度上限校验后原样转发：判定标准只有一份，
+	// 面板**不解释**这些内容，只做长度上限校验后原样转发：判定标准只有一份，
 	// 必须在前端与 Daemon 之间直传，多一层解释就会多一处走偏的机会。
 	// 长度上限是防御性的：这个参数来自 URL，不能让它变成内存/CPU 放大器
-	//（Daemon 侧还有规则条数与单条长度的上限）。
+	// （Daemon 侧还有规则条数、单条长度与回放行数的上限）。
 	if raw := r.URL.Query().Get("spam"); raw != "" {
-		if len(raw) <= maxConsoleSpamParam {
+		if len(raw) <= maxConsoleAttachParam {
 			attach.Data = raw
 		} else {
-			slog.Warn("控制台 spam 参数过长，已忽略（回放将不按刷屏过滤）",
-				"instance", instanceID, "bytes", len(raw), "limit", maxConsoleSpamParam)
+			slog.Warn("控制台附加参数过长，已忽略（回放退回默认行为）",
+				"instance", instanceID, "bytes", len(raw), "limit", maxConsoleAttachParam)
 		}
 	}
 	if err := stream.Send(attach); err != nil {
+		slog.Warn("控制台：发送 ATTACH 失败", "conn", connID, "instance", instanceID, "error", err)
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// ③ 这一行要能与 Daemon 的「控制台附加」对上时间：两者都出现，说明订阅确实到了。
+	slog.Info("控制台：ATTACH 已发送", "conn", connID, "instance", instanceID,
+		"payload_bytes", len(attach.Data))
 
 	// 升级 WS
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		slog.Warn("控制台：WS 升级失败", "conn", connID, "instance", instanceID, "error", err)
 		return
 	}
 	defer ws.Close()
+	slog.Info("控制台：WS 已升级", "conn", connID, "instance", instanceID)
 
 	// 写锁：下面的读命令协程与输出转发协程**都会**往同一条 WS 写。
 	// gorilla/websocket 只允许一个并发写者，两个协程直接写会 panic
@@ -148,14 +217,29 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 
 	done := make(chan struct{}, 2)
 
+	// 帧序号与统计：seq 随每条已转发的帧递增（B4 排查与 F14 双缓冲共用，见 consoleFrame.Seq）。
+	var seq atomic.Uint64
+	var received atomic.Int64
+
 	// goroutine 1: gRPC -> WS（Daemon 输出转发给前端）
 	go func() {
 		defer func() { done <- struct{}{} }()
+		started := time.Now()
 		for {
 			frame, err := stream.Recv()
 			if err != nil {
+				// ⑤ 的反面：一条帧都没收到就结束了 —— 这正是 B4 的形态。
+				// 带上网耗与错误，便于和 Daemon 侧「控制台附加」对时间线。
+				slog.Warn("控制台：gRPC 接收结束", "conn", connID, "instance", instanceID,
+					"frames", received.Load(), "after_ms", time.Since(started).Milliseconds(), "error", err)
 				send(consoleFrame{Type: "notice", Level: consolefmt.LevelWarn, Data: "[连接关闭]\n"})
 				return
+			}
+			if received.Add(1) == 1 {
+				// ⑤ **最关键的一行**：Daemon 确实回了帧。
+				// 若浏览器仍空白而这里有记录，问题就在面板→浏览器这段。
+				slog.Info("控制台：收到 Daemon 首帧", "conn", connID, "instance", instanceID,
+					"type", frame.Type.String(), "after_ms", time.Since(started).Milliseconds())
 			}
 			switch frame.Type {
 			case pb.ConsoleFrame_OUTPUT:
@@ -165,12 +249,14 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 					Type:  "line",
 					Level: consolefmt.LevelOfDecorated(frame.Data),
 					Data:  frame.Data,
+					Seq:   seq.Add(1),
 				})
 			case pb.ConsoleFrame_STATUS:
 				send(consoleFrame{
 					Type:  "status",
 					Level: consolefmt.LevelInfo,
 					Data:  "[状态] " + frame.Data + "\n",
+					Seq:   seq.Add(1),
 				})
 			}
 		}

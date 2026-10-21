@@ -1,99 +1,246 @@
-# 架构详细设计
+# 架构说明
 
-> 补充 `README.md` 与 `DEVELOPMENT.md` 的架构细节。
-
----
-
-## 1. 分层与组件
-
-### Panel（中心面板）
-```
-atl-panel
-├── HTTP/WS 层（前端 API + 控制台代理）
-│   ├── REST API      (/api/...)
-│   └── WebSocket     (/ws/console/{instanceId})
-├── gRPC Server（Daemon 接入）
-├── 业务层
-│   ├── auth / RBAC
-│   ├── node mgmt
-│   ├── instance mgmt
-│   ├── metrics collector
-│   ├── tunnel engine
-│   └── audit
-├── 数据访问（PostgreSQL）
-└── 证书签发（mTLS CA）
-```
-
-### Daemon（每实例一个）
-```
-atl-daemon
-├── gRPC Client（连 Panel，mTLS）
-├── MC 进程管理（systemd unit）
-├── 控制台桥接（stdin/stdout ↔ gRPC stream）
-├── 监控探针（CPU/mem/TPS/players）
-├── RCON 客户端
-└── frpc 管理器
-```
+> 本文描述的是**实际实现**，不是早期设想。历史上这份文档落后于代码
+> （曾写着 PostgreSQL、「Daemon 每实例一个」、「面板不做容器隔离」），
+> 2026-10-21 按代码逐条核对后重写。
+>
+> 维护规矩：**读代码定稿，不照抄旧文**。与实现不符时以代码为准，并改这里；
+> 每条「为什么这么做」都要写出取舍，否则下次会有人把它当噪音删掉。
+>
+> 若某处标了「规划」，表示**代码里还没有**，别按它设计。
 
 ---
 
-## 2. 关键交互时序
+## 1. 组件与进程模型
 
-### 2.1 节点登记（Daemon 接入）
 ```
-管理员 → Panel: 提交节点信息(IP/SSH)
-Panel → SSH → VM: 探测环境、部署/启动 atl-daemon
-Panel → 签发 mTLS 客户端证书
-Daemon → gRPC Register(cert) → Panel
-Panel → 记录节点 online
+                    ┌──────────────────────────────────────────┐
+   浏览器 ──HTTP/WS──▶ atl-panel（中心面板，单二进制）             │
+   (xterm.js)        │  · REST /api/* + WS /ws/console/{id}      │
+                     │  · gRPC Server（等 Daemon 连入，mTLS）     │
+                     │  · RBAC / 实例授权 / 审计                 │
+                     │  · SQLite（WAL）+ 自动备份 + 迁移          │
+                     │  · 内置 CA（internal/pki，签发节点证书）    │
+                     │  · 面板自身穿透用的 frpc 子进程（可选）      │
+                     └───────────────┬──────────────────────────┘
+                                     │ gRPC 长连接（mTLS，双向流）
+                     ┌───────────────┴──────────────────────────┐
+                     │ atl-daemon（**每个节点一个**，管 N 个实例） │
+                     │  · registry：实例目录 + state/<id>/*.json │
+                     │  · 控制台桥接（tail 日志 + 实时 stdout）    │
+                     │  · 监控采集（CPU/内存/TPS/玩家）           │
+                     │  · 备份 / 文件操作 / 定时任务              │
+                     │  · 每个隧道一个 frpc 子进程                │
+                     └───────┬───────────────────────┬──────────┘
+                             │                       │
+                    ┌────────▼────────┐    ┌─────────▼─────────┐
+                    │ 实例 A（容器化）  │    │ 实例 B（非容器化）  │
+                    │ docker 容器      │    │ java 子进程        │
+                    │ + 独立 rootfs    │    │ + 独立系统用户     │
+                    └─────────────────┘    └───────────────────┘
 ```
 
-### 2.2 控制台实时流
-```
-浏览器 ──WS──▶ Panel ──gRPC bidi-stream──▶ Daemon ──stdin/stdout──▶ MCFolia
-（xterm.js）      （代理转发）              （systemd 进程）
-```
+**两个进程、两套职责**：Panel 只做控制面（鉴权、编排、数据），
+Daemon 只做数据面（真正起停进程、读日志、采指标）。
+这样节点上的东西坏了不会拖垮面板，面板重启也不该影响已经在跑的实例 ——
+后者由 `KillMode=process` + 接管逻辑保证（见 §2.1）。
 
-### 2.3 穿透（frp）
-```
-管理员 → Panel: 给实例分配公网端口 25566
-Panel: 生成 frpc 配置（local_port=实例端口, remote_port=25566）
-Panel → gRPC ApplyTunnel → Daemon
-Daemon → 写 frpc.ini → 启动 frpc → 连 frps
-公网玩家 → frps:25566 → frpc → 实例 VM:25565 → MCFolia
-```
+### 1.1 一个 Daemon 管多个实例（不是「每实例一个 Daemon」）
+
+早期文档写的是「每实例一个 Daemon」，**实现上从来不是这样**：
+
+- `internal/daemon/registry` 维护 `id → *mcprocess.Instance` 的表；
+  `Load()` 启动时扫描 `instances/` + `state/`，把已有实例全部载入；
+- 实例目录 `instances/<id>/`，元数据 `state/<id>/instance.json`、
+  运行期记录 `state/<id>/daemon.pid`；
+- 节点上只有一个 systemd 单元 `atlmcpanel-daemon`。
+
+这么做的理由很实际：一台机器上跑十个实例，不该有十个常驻进程和十条 gRPC 长连接；
+而「实例隔离」这件事由**容器/独立用户**承担，不需要靠「多一个进程」来实现。
+
+### 1.2 实例的两种运行形态
+
+每个实例的元数据里有 `container` 意图，Daemon 启动时按它决定走哪条路：
+
+| | 非容器化（native） | 容器化（docker） |
+|---|---|---|
+| 进程 | java 是 **Daemon 的子进程** | 每个实例一个容器 |
+| 文件系统 | 宿主目录 + 软链接校验（`common/safepath`） | 实例目录挂进容器 |
+| 隔离边界 | 独立系统用户（`runas`，默认每实例一个 `atl-*` 用户）+ cgroup（CPU 配额/内存上限） | 容器 rootfs + 同样的 cgroup 限制 |
+| JDK | 宿主 `/usr/lib/jvm` | **只读挂载**进容器（镜像里故意不装 JDK） |
+| 运行时镜像 | — | `atl-mcpanel-runtime-<版本>-<架构>.tar.gz`（debootstrap 自建，见 `scripts/build-runtime-image.sh`） |
+
+判据必须是 `wantContainer && Container != nil` —— **只看 `Container != nil` 是错的**：
+那个字段的含义是「节点装了可用的容器运行时」，容器化实例和接管来的实例都可能被它置上。
+（这条是 2026-10-17 的 B3 缺陷根因，见 `process_container_lock_test.go` 的反向验证。）
+
+**为什么两种都要留**：容器化干净、可复现，但要求节点有 docker 且镜像能到位；
+有些环境（老内核、内网、宿主机性能敏感）就是跑不动或不想跑容器。
+所以「两种都支持」是产品决定，不是过渡状态。
 
 ---
 
-## 3. 控制台技术细节
+## 2. 实例的生命周期与「跟着它走的进程」
 
-- 前端：xterm.js 渲染，WebSocket 连接 Panel
-- Panel：把一个 WS 连接映射到一个 gRPC bidi-stream（每实例一个 stream，多浏览器共享）
-- Daemon：MC 进程 stdout → 按行 → ConsoleFrame(output)；收到的 CommandFrame → 写 MC stdin
-- 需处理：彩色 ANSI 转义（xterm 原生支持）、历史日志回放（最近 N 行缓存）
+这一节是踩坑最集中的地方：**实例不是「一个 java 进程」，而是一组进程的集合**，
+它们的生死必须跟实例一致，否则就会出现「实例停了但端口还占着」、
+「daemon 重启后 frpc 变成孤儿」这类问题。
+
+| 进程 | 何时创建 | 何时回收 | 归谁管 |
+|---|---|---|---|
+| 游戏进程（java / 容器） | 启动实例 | 停止实例 / 崩溃 | Daemon（native：子进程；容器：docker） |
+| `frpc`（每个隧道一个） | 分配/启用隧道 | 隧道停用、实例删除、**Daemon 退出** | Daemon（`StopFrpAll`，只停 frpc 不碰 java） |
+| 面板自身的 `frpc` | 面板穿透启用 | 面板停止 | Panel（因此面板单元是 `KillMode=control-group`） |
+| 监控采集 | Daemon 启动 | Daemon 退出 | Daemon（按实例周期采样） |
+
+两条必须遵守的规则，都是实测出来的：
+
+1. **Daemon 单元必须 `KillMode=process`**。改成默认的 `control-group`，
+   `systemctl restart` 会连同用户的 Minecraft 一起杀掉 —— 玩家掉线、存档有损坏风险。
+   （面板单元相反，是 `control-group`：它的 frpc 子进程该跟着一起重启。）
+2. **Daemon 退出要自己收 frpc**。因为有了第 1 条，Daemon 被信号杀掉时
+   子进程不会自动陪葬；不显式回收就会留下 PPID=1 的孤儿 frpc（2026-09-13 抓到过）。
+
+> `runas` 有三种模式（`ModePerInstance` 默认 / `ModeShared` 共用一个已存在用户 /
+> `ModeCurrent` 沿用 daemon 自身身份，此时 daemon 不许是 root）。
+> 之所以必须存在这个包：实例进程原先以 **root** 运行，而面板允许实例所有者编辑
+> `start.sh`、允许协作者往控制台发命令 —— 两条路都能拿到 shell，
+> 于是"能管一台实例"等价于"拿到节点 root"。另一半修法是把状态文件从租户可写目录搬走，
+> 两者缺一不可。
+
+### 2.1 「接管态」与它的代价（硬限制）
+
+Daemon 重启（升级、崩溃重启）后，原来那些 java 进程还在跑，但它们的
+**stdin 管道**随旧 Daemon 一起消失了。于是新 Daemon 只能「接管」：日志还能 tail、
+状态能对上，但**控制台变成只读**（不能发命令）—— fd 0 没法事后替换，
+这是操作系统的硬限制，不是缺陷。
+
+要恢复完整控制只能重启实例（stop → start，重建管道）。
 
 ---
 
-## 4. 监控技术细节
+## 3. 数据与控制流
 
-- CPU/内存：读 `/proc` 或 cgroup（单位：实例 VM 整体或 MC 进程级，待定）
-- TPS / 在线玩家：MCFolia 无原生 RCON 的 Folia 需用 **控制台命令 + 日志解析** 或插件上报（Folia 支持 RCON 但部分插件需适配）
-  - 优先：控制台定时发 `tps` / `list` 命令解析输出
-- 时序存储：Panel 内存环形缓冲 + 定期落库（或直接用 PostgreSQL，视数据量）
+### 3.1 控制台（最复杂的一条链路）
+
+```
+浏览器 xterm ──WS ?token=&spam=<附加参数>──▶ Panel handleConsole
+                                             ├ 鉴权：JWT + 实例级 owner/collab/viewer
+                                             ├ 附加参数**不解释**，只做长度校验后转发
+                                             └ Send(ATTACH) ──gRPC 双向流──▶ Daemon
+                                                                              ├ reg.Get(实例)
+                                                                              ├ 编译刷屏规则（RE2）
+                                                                              ├ AttachConsole：历史快照 + 实时订阅（**原子**）
+                                                                              └ 回放 N 行 → 转实时
+```
+
+几个不显然但必须保持的设计：
+
+- **快照与订阅必须原子**（`AttachConsole` 在同一把锁里完成）。分开做的话，
+  两步之间的输出要么进快照又进实时（屏幕上重复两遍，即历史缺陷 B1 的形态），
+  要么两边都不进（永久丢行）。
+- **级别只有一份定义**（`internal/consolefmt`）：Daemon 按它涂底色，
+  Panel 按它给每行标级别供前端筛选。两边各自抄一份必然走偏。
+- **配色分两份职责**：Daemon 只决定「用哪一种底色带」（级别标记，真彩写死）；
+  色号属于表示层，由浏览器按当前主题重映射（深色用暗品红、浅色用亮品红）。
+- **附加参数（`?spam=`）里带两样东西**：刷屏屏蔽规则（决定回放**按什么计数**）
+  与「保留行数」（决定回放**多深**）。规则只活在前端，服务端不另写一套。
+
+### 3.2 节点登记与部署
+
+```
+管理员填节点信息 ──▶ Panel 通过 SSH 探测环境 ──▶ 签发 mTLS 客户端证书
+                   ──▶ 下发二进制与配置 ──▶ 安装 systemd 单元 ──▶ Daemon 连回注册
+```
+
+SSH 只在**首次部署/升级/排障**时用；日常的控制台、监控、文件操作走 gRPC 长连接，
+不依赖 SSH 保持在线。
+
+### 3.3 穿透（frp）
+
+Panel 登记 frps 线路（自建 frps 有端口段；第三方单隧道服务商是「一条固定隧道」），
+隧道 = 实例 + 线路 + 本地端口 + 远端端口/子域。启用时 Panel 下发配置，
+Daemon 写 frpc 配置并拉起 frpc 子进程。租户看不到 frp 凭据（含共享 token）。
 
 ---
 
-## 5. 隔离与安全
+## 4. 状态一致性：世代号范式
 
-- 实例间隔离：PVE VM 层（内核级），面板不做容器隔离
-- Daemon 与 Panel：mTLS（每个 Daemon 唯一客户端证书）
-- SSH 凭据：Panel 数据库加密存储，仅部署/运维用
-- 前端会话：JWT，角色 + 实例授权双重校验
+实例状态最容易出「面板显示的和实际不符」的问题，根因几乎都是**有两拨人同时
+盯着同一条流/同一个进程**。项目里已经形成固定做法：**给流和进程都发世代号，
+过期的那一拨什么都不许做**。
+
+| 世代号 | 管什么 | 解决过的缺陷 |
+|---|---|---|
+| `tailGen` | 控制台 tail 协程 | B1：一个实例上并存多条 tailLog，同一行被投递 3 次 |
+| `procGen` | 进程收尾/接管协程 | B6：重启后收尾协程把**新进程**的状态和 pid 记录清掉 |
+
+反过来，这类「两个执行体抢同一个对象」的地方**不设世代号就是 bug 未爆**。
+另外 pid 记录的后果不只是显示：丢了它，下次 Daemon 重启**接管不到**那个进程
+（日志里会写「PID 记录缺失…按孤儿进程接管」），面板以为实例已停止，
+用户点启动会撞 Minecraft 的 `session.lock`。
 
 ---
 
-## 6. 可扩展性预留
+## 5. 隔离与安全边界
 
-- 多节点：Panel 支持管理多个 Daemon 节点（天然 gRPC 多连接）
-- 多 frps：`frps_servers` 表支持多公网入口，未来多线路
-- 多 MC 类型：`mc_type` 字段预留 folia/paper/velocity 等
+**已经有的**：
+
+- Panel ↔ Daemon 全链路 mTLS（面板内置 CA，节点证书含 SAN）；
+- 实例隔离：容器化 = 容器边界；非容器化 = 独立系统用户 + cgroup 限制 + 路径校验
+  （`common/safepath`，防软链接逃逸）；
+- 鉴权两条轴：全局角色（管理员/普通用户）+ 实例级（拥有者/协作/只读）；
+  匿名可达路由由 `routeauth_test.go` **机械钉死**为 6 条白名单；
+- 租户看不到 frp 凭据；数据库文件与备份 0600/0700。
+
+**还缺的（已记入 `BACKLOG.md`，别当成「已经安全」）**：
+
+| 缺口 | 现状 |
+|---|---|
+| Panel 自身**没有容器化部署包** | 只有 `deploy/systemd/*`，没有 Dockerfile/镜像 |
+| Panel 的 systemd 单元**没有加固** | `NoNewPrivileges=false`、`ProtectSystem=false` —— 等于裸跑 |
+| 明文凭据入库 | SSH 密码 / frps token / logshare token 明文存 SQLite（S1） |
+| 会话令牌 | 存 localStorage，且下载/图标/控制台走 `?token=`（S2） |
+
+方向（不是现状）：**面板要么容器化部署，要么非容器化但把 systemd 加固到位**
+（`ProtectSystem=strict` / `NoNewPrivileges=true` / `ReadWritePaths` 只开必要目录 /
+独立低权限用户 / `RestrictAddressFamilies`）。两条路都要有，因为内网与 PVE
+环境里不一定能跑容器。
+
+---
+
+## 6. 核心无关
+
+实例**不绑定任何一种服务端**：Paper / Folia / Purpur / Forge / Fabric /
+BungeeCord / Velocity / 纯自定义脚本都走同一套：
+
+- 元数据：`core_type` + `jar_path` + `start_command`（留空则用默认启动行）；
+- 启动脚本 `start.sh` **存在即生效**，可在面板里可视化编辑；
+- 控制台按行解析、按级别涂色，规则覆盖四种常见日志形态（见 `console_format.go`），
+  不为某个核心写死；
+- 监控的 TPS/玩家数优先走 RCON，拿不到就退回「发控制台命令 + 解析输出」。
+
+因此新增一个核心通常**不需要改代码**，只需要换 jar 和启动参数。
+
+### 6.1 规划中的实例类型（底账 F9）
+
+现在建实例只有「MC 专用表单」。计划扩成 **模板 + 类型**：
+
+| 类型 | 含义 |
+|---|---|
+| MC | 现有逻辑（jar + 启动脚本 + 端口 + 备份策略） |
+| **通用 docker 应用实例** | 给镜像 + 端口 + 卷，就是一台受管的容器（复用同一套控制台/监控/端口能力） |
+| **通用控制台实例** | 不起游戏、只跑一个能收发 stdin/stdout 的进程（把控制台能力单独抽出来用） |
+
+这一项会动实例模型，按 `BACKLOG.md` 的口径先出设计再写码。
+`containerized` 与核心无关这两条已经是为它铺的路。
+
+---
+
+## 7. 可扩展性
+
+- **多节点**：Panel 每个 Daemon 一条 gRPC 连接，天然水平扩展；
+- **多线路**：`frps_servers` 支持多条线路，含第三方单隧道服务商；
+- **多 frps / 直连**：FRP 直连模式（F1，规划）让有公网 IP 的节点直接
+  `--publish` 端口，省掉中转的一跳延迟；
+- **插件化内核 / 多租户策略**：属 V2/V3，见 `V3-PLACEHOLDER.md`，**不是欠账**。

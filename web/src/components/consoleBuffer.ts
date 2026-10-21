@@ -22,6 +22,17 @@ export const BUFFER_HARD_FACTOR = 10
 export const RETAIN_MIN = 1000
 export const RETAIN_MAX = 50000
 
+/**
+ * 服务端**回放窗口**能接受的上限（与 internal/daemon/grpcapi/server.go 的
+ * consoleHistoryMax 保持一致）。
+ *
+ * 为什么与 RETAIN_MAX 不是一回事：回放发生在**每一次**附加（切页签、刷新都算），
+ * 一次要灌多少行受网络与首屏耗时约束，所以服务端有它自己的上限；
+ * 而 RETAIN_MAX 是"本次会话里终端能滚多深"，只影响内存。
+ * 界面上要按这个值如实标注，否则用户会以为"我设了 5 万却只有 5 千"。
+ */
+export const REPLAY_MAX = 5000
+
 /** 把滑块的值夹成合法的保留条数。 */
 export function clampRetain(scrollback: number): number {
   if (!Number.isFinite(scrollback) || scrollback <= 0) return 5000

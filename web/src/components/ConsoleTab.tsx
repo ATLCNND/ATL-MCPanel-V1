@@ -3,7 +3,7 @@ import { Terminal } from 'xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import 'xterm/css/xterm.css'
 import { consoleWsUrl, isTokenExpired, notifyAuthExpired, tokenRejectedByServer } from '../api'
-import { clampRetain, needsTrim, trimByUseful } from './consoleBuffer'
+import { clampRetain, needsTrim, trimByUseful, REPLAY_MAX } from './consoleBuffer'
 import { onThemeChange } from '../styles/theme'
 import './ConsoleTab.css'
 
@@ -27,15 +27,20 @@ function termTheme() {
   const accent = cssVar('--accent', '#d4799f')
   const termAccent = cssVar('--term-accent', '#f9a8d4')
   const accentLight = cssVar('--accent-light', '#e8a8c4')
+  // 报错色分两个 token：底色用 --term-error（压得住的品红），
+  // 文字用 --term-error-text（要够亮才读得清）。见 tokens.css 的说明。
+  const termError = cssVar('--term-error', danger)
+  const termErrorText = cssVar('--term-error-text', termError)
   return {
     background: cssVar('--term-bg', '#0f1117'),
     foreground: text,
     cursor: termAccent,
-    selectionBackground: cssVar('--accent-solid', '#9c1450'),
+    // 选中区单独一个 token：深色模式是半透明淡粉叠加，浅色模式是深粉实色
+    selectionBackground: cssVar('--term-select', cssVar('--accent-solid', '#9c1450')),
 
     // 常用 ANSI 色跟随语义 token，避免浅色主题下出现刺眼的深色
     black: text,
-    red: danger,
+    red: termError,
     green: info,
     yellow: warn,
     blue: accent,
@@ -50,7 +55,7 @@ function termTheme() {
        "黄色警告有点模糊"正是这一类。
        这里统一回落到对应的语义色：宁可少一点"高亮"，也不要不可读。 */
     brightBlack: cssVar('--term-time', '#6b7280'),
-    brightRed: danger,
+    brightRed: termErrorText,
     brightGreen: info,
     brightYellow: cssVar('--term-warn-bright', warn),
     brightBlue: accent,
@@ -62,6 +67,50 @@ function termTheme() {
 
 /** 日志级别（与后端 internal/consolefmt 的取值一一对应） */
 type Level = 'info' | 'warn' | 'error'
+
+/** `#rrggbb` → RGB 三元组；不是六位十六进制就返回 null（调用方走兜底）。 */
+function hexRgb(hex: string): [number, number, number] | null {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex.trim())
+  if (!m) return null
+  const n = parseInt(m[1], 16)
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+}
+
+/** 真彩底色序列（48;2;R;G;B）。取不到颜色时退回深色模式的暗品红。 */
+function sgrBg(hex: string): string {
+  const c = hexRgb(hex) ?? [163, 40, 95]
+  return `\x1b[48;2;${c[0]};${c[1]};${c[2]}m`
+}
+
+/** 真彩前景序列（38;2;R;G;B）。取不到颜色时退回深色模式的亮品红。 */
+function sgrFg(hex: string): string {
+  const c = hexRgb(hex) ?? [255, 127, 182]
+  return `\x1b[38;2;${c[0]};${c[1]};${c[2]}m`
+}
+
+/**
+ * 把 Daemon 的**级别配色**重映射成当前主题的色号。
+ *
+ * 为什么必须在浏览器侧做（而不是改 Daemon 那个常量）：
+ *   Daemon 涂的是 24 位真彩（见 internal/consolefmt.AnsiErrorBand），色号写死在
+ *   节点上、所有浏览器共用一份。而"深色用暗品红、浅色用亮品红"是**主题属性**，
+ *   只有浏览器知道当前是哪套主题。所以职责这样分：
+ *     · Daemon —— 只负责**标记级别**（用哪一种底色带 / 哪一个提示色）；
+ *     · 浏览器 —— 负责**选具体色号**，同一份标记在不同主题下渲染成不同颜色。
+ *   这样既没有推翻"配色只有一份定义"的既有决策（标记仍然只有一份），
+ *   又满足了"深色别刺眼、浅色要清楚"这个只能按主题决定的需求。
+ *
+ * 只改两处，且**只对 error 级别的行**生效：
+ *   · `48;2;R;G;B`（级别底色带）→ --term-error
+ *   · `91`（亮红前景，Daemon 的提示色）→ --term-error-text
+ * 服务器自己输出的一切颜色、以及 info/warn 行，一个字都不碰。
+ */
+function paintLine(text: string, level: Level): string {
+  if (level !== 'error') return text
+  return text
+    .replace(/\x1b\[48;2;\d+;\d+;\d+m/g, sgrBg(cssVar('--term-error', '#a3285f')))
+    .replace(/\x1b\[91m/g, sgrFg(cssVar('--term-error-text', '#ff7fb6')))
+}
 
 /** 级别筛选：all 之外都对应一个具体级别 */
 type Filter = 'all' | Level
@@ -109,26 +158,40 @@ interface PendingLine {
  *   ① 总开关关着（用户在界面上选了"显示刷屏"，那就别在回放里偷偷丢掉这些行）；
  *   ② 一条规则都没开；
  *   ③ 序列化失败（理论上不会）。
+ *
+ * ⚠️ 2026-10-21 起这个 payload 里还带 `history`：**设置里的「保留行数」**。
+ * 在此之前服务端回放窗口是写死的 500 行，于是用户把保留行数从 5000 调到 1000
+ * 或 50000，控制台能滚的范围都不变（实测：节点日志 43017 行，控制台只拿到 503 行）
+ * —— 这就是用户报的"保留行数没作用到控制台上"。现在由浏览器把自己的口径传下去，
+ * Daemon 按它生成回放窗口（上下限与理由见 daemon/grpcapi/server.go）。
  */
-function spamConfigFor(
+function attachPayloadFor(
   ruleEnabled: Record<string, boolean>,
   customRules: { id: string; label: string; pattern: string }[],
   hideHeartbeat: boolean,
+  retain: number,
 ): string {
-  if (!hideHeartbeat) return ''
   const rules: { id: string; pattern: string; flags: string; block: boolean }[] = []
-  for (const r of HEARTBEAT_PRESETS) {
-    if (!ruleEnabled[r.id]) continue
-    rules.push({ id: r.id, pattern: r.re.source, flags: r.re.flags, block: !!r.block })
+  if (hideHeartbeat) {
+    for (const r of HEARTBEAT_PRESETS) {
+      if (!ruleEnabled[r.id]) continue
+      rules.push({ id: r.id, pattern: r.re.source, flags: r.re.flags, block: !!r.block })
+    }
+    for (const c of customRules) {
+      // 自定义规则一律逐行（与前端 regRef 的用法一致），大小写不敏感
+      if (ruleEnabled[c.id] === false) continue
+      rules.push({ id: c.id, pattern: c.pattern, flags: 'i', block: false })
+    }
   }
-  for (const c of customRules) {
-    // 自定义规则一律逐行（与前端 regRef 的用法一致），大小写不敏感
-    if (ruleEnabled[c.id] === false) continue
-    rules.push({ id: c.id, pattern: c.pattern, flags: 'i', block: false })
+  // history 必须先于规则存在：即使一条规则都没开（回放不过滤），
+  // 「保留行数」也仍然要生效 —— 早期写法是"没规则就直接返回空串"，
+  // 那样等于把 history 一起丢了。
+  const payload: { spam?: { rules: typeof rules }; history: number } = {
+    history: clampRetain(retain),
   }
-  if (rules.length === 0) return ''
+  if (rules.length > 0) payload.spam = { rules }
   try {
-    return JSON.stringify({ spam: { rules } })
+    return JSON.stringify(payload)
   } catch {
     return ''
   }
@@ -337,10 +400,20 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
   // 2026-10-06 起**规则可配置**（用户要求）：预制规则（含多核心泛化）+ 用户自定义正则，
   // 均持久化在 localStorage。
   const initialRules = useMemo(() => loadRules(), [])
+  /** 显示参数的初值单独存一份：下面要给 spamCfgRef 预置 payload，需要它。 */
+  const initialOpts = useMemo(() => loadOpts(), [])
   const [hideHeartbeat, setHideHeartbeat] = useState(true)
   const hideHbRef = useRef(true)
-  /** 当前生效的屏蔽规则（JSON）。连接时随 URL 带给服务端，见 spamConfigFor。 */
+  /** 当前生效的附加参数（JSON：屏蔽规则 + 保留行数）。连接时随 URL 带给服务端，见 attachPayloadFor。 */
   const spamCfgRef = useRef('')
+  // ⚠️ 必须在这里预置：真正发起连接的是下面那个"终端初始化"effect，
+  // 而同步这份 payload 的 effect 声明在它**之后**（React 按声明顺序执行），
+  // 不预置的话第一次连接拿不到 history，用户会看到"改了保留行数、重进控制台还是不生效"。
+  if (!spamCfgRef.current) {
+    spamCfgRef.current = attachPayloadFor(
+      initialRules.enabled, initialRules.custom, true, initialOpts.scrollback,
+    )
+  }
   /** 被心跳屏蔽掉的行数（显示在开关旁边，让人知道藏了多少） */
   const [hbHidden, setHbHidden] = useState(0)
 
@@ -372,7 +445,7 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
   const cmdWindowRef = useRef(0)
 
   // 终端显示参数 + 设置面板开关
-  const [opts, setOpts] = useState<ConsoleOpts>(() => loadOpts())
+  const [opts, setOpts] = useState<ConsoleOpts>(initialOpts)
   const [showSettings, setShowSettings] = useState(false)
   const fitRef = useRef<FitAddon | null>(null)
 
@@ -648,7 +721,8 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
         }
       }
 
-      t.write(line.text)
+      // 级别配色按当前主题重映射（见 paintLine）
+      t.write(paintLine(line.text, line.level))
     }
 
     if (pendingRef.current) {
@@ -940,7 +1014,7 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
         }
         // spam 标记记在缓冲里：裁剪时按"非刷屏行"计数，被屏蔽的行不占保留额度
         pushBuf({ level: lv, text: line, spam: hideLive })
-        if (out && !hideLive) t.write(out)
+        if (out && !hideLive) t.write(paintLine(out, lv))
         grew = true
       }
       if (parts.length > 0) written = 0
@@ -951,16 +1025,18 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
         const pend: PendingLine = { level: lv, text: tail, shown: tail.length }
         const hidePend = hideHbRef.current &&
           (liveBlockRef.current || startsBlock(pend.text) || blockedLine(pend.text))
-        if (delta && visible(pend.level, filterRef.current) && !hidePend) t.write(delta)
+        if (delta && visible(pend.level, filterRef.current) && !hidePend) t.write(paintLine(delta, pend.level))
         pendingRef.current = pend
       } else {
         pendingRef.current = null
       }
 
       if (grew) {
-        if (bufRef.current.length > BUFFER_MAX) {
-          bufRef.current.splice(0, bufRef.current.length - BUFFER_MAX)
-        }
+        // ⚠️ 这里**不再**按 BUFFER_MAX 硬裁。
+        // 2026-10-21 修：F14 把裁剪改成"按非刷屏行、条数取设置里的保留行数"（见
+        // pushBuf / consoleBuffer.ts），而这一段老代码还留着 —— 于是保留行数设成
+        // 超过 5000（滑块上限 50000）时，缓冲仍被这里砍到 5000，滑块看起来"没作用"。
+        // 裁剪口径只能有一处，就是 pushBuf。
         recount()
       }
     }
@@ -1172,8 +1248,8 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
   //（回放发生在附加那一刻），但前端会就地按新规则重新过滤已有内容，
   // 所以用户看到的立即是对的；新规则对"回放窗口算多少行"生效于下一次连接。
   useEffect(() => {
-    spamCfgRef.current = spamConfigFor(ruleEnabled, customRules, hideHeartbeat)
-  }, [ruleEnabled, customRules, hideHeartbeat])
+    spamCfgRef.current = attachPayloadFor(ruleEnabled, customRules, hideHeartbeat, opts.scrollback)
+  }, [ruleEnabled, customRules, hideHeartbeat, opts.scrollback])
 
   // 「保留行数」变化 → 更新缓冲的保留条数，并**立刻按新值裁一次**。
   // 不立刻裁的话要等到攒够两倍才会裁剪，用户会以为"改了没生效"。
@@ -1212,6 +1288,14 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
     }])
     setNewPattern(''); setNewLabel(''); setNewRuleErr('')
   }
+
+  /**
+   * 实际生效的回放行数 = min(设置里的保留行数, 服务端回放上限)。
+   *
+   * 界面必须按这个值标注，不能写死：用户改了「保留行数」之后，
+   * 徽标要跟着变，否则又会变成"改了没反应"的观感。
+   */
+  const replayLines = Math.min(clampRetain(opts.scrollback), REPLAY_MAX)
 
   const total = counts.info + counts.warn + counts.error
   const shown = filter === 'all' ? total : counts[filter as Level]
@@ -1297,14 +1381,19 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
           {hideHeartbeat && hbHidden > 0 && <em>{hbHidden}</em>}
         </button>
 
-        {/* 说明"这里只有最近 500 行"：回放上限调小之后（见后端 consoleHistoryLines），
-            必须让人知道去哪找完整日志，否则会以为日志被丢了。
-            默认只在悬停时显示详情，不占版面。 */}
+        {/* 说明"这里只有最近 N 行"，必须让人知道去哪找完整日志，否则会以为日志被丢了。
+            N 不再是写死的 500：它跟着设置里的「保留行数」走（2026-10-21 用户报
+            "保留行数没作用到控制台上"之后的修法），但服务端有回放上限（REPLAY_MAX），
+            所以这里如实显示**实际生效**的那个值。默认只在悬停时显示详情，不占版面。 */}
         <span
           className="console-scope"
-          title={`控制台只回放最近 500 行（每次切回本页签会重新附加，避免把屏幕刷满）。\n完整日志在实例的 logs/console.log，可在「文件」页查看或下载。`}
+          title={
+            `控制台回放最近 ${replayLines} 行（取「保留行数」与回放上限 ${REPLAY_MAX} 的较小值）。\n` +
+            '每次切回本页签都会重新附加，回放太多会把屏幕刷满，所以有上限。\n' +
+            '完整日志在实例的 logs/console.log，可在「文件」页查看或下载。'
+          }
         >
-          最近 500 行
+          最近 {replayLines} 行
         </span>
 
         {/* 复制按钮（2026-10-06 用户反馈 Ctrl+C 不好使）。
@@ -1316,7 +1405,7 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
           onClick={() => copyAllRef.current?.()}
           title={
             '把当前显示的内容复制到剪贴板（不含被屏蔽的行）。\n' +
-            '⚠️ 只含前端已缓冲的行（受「最近 500 行」上限影响），不是完整日志。\n' +
+            `⚠️ 只含前端已缓冲的行（受「最近 ${replayLines} 行」回放上限影响），不是完整日志。\n` +
             '完整日志在实例的 logs/console.log，可在「文件」页下载。\n' +
             (secureCtx
               ? '当前是安全上下文，复制可直接写入剪贴板。'

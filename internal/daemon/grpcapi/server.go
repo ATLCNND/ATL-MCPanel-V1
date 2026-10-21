@@ -467,6 +467,56 @@ func (s *Server) GetInstanceStatus(ctx context.Context, req *pb.InstanceRequest)
 // 所以不会读到"被截断的半个日志"。
 const consoleHistoryLines = 500
 
+// consoleAttachOpts 浏览器在控制台 ATTACH 帧的 data 里下发的附加参数。
+//
+// 抽成具名类型（而不是函数内的匿名 struct）是为了能单独测：这是一条
+// **跨进程线格式**（前端 serialize → 面板原样转发 → Daemon 反序列化），
+// 键名写错不会有任何编译期报错，只会静默失效 —— 与 B2 那类"PascalCase 键"
+// 缺陷同源。所以下面 console_attach_wire_test.go 会把键名逐字钉死。
+type consoleAttachOpts struct {
+	Spam struct {
+		Rules []mcprocess.SpamRule `json:"rules"`
+	} `json:"spam"`
+	// History 浏览器要求的回放行数（设置里的「保留行数」）。
+	// 0 = 没提要求 → 用默认值，见 resolveConsoleHistory。
+	History int `json:"history"`
+}
+
+// resolveConsoleHistory 把浏览器要求的回放行数夹到合法区间。
+//
+// 背景（2026-10-21 用户报「设置里的保留行数没作用到控制台上」）：
+// 回放窗口原先**写死 500**，与前端那个滑块毫无关系。而控制台每次进页签都会
+// 重新附加（= 一次重连），于是无论用户把保留行数调到 1000 还是 50000，
+// 控制台能翻的范围都只由这 500 行决定 —— 实测节点日志 43017 行、
+// 控制台只拿到 503 行，用户看到的就是"改了没用"。
+//
+// 现在由浏览器把口径传下来（ATTACH 的 data 里 history 字段），这里只负责夹取。
+//
+// 为什么必须有上限：回放发生在**每一次**附加，每行都要过网络并写进 xterm。
+// 若照单全收，一次切页签就灌 50000 行（节点实测 2.7MB），既慢又把屏幕刷满 ——
+// 正是 2026-10-05 把 2000 降到 500 的原因。5000 行（约 300KB）在
+// "翻得动"和"不卡"之间是可接受的折中；更大的值仍然对**本次会话内的实时累积**
+// 有效（那由前端 xterm scrollback 控制，不受这里约束）。
+const (
+	consoleHistoryMin = 100
+	consoleHistoryMax = 5000
+)
+
+// resolveConsoleHistory want<=0 表示浏览器没提要求（老客户端/老前端），
+// 此时保持改动前的行为（500 行），不会因为升级把别人的控制台刷满。
+func resolveConsoleHistory(want int) int {
+	switch {
+	case want <= 0:
+		return consoleHistoryLines
+	case want < consoleHistoryMin:
+		return consoleHistoryMin
+	case want > consoleHistoryMax:
+		return consoleHistoryMax
+	default:
+		return want
+	}
+}
+
 // Console 控制台双向流。
 //
 // 附加时会先回放最近的历史输出（来自实例 logs/console.log 尾部），
@@ -493,18 +543,19 @@ func (s *Server) Console(stream pb.DaemonService_ConsoleServer) error {
 		return fmt.Errorf("实例 %s 不存在", instanceID)
 	}
 
-	// 客户端（浏览器）在附加请求里带着它**当前生效的刷屏屏蔽规则**。
+	// 客户端（浏览器）在附加请求里带着它**当前生效的两份口径**：
+	//   · spam.rules —— 刷屏屏蔽规则（决定回放窗口按什么计数）；
+	//   · history     —— 设置里的「保留行数」（决定回放窗口有多深）。
 	//
 	// 为什么要这样传：判定"什么算周期性刷屏"的规则只活在前端（预制规则 + 用户自定义
 	// 正则，可逐条开关），Daemon 自己再写一套就是"第二份实现，迟早走偏"
 	//（同一个理由见 internal/panel/httpapi/console.go 里关于级别判定的注释）。
 	// 拿到规则后，回放窗口的 maxLines 就按"用户实际看得到的行"来数：
 	// 被屏蔽的心跳不再占额度（用户 2026-10-17 明确要求）。
-	var attachOpts struct {
-		Spam struct {
-			Rules []mcprocess.SpamRule `json:"rules"`
-		} `json:"spam"`
-	}
+	//
+	// 同一个道理也适用于 history：回放多深是**用户**的选择，不该由节点上的常量决定
+	//（2026-10-21 之前就是写死的 500，于是前端的「保留行数」改了也没用）。
+	var attachOpts consoleAttachOpts
 	var spam *mcprocess.SpamFilter
 	if d := strings.TrimSpace(first.Data); d != "" {
 		if err := json.Unmarshal([]byte(d), &attachOpts); err != nil {
@@ -526,10 +577,12 @@ func (s *Server) Console(stream pb.DaemonService_ConsoleServer) error {
 	// 进快照又进实时（控制台上显示两遍，即用户报的"控制台输出会输出两遍"），
 	// 要么两边都不进（永久丢行）。AttachConsole 在同一把 subMu 里完成这两件事，
 	// 而 broadcast 持的也是那把锁，于是不存在"夹在中间"的行 —— 详见其注释。
-	history, outCh, cancel := inst.AttachConsole(consoleHistoryLines, spam)
+	historyLines := resolveConsoleHistory(attachOpts.History)
+	history, outCh, cancel := inst.AttachConsole(historyLines, spam)
 	defer cancel()
 
-	s.log.Info("控制台附加", "instance", instanceID)
+	s.log.Info("控制台附加", "instance", instanceID,
+		"history", historyLines, "spam_rules", len(attachOpts.Spam.Rules))
 
 	// 发送附加成功
 	_ = stream.Send(&pb.ConsoleFrame{Type: pb.ConsoleFrame_STATUS, InstanceId: instanceID, Data: "attached"})

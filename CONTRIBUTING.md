@@ -8,8 +8,7 @@
 
 不是不欢迎，而是版权口径必须先保持单一：
 
-1. 本项目采用 **PolyForm Noncommercial 1.0.0**（见 [LICENSE](LICENSE)），
-   代码版权归项目所有者所有。
+1. 本项目采用 **MIT**（见 [LICENSE](LICENSE)），代码版权归项目所有者所有。
 2. **一旦合并了外部代码，版权就不再单一** —— 之后再想调整授权方式、把同一份代码
    用在别的产品线里，都要回头找每一位贡献者逐个取得同意。对个人项目这是长期负担。
 3. 认真审一份外部 PR 的成本也不低：能用的往往要按项目风格重写才能进主干。
@@ -44,22 +43,23 @@
 - **使用反馈**：告诉我你在什么规模的环境里用（几台节点、多少个实例、什么发行版）。
   这类信息对判断优先级非常有用，而且不需要你写一行代码。
 
-## 常见问题：到底能不能商用
+## 常见问题：能不能商用
 
-- **可以**：个人学习、研究、自用、开服给朋友玩；学校、社团、公益组织等非营利使用。
-- **不可以**：拿本软件或其修改版**对外提供收费服务**、**随主机/硬件打包售卖**、
-  **作为商业产品的一部分**发布。这类使用需要单独取得授权。
-- **拿不准就问**：边界情形（例如公益服接受捐赠抵扣服务器成本）开个 Issue 说明用途，
-  我们会给出明确答复。
+- **可以**：个人学习、研究、自用、开服；学校、社团、公益组织等非营利使用；
+  **也包括对外提供收费服务、随主机/硬件售卖、作为商业产品的一部分**。
+- **唯一要求**：保留 `LICENSE` 里的版权声明与许可文本（MIT 的署名要求）。
 
-完整条款以 [LICENSE](LICENSE) 的英文原文为准；上面的说明只是方便理解，不构成额外授权。
+> **变更记录（2026-10-21）**：此前是 PolyForm Noncommercial 1.0.0（仅限非商业）。
+> 换成 MIT 之后，"商用需另行授权"这条限制不再存在。
+
+完整条款以 [LICENSE](LICENSE) 的英文原文为准；上面的说明只是方便理解。
 
 ---
 
 ## English summary
 
 Issues are welcome. **Pull requests are not accepted at this time**, so that copyright
-ownership stays undivided. Licensed under [PolyForm Noncommercial 1.0.0](LICENSE):
-personal, hobby, educational, charitable and other noncommercial use is permitted;
-commercial use requires a separate license. For security reports, please use GitHub's
-private vulnerability reporting instead of a public issue.
+ownership stays undivided. Licensed under [MIT](LICENSE): use, modify and distribute
+freely, including commercially, as long as the copyright notice and license text are
+kept. For security reports, please use GitHub's private vulnerability reporting
+instead of a public issue.
