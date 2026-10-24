@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { applyFrpcImport, exportFrps, previewFrpcImport, type ImportPreview } from '../api'
 import { copyText } from '../clipboard'
+import './FrpConfigIO.css'
 
 // 穿透配置的导入/导出弹窗（底账 F15）。
 //
@@ -53,12 +54,11 @@ export function ImportConfigDialog({ onClose, onApplied }: { onClose: () => void
 
   return (
     <div className="modal-mask" onClick={onClose}>
-      <div
-        className="panel"
-        onClick={(e) => e.stopPropagation()}
-        style={{ width: 'min(860px, 94vw)', maxHeight: '88vh', overflowY: 'auto' }}
-      >
-        <h3>导入第三方 frpc 配置</h3>
+      <div className="panel frpio-dialog" onClick={(e) => e.stopPropagation()}>
+        <div className="frpio-head">
+          <h3>导入第三方 frpc 配置</h3>
+          <span className="muted">先解析看结果，确认无误再建线路</span>
+        </div>
         <div className="tunnels-hint">
           把服务商给的 <code>frpc.toml</code> 整段粘进来（带不带标语行都行），
           先解析看结果。<b>这一步不会创建任何线路或隧道</b>。
@@ -69,14 +69,15 @@ export function ImportConfigDialog({ onClose, onApplied }: { onClose: () => void
           onChange={(e) => setText(e.target.value)}
           placeholder={"serverAddr = \"frp.example.com\"\nserverPort = 7000\nauth.token = \"...\"\n\n[[proxies]]\nname = \"mc\"\ntype = \"tcp\"\nlocalPort = 25565\nremotePort = 25570"}
           spellCheck={false}
-          style={{ width: '100%', minHeight: 180, fontFamily: 'var(--mono, monospace)', fontSize: 12 }}
+          className="frpio-textarea"
         />
 
-        <div className="form-row" style={{ marginTop: 10 }}>
+        <div className="frpio-actions">
           <button className="primary" onClick={parse} disabled={busy || !text.trim()}>
             {busy ? '解析中…' : '解析预览'}
           </button>
           <button onClick={() => { setText(''); setRes(null) }} disabled={busy}>清空</button>
+          <span className="spacer" />
           <button onClick={onClose}>关闭</button>
         </div>
 
@@ -87,46 +88,49 @@ export function ImportConfigDialog({ onClose, onApplied }: { onClose: () => void
         )}
 
         {res && res.ok && res.line && (
-          <div style={{ marginTop: 14 }}>
-            <h4 style={{ margin: '0 0 6px' }}>线路</h4>
-            <table>
-              <tbody>
-                <tr><th style={{ width: 130 }}>服务端</th><td className="mono">{res.line.server_addr}:{res.line.server_port}</td></tr>
-                <tr><th>user</th><td className="mono">{res.line.user || '（未提供）'}</td></tr>
-                <tr>
-                  <th>token</th>
-                  <td className="mono">
-                    {res.line.has_token
-                      ? <>{res.line.token_masked} <span className="muted small">（已打码，明文不会回传）</span></>
-                      : <span className="err-text">未提供</span>}
-                  </td>
-                </tr>
-                <tr><th>传输层 TLS</th><td>{res.line.tls_enable ? '开启' : '关闭 / 未声明'}</td></tr>
-              </tbody>
-            </table>
+          <>
+            <div className="frpio-section">
+              <div className="frpio-section-title">线路</div>
+              <dl className="frpio-kv">
+                <dt>服务端</dt>
+                <dd className="mono">{res.line.server_addr}:{res.line.server_port}</dd>
+                <dt>user</dt>
+                <dd className="mono">{res.line.user || '（未提供）'}</dd>
+                <dt>token</dt>
+                <dd className="mono">
+                  {res.line.has_token
+                    ? <>{res.line.token_masked} <span className="muted">（已打码，明文不会回传）</span></>
+                    : <span className="err-text">未提供</span>}
+                </dd>
+                <dt>传输层 TLS</dt>
+                <dd>{res.line.tls_enable ? '服务商要求开启' : '关闭 / 未声明'}</dd>
+              </dl>
+            </div>
 
-            <h4 style={{ margin: '14px 0 6px' }}>隧道（{res.proxies?.length || 0} 条）</h4>
-            <table>
-              <thead>
-                <tr><th>名称</th><th>协议</th><th>本地</th><th>远端</th><th>域名</th><th>限速</th></tr>
-              </thead>
-              <tbody>
-                {(res.proxies || []).map((p, i) => (
-                  <tr key={i}>
-                    <td className="mono">{p.name || '—'}</td>
-                    <td className="mono">{p.type}</td>
-                    <td className="mono">{(p.local_ip || '127.0.0.1') + ':' + p.local_port}</td>
-                    <td className="mono">{p.remote_port || '—'}</td>
-                    <td className="mono">
-                      {(p.custom_domains && p.custom_domains.length)
-                        ? p.custom_domains.join(', ')
-                        : (p.subdomain || '—')}
-                    </td>
-                    <td className="mono">{p.bandwidth_limit || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="frpio-section">
+              <div className="frpio-section-title">隧道（{res.proxies?.length || 0} 条）</div>
+              <table className="frpio-table">
+                <thead>
+                  <tr><th>名称</th><th>协议</th><th>本地</th><th>远端</th><th>域名</th><th>限速</th></tr>
+                </thead>
+                <tbody>
+                  {(res.proxies || []).map((p, i) => (
+                    <tr key={i}>
+                      <td className="mono">{p.name || '—'}</td>
+                      <td><span className="frpio-proto">{p.type}</span></td>
+                      <td className="mono">{(p.local_ip || '127.0.0.1') + ':' + p.local_port}</td>
+                      <td className="mono">{p.remote_port || '—'}</td>
+                      <td className="mono">
+                        {(p.custom_domains && p.custom_domains.length)
+                          ? p.custom_domains.join(', ')
+                          : (p.subdomain || '—')}
+                      </td>
+                      <td className="mono">{p.bandwidth_limit || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
 
             {!!(res.warnings && res.warnings.length) && (
               <div style={{ marginTop: 12 }}>
@@ -145,7 +149,8 @@ export function ImportConfigDialog({ onClose, onApplied }: { onClose: () => void
                 </div>
               </div>
             ) : (
-              <div style={{ marginTop: 14 }}>
+              <div className="frpio-section">
+                <div className="frpio-section-title">确认导入</div>
                 <div className="form-row">
                   <input
                     placeholder={'线路名称（留空用 ' + (res.line?.server_addr || '服务端地址') + '）'}
@@ -157,13 +162,13 @@ export function ImportConfigDialog({ onClose, onApplied }: { onClose: () => void
                     {busy ? '创建中…' : '建线路与 ' + (res.proxies?.length || 0) + ' 条隧道'}
                   </button>
                 </div>
-                <div className="tunnels-hint" style={{ marginTop: 8 }}>
+                <div className="tunnels-hint">
                   会建一条<b>第三方单隧道</b>线路（不分配端口段，远端端口/域名按配置原样记录）。
                   同名线路已存在时会被拒绝。隧道建好后需在「线路分配」里绑定实例。
                 </div>
               </div>
             )}
-          </div>
+          </>
         )}
       </div>
     </div>

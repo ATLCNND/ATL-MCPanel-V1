@@ -1,0 +1,119 @@
+/* 第三方 frpc 配置的导入 / 导出弹窗。
+ *
+ * 之前这里用的是裸 <table> + 内联样式，和面板其它地方（.panel / .form-row /
+ * 表格样式）完全是两套观感。这里统一到设计 token 上，不再出现内联颜色与尺寸。
+ */
+
+.frpio-dialog {
+  width: min(880px, 94vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.frpio-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.frpio-head h3 { margin: 0; }
+.frpio-head .muted { font-size: 12px; }
+
+/* 输入区：等宽、可纵向拉伸，和「配置」页的编辑器观感一致 */
+.frpio-textarea {
+  width: 100%;
+  min-height: 200px;
+  resize: vertical;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--surface-2, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: var(--radius, 8px);
+}
+.frpio-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* 结果区：每块一个 section，标题带一条分隔线 */
+.frpio-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.frpio-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: none;
+}
+.frpio-section-title::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* 键值对（线路信息） */
+.frpio-kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 0;
+  font-size: 13px;
+}
+.frpio-kv dt { color: var(--text-muted); }
+.frpio-kv dd { margin: 0; }
+
+/* 隧道清单：与面板其它表格同款 */
+.frpio-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.frpio-table th,
+.frpio-table td {
+  padding: 7px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.frpio-table th {
+  font-weight: 500;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.frpio-table tbody tr:last-child td { border-bottom: none; }
+.frpio-table tbody tr:hover { background: var(--surface-2, transparent); }
+
+/* 协议徽标 */
+.frpio-proto {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 11px;
+  font-family: var(--mono, monospace);
+  color: var(--text-muted);
+}
+
+/* 底部按钮条：始终可见 */
+.frpio-actions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 10px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+.frpio-actions .spacer { flex: 1; }

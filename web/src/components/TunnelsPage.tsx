@@ -309,7 +309,10 @@ export default function TunnelsPage() {
   }
 
   const removeTunnel = async (t: Tunnel) => {
-    if (!confirm(`确定删除隧道「${t.name}」？公网端口 ${t.remote_port} 将被释放。`)) return
+    const warn = t.line_type === 'third_party'
+      ? `删除隧道「${t.name}」会丢掉服务商分配的名字/端口/传输参数，之后需要重新导入配置才能再用。\n确认删除？`
+      : `确定删除隧道「${t.name}」？公网端口 ${t.remote_port} 将被释放。`
+    if (!confirm(warn)) return
     try {
       await deleteTunnel(t.id)
       await load()
@@ -559,6 +562,15 @@ export default function TunnelsPage() {
                           : f.line_type === 'third_party' ? '第三方单隧道'
                           : '自建 frps'}
                       </div>
+                      {/* 第三方线路的隧道是导入时建的；如果这里是 0 条，
+                          说明隧道被删掉了（旧版本"解除绑定"会直接删行），
+                          此时"线路分配"里没有任何东西可绑 —— 必须重新导入配置。 */}
+                      {f.line_type === 'third_party' &&
+                        tunnels.filter((t) => t.frps_id === f.id).length === 0 && (
+                          <div className="err-text small">
+                            没有隧道（配置已被删除，请重新「导入配置」）
+                          </div>
+                        )}
                     </td>
                     <td className="mono">{f.host}{f.line_type === 'direct' ? '' : ':' + f.bind_port}</td>
                     <td className="mono">
@@ -713,7 +725,15 @@ export default function TunnelsPage() {
                 const st = statusOf(t)
                 return (
                   <tr key={t.id}>
-                    <td>{t.instance_name || t.instance_id}<div className="mono small">{t.name}</div></td>
+                    {/* 实例列：没绑定时必须显式写「未分配」。
+                      以前这里在 instance_id 为空时渲染空串 + 下面一行隧道名，
+                      看起来就像"已经分配给某个实例了"（用户 2026-10-24 因此误判）。 */}
+                  <td>
+                    {t.instance_id
+                      ? <>{t.instance_name || t.instance_id}</>
+                      : <span className="muted">未分配</span>}
+                    <div className="mono small">{t.name}</div>
+                  </td>
                     <td className="mono">{t.public_address}</td>
                     <td className="mono">{t.remote_port} → {t.local_port}</td>
                     <td>{t.protocol}</td>
@@ -723,8 +743,21 @@ export default function TunnelsPage() {
                     </td>
                     <td>
                       <div className="row-actions">
-                        <button onClick={() => reapply(t)} disabled={busy}>重新下发</button>
-                        <button className="danger" onClick={() => removeTunnel(t)} disabled={busy}>删除</button>
+                        {/* 未绑定实例的隧道没有"下发"这回事（第三方导入后就是这种）。
+                            以前按钮一直在，点了会拿到一句"实例不存在"并把状态染成 error。 */}
+                        {t.instance_id ? (
+                          <button onClick={() => reapply(t)} disabled={busy}>重新下发</button>
+                        ) : (
+                          <span className="muted small" title="先到「线路分配」里绑定实例">待绑定</span>
+                        )}
+                        {/* 第三方导入的隧道删掉就等于丢掉服务商给的那份配置，
+                            所以这里只允许"解除绑定"（那在绑定之后才出现）。 */}
+                        <button className="danger" onClick={() => removeTunnel(t)} disabled={busy}
+                          title={t.line_type === 'third_party'
+                            ? '删除会同时丢掉服务商给的代理名/端口/transport 参数；不建议删除'
+                            : '删除这条隧道并释放公网端口'}>
+                          删除
+                        </button>
                       </div>
                     </td>
                   </tr>

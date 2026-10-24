@@ -163,10 +163,22 @@
   position: fixed;
   inset: 0;
   background: var(--mask);
+  /* 模糊一层：遮罩本身是半透明的，背后是密集的表格时（穿透管理页就是），
+     不模糊的话文字会"透"上来，浅色模式下尤其糊。不支持 backdrop-filter 的
+     浏览器只是没有模糊，遮罩颜色仍然生效，不影响可用性。 */
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 100;
+}
+
+/* 遮罩里的面板必须**完全不透明**并带投影，否则背后内容会直接从面板里透出来。 */
+.modal-mask > .panel {
+  background: var(--bg-surface);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+  border-radius: var(--r-md, 10px);
 }
 
 /* 需要盖在其它弹窗之上时用（例如实例列表里的"授权"弹窗可能与被删除确认

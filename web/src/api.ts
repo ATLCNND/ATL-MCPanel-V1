@@ -817,6 +817,8 @@ export interface Tunnel {
   live_error: string
   public_address: string
   display_domain: string // 管理员配置的对外域名（空则展示 IP:端口）
+  /** 所属线路的类型（self_hosted / third_party / direct）——决定删除的后果 */
+  line_type?: string
 }
 
 export async function listFrps(): Promise<FrpsServer[]> {

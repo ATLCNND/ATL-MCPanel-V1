@@ -357,9 +357,9 @@ func (s *Server) handleListTunnels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := s.db.Query(`
-		SELECT t.id, t.tunnel_id, t.instance_id, i.name, t.frps_id, f.name, f.host,
+		SELECT t.id, t.tunnel_id, t.instance_id, COALESCE(i.name,''), t.frps_id, f.name, f.host,
 		       t.name, t.protocol, t.local_port, t.remote_port, t.display_domain, t.status,
-		       COALESCE(f.display_domain, '')
+		       COALESCE(f.display_domain, ''), COALESCE(f.line_type, 'self_hosted')
 		FROM tunnels t
 		LEFT JOIN instances i ON i.instance_id = t.instance_id
 		LEFT JOIN frps_servers f ON f.id = t.frps_id
@@ -387,6 +387,8 @@ func (s *Server) handleListTunnels(w http.ResponseWriter, r *http.Request) {
 		LiveStatus    string `json:"live_status"`
 		LiveError     string `json:"live_error"`
 		PublicAddress string `json:"public_address"`
+		// LineType 所属线路类型：决定"删除这条隧道"的后果（第三方的是服务商分配的固定资源）
+		LineType string `json:"line_type"`
 	}
 	list := []item{}
 	for rows.Next() {
@@ -394,7 +396,7 @@ func (s *Server) handleListTunnels(w http.ResponseWriter, r *http.Request) {
 		var iname, fname, fhost, lineDomain sql.NullString
 		if err := rows.Scan(&it.ID, &it.TunnelID, &it.InstanceID, &iname, &it.FrpsID, &fname, &fhost,
 			&it.Name, &it.Protocol, &it.LocalPort, &it.RemotePort, &it.DisplayDomain, &it.Status,
-			&lineDomain); err != nil {
+			&lineDomain, &it.LineType); err != nil {
 			continue
 		}
 		it.InstanceName = iname.String
@@ -635,6 +637,16 @@ func (s *Server) handleReapplyTunnel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "隧道不存在")
 		return
 	}
+	// 未绑定实例的隧道（第三方导入后就是这种）没有"下发"这回事：
+	// daemon 是按实例来的，没有实例就无从下发。以前这里照发不误，
+	// 结果返回 200 + "实例不存在" 并把状态改成 error —— 既误导又不该发生
+	//（用户 2026-10-24 反馈：点重新下发没反应还留个错误状态）。
+	if instanceID == "" {
+		writeErr(w, http.StatusConflict,
+			"这条隧道还没有绑定实例，无法下发（请先在「线路分配」里绑定到某个实例）")
+		return
+	}
+
 	var frpsHost, frpsToken string
 	var bindPort int32
 	if err := s.db.QueryRow(`SELECT host, bind_port, token FROM frps_servers WHERE id = ?`, frpsID).
