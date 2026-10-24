@@ -24,6 +24,12 @@ type nodeRequest struct {
 	// AuthType 凭证类型：password / key / 空（按内容自动判断，老行为）。
 	AuthType string `json:"auth_type"`
 	SSHPort  int    `json:"ssh_port"`
+	// PanelGRPCPort 该节点连面板用的 gRPC 端口（0 = 用面板全局配置的端口）。
+	// 面板的 9090 被改过端口映射、或多面板共存时用得上。
+	PanelGRPCPort int `json:"panel_grpc_port"`
+	// DaemonGRPCPort 该节点 Daemon 自己的 gRPC 监听端口（0 = 用面板全局配置）。
+	// 同一台机器上跑多个节点，或与别的服务端口冲突时需要改。
+	DaemonGRPCPort int `json:"daemon_grpc_port"`
 	// PublicIP 节点的**公网地址**（给玩家用的那一个）。
 	//
 	// 与 IP 分开的原因：IP 是"面板/运维怎么连这台机器"，常是内网或 127.0.0.1；
@@ -46,6 +52,16 @@ func normalizeAuthType(t string) string {
 	}
 }
 
+// firstNonZero 取第一个非 0 值（用于「没填就用默认」的端口字段）。
+func firstNonZero(vals ...int) int {
+	for _, v := range vals {
+		if v != 0 {
+			return v
+		}
+	}
+	return 0
+}
+
 // nodeView 节点列表项（不含 SSH 凭据）。
 type nodeView struct {
 	ID        int64  `json:"id"`
@@ -57,6 +73,9 @@ type nodeView struct {
 	HasAuth   bool   `json:"has_auth"`
 	// AuthType 当前凭据是密码还是密钥（空 = 升级前登记的老节点，自动判断）
 	AuthType string `json:"auth_type"`
+	// 两个可覆盖端口（0 = 用面板全局配置）
+	PanelGRPCPort  int `json:"panel_grpc_port"`
+	DaemonGRPCPort int `json:"daemon_grpc_port"`
 	Status    string `json:"status"`
 	// Online 界面该用的"在线/离线"：按心跳新鲜度算出来的（见 nodestatus.go）。
 	// status 只是数据库里的原始列——Daemon 失联时它**不会**自己变成 offline，
@@ -76,7 +95,8 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := s.db.Query(`SELECT id, name, ip, COALESCE(public_ip,''), ssh_user, ssh_port, ssh_auth,
-		COALESCE(ssh_auth_type,''), status, cpu, mem, last_seen FROM nodes ORDER BY id`)
+		COALESCE(ssh_auth_type,''), COALESCE(panel_grpc_port,0), COALESCE(grpc_port,0),
+		status, cpu, mem, last_seen FROM nodes ORDER BY id`)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -92,7 +112,7 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 		// 也就没法回答"这个节点到底断了多久"。
 		var lastSeen *time.Time
 		if err := rows.Scan(&v.ID, &v.Name, &v.IP, &v.PublicIP, &v.SSHUser, &v.SSHPort, &auth,
-			&v.AuthType, &v.Status, &v.CPU, &v.Mem, &lastSeen); err != nil {
+			&v.AuthType, &v.PanelGRPCPort, &v.DaemonGRPCPort, &v.Status, &v.CPU, &v.Mem, &lastSeen); err != nil {
 			continue
 		}
 		v.HasAuth = auth.String != ""
@@ -151,10 +171,13 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res, err := s.db.Exec(
-		`INSERT INTO nodes (name, ip, public_ip, ssh_user, ssh_auth, ssh_auth_type, ssh_port, grpc_port, status)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'offline')`,
+		`INSERT INTO nodes (name, ip, public_ip, ssh_user, ssh_auth, ssh_auth_type, ssh_port, grpc_port,
+		                   panel_grpc_port, status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'offline')`,
 		req.Name, req.IP, strings.TrimSpace(req.PublicIP), req.SSHUser, req.SSHAuth,
-		normalizeAuthType(req.AuthType), req.SSHPort, s.daemonPortFromListen())
+		normalizeAuthType(req.AuthType), req.SSHPort,
+		firstNonZero(req.DaemonGRPCPort, s.daemonPortFromListen()),
+		firstNonZero(req.PanelGRPCPort, 0))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -227,6 +250,15 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 		sets = append(sets, "public_ip = ?")
 		args = append(args, strings.TrimSpace(req.PublicIP))
 	}
+	// 端口覆盖：显式给了才改（0 = 交回面板默认）
+	if req.PanelGRPCPort != 0 {
+		sets = append(sets, "panel_grpc_port = ?")
+		args = append(args, req.PanelGRPCPort)
+	}
+	if req.DaemonGRPCPort != 0 {
+		sets = append(sets, "grpc_port = ?")
+		args = append(args, req.DaemonGRPCPort)
+	}
 	if len(sets) == 0 {
 		writeErr(w, http.StatusBadRequest, "没有需要更新的字段")
 		return
@@ -240,6 +272,38 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 	s.nodes.Invalidate(id)
 	s.audit(r, "update_node", strconv.FormatInt(id, 10), "")
 	writeJSON(w, http.StatusOK, map[string]string{"message": "节点已更新"})
+}
+
+// handleClearNodeCredential DELETE /api/nodes/{id}/credential
+//
+// 把节点上保存的 SSH 凭据**清掉**（密码/私钥与类型一起），节点本身保留。
+//
+// 为什么需要：SSH 凭据目前是明文存库（底账 S1）。用户想停止用"面板推部署"时，
+// 现在只能删掉整个节点再重新登记（那会丢掉实例归属、公网地址、端口覆盖等配置）。
+// 清掉凭据之后：节点照常靠 mTLS/心跳工作，只是「探测 / 部署 / 重启 Daemon / 看日志」
+// 这些走 SSH 的功能会明确报"未配置 SSH 凭据"，而不是留着一把不该留的钥匙。
+func (s *Server) handleClearNodeCredential(w http.ResponseWriter, r *http.Request) {
+	if !requireAdminIn(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id 无效")
+		return
+	}
+	res, err := s.db.Exec(`UPDATE nodes SET ssh_auth = '', ssh_auth_type = '' WHERE id = ?`, id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		writeErr(w, http.StatusNotFound, "节点不存在")
+		return
+	}
+	s.audit(r, "clear_node_credential", strconv.FormatInt(id, 10), "SSH 凭据已清除")
+	writeJSON(w, http.StatusOK, map[string]string{
+		"message": "已移除保存的 SSH 凭据（探测/部署等需要 SSH 的功能将不可用）",
+	})
 }
 
 // handleDeleteNode DELETE /api/nodes/{id}
@@ -271,9 +335,11 @@ func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request) {
 func (s *Server) loadNodeSSH(id int64) (*nodeView, string, error) {
 	var v nodeView
 	var auth sql.NullString
-	err := s.db.QueryRow(`SELECT id, name, ip, ssh_user, ssh_port, ssh_auth, COALESCE(ssh_auth_type,'')
+	err := s.db.QueryRow(`SELECT id, name, ip, COALESCE(public_ip,''), ssh_user, ssh_port, ssh_auth,
+		COALESCE(ssh_auth_type,''), COALESCE(panel_grpc_port,0), COALESCE(grpc_port,0)
 		FROM nodes WHERE id = ?`, id).
-		Scan(&v.ID, &v.Name, &v.IP, &v.SSHUser, &v.SSHPort, &auth, &v.AuthType)
+		Scan(&v.ID, &v.Name, &v.IP, &v.PublicIP, &v.SSHUser, &v.SSHPort, &auth,
+			&v.AuthType, &v.PanelGRPCPort, &v.DaemonGRPCPort)
 	if err != nil {
 		return nil, "", fmt.Errorf("节点不存在")
 	}
@@ -415,12 +481,13 @@ func (s *Server) handleDeployNode(w http.ResponseWriter, r *http.Request) {
 		Auth:         auth,
 		RemoteDir:    s.remoteInstallDir(),
 		NodeID:       nv.Name,
-		PanelAddress: s.grpcAddressFor(nv.IP),
+		PanelAddress: s.grpcAddressForNode(nv),
 		DaemonBinary: binData,
 		// 按**这个节点**算监听地址：同机绑回环、跨机绑该节点的地址。
 		// 直接把配置里的 `:9091` 下发的话，每台节点的管理口都会监听所有网卡
 		//（2026-10-02 安全审查发现内测节点的 9091 从公网可达就是这个原因）。
-		GRPCListen: s.daemonListenFor(nv.IP),
+		// 该节点自己的 Daemon 端口（nodes.grpc_port，0/缺省时用面板配置）
+		GRPCListen: s.daemonListenForWithPort(nv.IP, nv.DaemonGRPCPort),
 		ServiceName:  s.daemonServiceName,
 		// frpc 就在面板二进制旁边（面板包 bin/ 里带着）——有就一并下发，
 		// 让"给实例开公网端口"开箱可用；没有时跳过（穿透是可选能力）。
@@ -741,4 +808,33 @@ func (s *Server) grpcPublicAddress() string {
 		}
 	}
 	return host + ":" + s.grpcPort()
+}
+
+// grpcAddressForNode 该节点该连哪个「面板 gRPC 地址」。
+//
+// 与 grpcAddressFor 的区别：优先用节点自己的 panel_grpc_port 覆盖值。
+// 面板的 9090 被端口映射改过、同一台机器上跑多个面板、或不同网络环境的节点
+// 需要不同入口时，改单个节点即可，不必动全局配置（那会牵连所有节点）。
+func (s *Server) grpcAddressForNode(nv *nodeView) string {
+	addr := s.grpcAddressFor(nv.IP)
+	if nv.PanelGRPCPort <= 0 {
+		return addr
+	}
+	// 只换端口部分（地址可能是 host:port，也可能是 https://host 这类）
+	if i := strings.LastIndex(addr, ":"); i >= 0 && !strings.Contains(addr[i:], "/") {
+		return addr[:i+1] + strconv.Itoa(nv.PanelGRPCPort)
+	}
+	return addr
+}
+
+// daemonListenForWithPort 同 daemonListenFor，但端口可被节点覆盖。
+func (s *Server) daemonListenForWithPort(nodeIP string, port int) string {
+	if port <= 0 {
+		return s.daemonListenFor(nodeIP)
+	}
+	addr := s.daemonListenFor(nodeIP)
+	if i := strings.LastIndex(addr, ":"); i >= 0 {
+		return addr[:i+1] + strconv.Itoa(port)
+	}
+	return ":" + strconv.Itoa(port)
 }

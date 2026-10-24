@@ -4,6 +4,7 @@ import {
   listNodes, createNode, deleteNode, probeNode, deployNode,
   restartDaemon, daemonLogs, getPKI, getNodeCert,
   listNodeResources, uploadNodeResource, deleteNodeResource, updateNode, testNodeAuth,
+  clearNodeCredential, getLocalNode,
 } from '../api'
 import { parseServerTime } from '../time'
 import './NodesPage.css'
@@ -31,7 +32,7 @@ export default function NodesPage() {
   // 新增节点表单
   const [showAdd, setShowAdd] = useState(false)
   // auth_type：'password' | 'key' —— 显式声明凭据类型，不再靠"猜"
-  const [form, setForm] = useState({ name: '', ip: '', public_ip: '', ssh_user: 'root', ssh_auth: '', auth_type: 'password', ssh_port: '22' })
+  const [form, setForm] = useState({ name: '', ip: '', public_ip: '', ssh_user: 'root', ssh_auth: '', auth_type: 'password', ssh_port: '22', panel_grpc_port: '', daemon_grpc_port: '' })
   /** 「测试连接」的结果（登记前先验证地址 + 凭证是否可用） */
   const [authTest, setAuthTest] = useState<{ ok: boolean; text: string } | null>(null)
 
@@ -42,7 +43,10 @@ export default function NodesPage() {
    * 没填都只能删了重建（节点上的 daemon 与证书都白配了）。公网直出又恰好依赖
    * 节点公网 IP，这个缺口必须先补上。
    */
-  const [editing, setEditing] = useState<{ id: number; name: string; ip: string; public_ip: string; ssh_user: string; ssh_port: string; ssh_auth: string; auth_type: 'password' | 'key' } | null>(null)
+  /** 本机节点现状：面板和节点常在同一台机器上，能一键接进来就不该让用户填 SSH */
+  const [localNode, setLocalNode] = useState<{ listening: boolean; registered: boolean; node_name?: string; hostname: string; can_auto_deploy: boolean; message?: string; daemon_port: number } | null>(null)
+
+  const [editing, setEditing] = useState<{ id: number; name: string; ip: string; public_ip: string; ssh_user: string; ssh_port: string; ssh_auth: string; auth_type: 'password' | 'key'; panel_grpc_port: string; daemon_grpc_port: string } | null>(null)
 
   // 节点共享资源（一次只展开一个节点）
   const [resNode, setResNode] = useState<number | null>(null)
@@ -104,7 +108,8 @@ export default function NodesPage() {
 
   const load = async () => {
     try {
-      const [n, p] = await Promise.all([listNodes(), getPKI().catch(() => null)])
+      const [n, p, ln] = await Promise.all([listNodes(), getPKI().catch(() => null), getLocalNode().catch(() => null)])
+      setLocalNode(ln)
       setNodes(Array.isArray(n) ? n : [])
       setPki(p)
       setError('')
@@ -192,6 +197,12 @@ export default function NodesPage() {
     }
   }
 
+  /** 移除节点上保存的 SSH 凭据（节点本身保留） */
+  const clearCred = async (n: NodeInfo) => {
+    if (!confirm(`移除节点「${n.name}」保存的 SSH 凭据？\n\n节点会继续用 mTLS/心跳工作，但「探测 / 部署 / 重启 Daemon / 看日志」这些需要 SSH 的功能将不可用。`)) return
+    await wrap(() => clearNodeCredential(n.id), 'SSH 凭据已移除')
+  }
+
   const submitAdd = async (e: React.FormEvent) => {
     e.preventDefault()
     await wrap(() => createNode({
@@ -202,8 +213,10 @@ export default function NodesPage() {
       ssh_auth: form.ssh_auth,
       auth_type: form.auth_type as 'password' | 'key',
       ssh_port: Number(form.ssh_port) || 22,
+      panel_grpc_port: Number(form.panel_grpc_port) || 0,
+      daemon_grpc_port: Number(form.daemon_grpc_port) || 0,
     }), '节点已登记')
-    setForm({ name: '', ip: '', public_ip: '', ssh_user: 'root', ssh_auth: '', auth_type: 'password', ssh_port: '22' })
+    setForm({ name: '', ip: '', public_ip: '', ssh_user: 'root', ssh_auth: '', auth_type: 'password', ssh_port: '22', panel_grpc_port: '', daemon_grpc_port: '' })
     setAuthTest(null)
     setShowAdd(false)
   }
@@ -223,6 +236,8 @@ export default function NodesPage() {
       public_ip: editing.public_ip.trim(),
       ssh_user: editing.ssh_user,
       ssh_port: Number(editing.ssh_port) || 22,
+      panel_grpc_port: Number(editing.panel_grpc_port) || 0,
+      daemon_grpc_port: Number(editing.daemon_grpc_port) || 0,
     }
     if (editing.ssh_auth.trim()) {
       payload.ssh_auth = editing.ssh_auth.trim()
@@ -254,6 +269,23 @@ export default function NodesPage() {
           </div>
         )}
 
+        {localNode && !localNode.registered && (
+          <div className="pki-banner">
+            <span className="status status-error">本机节点未接入</span>
+            <span className="muted">
+              面板所在的这台机器（{localNode.hostname}）还没有作为节点登记。
+              {localNode.listening
+                ? `检测到 Daemon 端口 ${localNode.daemon_port} 已在监听 —— 直接填 127.0.0.1 登记即可，不需要 SSH。`
+                : '在同一台机器上跑实例时，可以直接登记为 127.0.0.1 节点（无需 SSH 凭据）。'}
+            </span>
+            <button className="small primary" onClick={() => {
+              setShowAdd(true)
+              setForm({ ...form, name: localNode.hostname || 'local', ip: '127.0.0.1', ssh_auth: '' })
+            }}>用本机地址登记</button>
+            {localNode.message && <span className="err-text">{localNode.message}</span>}
+          </div>
+        )}
+
         {showAdd && (
           <form className="node-form" onSubmit={submitAdd}>
             <h3>登记节点</h3>
@@ -268,6 +300,11 @@ export default function NodesPage() {
                 onChange={(e) => setForm({ ...form, ssh_user: e.target.value })} />
               <input placeholder="SSH 端口（默认 22）" value={form.ssh_port}
                 onChange={(e) => setForm({ ...form, ssh_port: e.target.value })} />
+              {/* 端口可覆盖：面板的 9090 被端口映射改过、或多面板共存时需要 */}
+              <input placeholder="面板连接端口（留空=默认，节点连面板用）" value={form.panel_grpc_port}
+                onChange={(e) => setForm({ ...form, panel_grpc_port: e.target.value })} />
+              <input placeholder="Daemon 端口（留空=默认 9091）" value={form.daemon_grpc_port}
+                onChange={(e) => setForm({ ...form, daemon_grpc_port: e.target.value })} />
 
               {/* 凭证类型必须显式选：以前靠内容猜，私钥少一行就被当成密码，
                   最后只报一句认证失败，用户根本不知道哪里错。 */}
@@ -323,6 +360,10 @@ export default function NodesPage() {
                 onChange={(e) => setEditing({ ...editing, ssh_user: e.target.value })} />
               <input placeholder="SSH 端口" value={editing.ssh_port}
                 onChange={(e) => setEditing({ ...editing, ssh_port: e.target.value })} />
+              <input placeholder="面板连接端口（0=默认）" value={editing.panel_grpc_port}
+                onChange={(e) => setEditing({ ...editing, panel_grpc_port: e.target.value })} />
+              <input placeholder="Daemon 端口（0=默认 9091）" value={editing.daemon_grpc_port}
+                onChange={(e) => setEditing({ ...editing, daemon_grpc_port: e.target.value })} />
               <label className="node-auth-type" style={{ gridColumn: 'span 4' }}>
                 <span className="muted">新凭据类型（留空则不修改凭据）</span>
                 <label><input type="radio" name="edit_auth_type" checked={editing.auth_type === 'password'}
@@ -356,10 +397,16 @@ export default function NodesPage() {
                   <span className="mono muted">{n.ip}</span>
                   {n.public_ip && <span className="mono muted">公网 {n.public_ip}</span>}
                   <div className="spacer" />
+                  {n.has_auth && (
+                    <button className="small danger" title="清掉保存的 SSH 凭据（节点本身保留）"
+                      onClick={() => clearCred(n)}>移除凭据</button>
+                  )}
                   <button className="small" onClick={() => setEditing({
                     id: n.id, name: n.name, ip: n.ip, public_ip: n.public_ip || '',
                     ssh_user: n.ssh_user || '', ssh_port: String(n.ssh_port || 22), ssh_auth: '',
                     auth_type: (n.auth_type === 'key' ? 'key' : 'password') as 'password' | 'key',
+                    panel_grpc_port: String(n.panel_grpc_port || 0),
+                    daemon_grpc_port: String(n.daemon_grpc_port || 0),
                   })}>编辑</button>
                   <span className="muted">实例 {n.instances} 个</span>
                   <span className="muted">最后心跳 {fmtTime(n.last_seen)}</span>
@@ -369,7 +416,9 @@ export default function NodesPage() {
                   <span>CPU 核心 {n.cpu}</span>
                   <span>内存 {(n.mem / 1024 / 1024 / 1024).toFixed(1)} GB</span>
                   <span>SSH {n.ssh_user || '—'}@{n.ip}:{n.ssh_port}</span>
-                  <span>{n.has_auth ? '已配置凭据' : '未配置凭据'}</span>
+                  <span>{n.has_auth ? `已配置${n.auth_type === 'key' ? '密钥' : n.auth_type === 'password' ? '密码' : '凭据'}` : '未配置凭据'}</span>
+                  {n.panel_grpc_port > 0 && <span>面板端口 {n.panel_grpc_port}</span>}
+                  {n.grpc_port > 0 && n.grpc_port !== 9091 && <span>Daemon 端口 {n.grpc_port}</span>}
                 </div>
 
                 {p && (

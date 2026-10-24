@@ -712,6 +712,18 @@ var migrations = []migration{
 			`ALTER TABLE nodes ADD COLUMN ssh_auth_type TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		Version: 30,
+		Name:    "node_panel_port",
+		Statements: []string{
+			// 该节点连面板用的 gRPC 端口（0 = 用面板自己的配置）。
+			//
+			// 为什么需要可覆盖：面板的 9090 可能被 NAT/端口映射改过、同机有多个面板、
+			// 或者一个面板要给不同网络环境的节点用不同入口 —— 写死一个端口时，
+			// 用户只能去改全局配置（连带影响所有节点）。
+			`ALTER TABLE nodes ADD COLUMN panel_grpc_port INTEGER NOT NULL DEFAULT 0`,
+		},
+	},
 }
 
 // migrate 应用尚未执行的迁移。

@@ -518,11 +518,15 @@ func (s *Server) Handler() http.Handler {
 
 	// 节点管理（仅 admin）
 	mux.HandleFunc("GET /api/nodes", s.requireAuth(s.handleListNodes))
+	// 本机节点探测：面板和节点常在同一台机器上，界面据此给「一键部署本机节点」
+	mux.HandleFunc("GET /api/nodes/local", s.requireAuth(s.handleLocalNodeState))
 	mux.HandleFunc("POST /api/nodes", s.requireAuth(s.handleCreateNode))
 	// 登记节点时先试连一次（地址 + 凭证），不必等保存后再点部署才发现填错
 	mux.HandleFunc("POST /api/nodes/test", s.requireAuth(s.handleTestNodeAuth))
 	mux.HandleFunc("PUT /api/nodes/{id}", s.requireAuth(s.handleUpdateNode))
 	mux.HandleFunc("DELETE /api/nodes/{id}", s.requireAuth(s.handleDeleteNode))
+	// 只清 SSH 凭据、保留节点本身（不再"想停止用面板推部署就只能删整台节点"）
+	mux.HandleFunc("DELETE /api/nodes/{id}/credential", s.requireAuth(s.handleClearNodeCredential))
 	mux.HandleFunc("POST /api/nodes/{id}/probe", s.requireAuth(s.handleProbeNode))
 	mux.HandleFunc("POST /api/nodes/{id}/deploy", s.requireAuth(s.handleDeployNode))
 	mux.HandleFunc("POST /api/nodes/{id}/daemon/restart", s.requireAuth(s.handleRestartDaemon))

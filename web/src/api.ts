@@ -1052,6 +1052,12 @@ export interface NodeInfo {
   public_ip: string
   /** 凭据类型：password / key；空串 = 升级前登记的老节点（按内容自动判断） */
   auth_type: string
+  /** 该节点连面板用的 gRPC 端口（0 = 用面板全局配置） */
+  panel_grpc_port: number
+  /** 该节点 Daemon 自己的 gRPC 端口（0 = 用面板全局配置）。列表里同时以 grpc_port 回传 */
+  daemon_grpc_port: number
+  /** 与 daemon_grpc_port 同值（后端历史字段名） */
+  grpc_port: number
   ssh_user: string
   ssh_port: number
   has_auth: boolean
@@ -1088,6 +1094,10 @@ export async function createNode(payload: {
   ssh_user?: string; ssh_auth?: string; ssh_port?: number
   /** 凭据类型：显式声明，避免"按内容猜"猜错 */
   auth_type?: 'password' | 'key' | ''
+  /** 该节点连面板用的 gRPC 端口（0 = 默认） */
+  panel_grpc_port?: number
+  /** 该节点 Daemon 自己的 gRPC 端口（0 = 默认 9091） */
+  daemon_grpc_port?: number
 }): Promise<any> {
   return apiFetch('/api/nodes', { method: 'POST', body: JSON.stringify(payload) })
 }
@@ -1103,6 +1113,26 @@ export async function testNodeAuth(payload: {
   ssh_auth: string; auth_type?: 'password' | 'key' | ''
 }): Promise<{ message: string; probe: any; ready: boolean }> {
   return apiFetch('/api/nodes/test', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+/** 清掉节点上保存的 SSH 凭据（节点本身保留，需要 SSH 的功能会明确不可用）。 */
+export async function clearNodeCredential(id: number): Promise<any> {
+  return apiFetch(`/api/nodes/${id}/credential`, { method: 'DELETE' })
+}
+
+/** 本机节点现状：面板和节点常在同一台机器上，能直接接进来就不该让用户填 SSH。 */
+export interface LocalNodeState {
+  daemon_port: number
+  listening: boolean
+  registered: boolean
+  node_name?: string
+  hostname: string
+  can_auto_deploy: boolean
+  message?: string
+}
+
+export async function getLocalNode(): Promise<LocalNodeState> {
+  return apiFetch('/api/nodes/local')
 }
 
 export async function updateNode(id: number, payload: Partial<NodeInfo> & { ssh_auth?: string }): Promise<any> {
