@@ -66,3 +66,42 @@ func TestLogTail(t *testing.T) {
 		t.Errorf("截断后应有省略号前缀，实际 %q", got[:3])
 	}
 }
+
+// 2026-10-21 真机案例（Lolia 线路）：服务端在登录阶段回中文错误，
+// frpc 把它包在 "connect to server error: …" 里。
+// 旧逻辑会把它报成「连不上 frps（地址/端口/防火墙）」，用户于是去查网络 ——
+// 而真相是**连上了、被服务端拒绝了**。这条用例把区别钉死。
+func TestClassifyServerRefusalIsNotNetworkError(t *testing.T) {
+	log := "2026-10-21 18:43:26.996 [I] [sub/root.go:142] start frpc service for config file [/tmp/x/frpc.toml]\n" +
+		"2026-10-21 18:43:26.997 [I] [client/service.go:295] try to connect to server...\n" +
+		"2026-10-21 18:43:27.149 [E] [client/service.go:280] FRPC 配置文件错误,请检查后重试,请反馈给管理员以解决这个问题\n" +
+		"2026-10-21 18:43:27.150 [W] [client/service.go:298] connect to server error: " +
+		"FRPC 配置文件错误,请检查后重试,请反馈给管理员以解决这个问题\n"
+	ok, decisive, reason := classifyFrpcSelfTestLog(log)
+	if ok || !decisive {
+		t.Fatalf("应当有结论地失败，实际 ok=%v decisive=%v", ok, decisive)
+	}
+	// 必须带上服务端原话
+	if !strings.Contains(reason, "配置文件错误") {
+		t.Errorf("应原样带出服务端消息，实际 %q", reason)
+	}
+	// 必须说清「不是网络问题」这一层
+	if strings.Contains(reason, "连不上 frps（地址/端口/防火墙）") {
+		t.Errorf("不该再把服务端拒绝说成网络不通，实际 %q", reason)
+	}
+	if !strings.Contains(reason, "拒绝") {
+		t.Errorf("应明确指出是服务端拒绝，实际 %q", reason)
+	}
+}
+
+// 纯网络失败（没有服务端消息）仍按原样报「连不上」，别被上面那条改坏。
+func TestClassifyNetworkErrorStillReported(t *testing.T) {
+	log := "2026-10-21 18:00:00.000 [W] [client/service.go:298] connect to server error: dial tcp 1.2.3.4:7000: connect: connection refused\n"
+	ok, decisive, reason := classifyFrpcSelfTestLog(log)
+	if ok || !decisive {
+		t.Fatalf("应是有结论的失败，实际 ok=%v decisive=%v", ok, decisive)
+	}
+	if !strings.Contains(reason, "拒绝") && !strings.Contains(reason, "连不上") {
+		t.Errorf("原因应可读，实际 %q", reason)
+	}
+}

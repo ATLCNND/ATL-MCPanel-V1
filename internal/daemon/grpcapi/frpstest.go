@@ -30,7 +30,12 @@ import (
 // 自检完立刻把临时代理撤掉，不留痕迹。
 const (
 	frpsTestDialTimeout = 5 * time.Second
-	frpsTestWait        = 10 * time.Second // 等 frpc 给出结论的上限
+	// 等 frpc 给出结论的上限。
+	//
+	// 2026-10-21 由 10s 放宽到 15s：同一份配置在内测节点上 300ms 就有结论，
+	// 而在构建机上（到服务商 1000ms+ 往返）10 秒都没等到 —— 超时会让用户以为
+	// "线路有问题"，其实只是这条链路慢。多等 5 秒换一个确定结论是划算的。
+	frpsTestWait        = 15 * time.Second
 	frpsTestPollEvery   = 200 * time.Millisecond
 	frpsTestTries       = 3 // 端口被占时换一个端口重试的次数
 )
@@ -138,7 +143,19 @@ remotePort = %d
 	resp.UsedPort = lastPort
 	resp.LogTail = lastLog
 	if resp.RegisterError == "" {
-		resp.RegisterError = "frpc 没有在限定时间内给出结论"
+		// 超时也要说人话：把"它到底走到哪一步"告诉用户，
+		// 否则只看到一句"没有给出结论"，既不知道是不是网络问题，也不知道等了多久。
+		switch {
+		case strings.Contains(lastLog, "try to connect to server"):
+			resp.RegisterError = fmt.Sprintf(
+				"frpc 已发起连接，但 %d 秒内既没登录成功、也没报错（到服务商的链路可能很慢或不稳；完整日志见下）",
+				int(frpsTestWait.Seconds()))
+		case lastLog == "":
+			resp.RegisterError = "frpc 没有写出任何日志（二进制没起来？见下）"
+		default:
+			resp.RegisterError = fmt.Sprintf("frpc 在 %d 秒内没有给出结论（完整日志见下）",
+				int(frpsTestWait.Seconds()))
+		}
 	}
 	resp.Error = fmt.Sprintf("线路自检未通过（TCP 可达，但注册失败）：%s", resp.RegisterError)
 	return resp, nil
@@ -217,7 +234,27 @@ func classifyFrpcSelfTestLog(log string) (ok bool, decisive bool, reason string)
 		{"connection refused", "frps 拒绝连接（服务没起？端口不对？）"},
 		{"no such host", "线路地址解析不了（域名写错？）"},
 	}
+	// ⚠️ 「服务端/客户端给的原话」优先级最高。
+	//
+	// 2026-10-21 真机案例：第三方服务商（Lolia / Sakura 这类跑自制 frps 的）在登录阶段
+	// 直接回一句中文「FRPC 配置文件错误,请检查后重试,请反馈给管理员以解决这个问题」，
+	// 而 frpc 把它包在 "connect to server error: …" 里。旧逻辑命中 connect to server error
+	// 就一口咬定「连不上 frps（地址/端口/防火墙）」—— 把服务端的拒绝说成了网络问题，
+	// 用户于是去查防火墙，方向完全错了。
+	//
+	// 现在的规则：只要 connect to server error 后面跟了具体内容，就**原样呈现**，
+	// 并明确区分「网络层连不上」与「连上了但被服务端拒绝」。
+	if i := strings.Index(lower, "connect to server error"); i >= 0 {
+		msg := serverErrorMessage(log, i)
+		if msg != "" {
+			return false, true, describeServerRefusal(msg)
+		}
+		return false, true, "frpc 连不上 frps（地址/端口/防火墙）"
+	}
 	for _, f := range failures {
+		if f.needle == "connect to server error" {
+			continue // 上面已单独处理
+		}
 		if strings.Contains(lower, f.needle) {
 			return false, true, f.reason
 		}
@@ -235,4 +272,39 @@ func logTail(s string, max int) string {
 		return s
 	}
 	return "…" + s[len(s)-max:]
+}
+
+// serverErrorMessage 从日志里取出 "connect to server error: <msg>" 的 <msg>。
+//
+// idx 是 lc（小写副本）里那个关键字的位置；真正要截取的是**原文**，
+// 因为服务端消息可能是中文，而小写只用于匹配。
+func serverErrorMessage(log string, idx int) string {
+	const key = "connect to server error"
+	if idx < 0 || idx+len(key) > len(log) {
+		return ""
+	}
+	rest := strings.TrimSpace(log[idx+len(key):])
+	rest = strings.TrimPrefix(rest, ":")
+	rest = strings.TrimSpace(rest)
+	if i := strings.IndexByte(rest, '\n'); i >= 0 {
+		rest = strings.TrimSpace(rest[:i])
+	}
+	return rest
+}
+
+// describeServerRefusal 把「服务端拒绝登录」的措辞整理成用户可以照着做的结论。
+//
+// 关键是把**责任方**说对：连上了但被拒绝 ≠ 网络不通。
+// 这类服务商（自制 frps 的那种）通常要求使用**它们自己提供的客户端**，
+// 标准 frpc 无论如何配置都过不了握手 —— 与其让用户反复改 token，不如直接说清。
+func describeServerRefusal(msg string) string {
+	low := strings.ToLower(msg)
+	looksLikeAuth := strings.Contains(msg, "配置") || strings.Contains(low, "config") ||
+		strings.Contains(low, "token") || strings.Contains(msg, "参数") ||
+		strings.Contains(msg, "认证") || strings.Contains(low, "auth")
+	if looksLikeAuth {
+		return "frps 拒绝登录（TCP 已连通，是服务端在握手阶段拒绝）：" + msg +
+			"\n提示：这类服务商若使用自制的 frps，通常只认**他们自己提供的客户端**，标准 frpc 改 token 也过不去。"
+	}
+	return "frps 拒绝了这次连接：" + msg
 }
