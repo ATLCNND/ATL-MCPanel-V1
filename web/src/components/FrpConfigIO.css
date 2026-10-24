@@ -7,10 +7,45 @@
 .frpio-dialog {
   width: min(880px, 94vw);
   max-height: 88vh;
+  /* 容器本身不滚动，交给 .frpio-body —— 这样脚注（按钮条）永远压在底部，
+     不会像 sticky 那样盖住内容。 */
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+
+  /* 内边距：这一层是弹窗自己的"不透明背景"，文字与按钮必须离边有一条余量。
+     之前 .panel 在弹窗里根本没有样式（全局没有这个类），面板只靠
+     .modal-mask > .panel 拿到背景与投影，内容却贴着边 —— 看起来像背景"没包住"
+     内容（用户 2026-10-24 反馈：背景扩大一圈，给文字和按钮留边距）。 */
+  box-sizing: border-box;
+  padding: 0;
+}
+
+/* 头部：固定不滚动，自带内边距 */
+.frpio-head {
+  padding: 18px 24px 10px;
+}
+
+/* 内容区：唯一可滚动的部分，留足内边距，滚动条也不会压到文字 */
+.frpio-body {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
+  padding: 4px 24px 18px;
+}
+
+/* 脚注：普通流里的最后一块，绝不与内容重叠 */
+.frpio-actions {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 520px) {
+  .frpio-head { padding: 14px 14px 8px; }
+  .frpio-body { padding: 4px 14px 14px; }
 }
 
 .frpio-head {
@@ -107,13 +142,14 @@
 
 /* 底部按钮条：始终可见 */
 .frpio-actions {
-  position: sticky;
-  bottom: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  padding-top: 10px;
-  background: var(--surface);
-  border-top: 1px solid var(--border);
+  margin: 0;
+  padding: 12px 24px;
+  background: var(--bg-surface);
+  /* 用 border-strong：浅色主题下 --border(#e8e8e8) 的 1px 线在白色面板上
+     几乎看不见，脚注和内容区分不开（用户反馈看不出是"底部按钮条"）。 */
+  border-top: 1px solid var(--border-strong);
 }
 .frpio-actions .spacer { flex: 1; }

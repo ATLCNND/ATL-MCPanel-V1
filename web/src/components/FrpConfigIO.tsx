@@ -59,6 +59,11 @@ export function ImportConfigDialog({ onClose, onApplied }: { onClose: () => void
           <h3>导入第三方 frpc 配置</h3>
           <span className="muted">先解析看结果，确认无误再建线路</span>
         </div>
+
+        {/* 内容区自己滚动，按钮条作为独立脚注留在底部 ——
+            以前按钮条用 sticky + 负外边距压在滚动区上，会盖住输入框下边缘
+            （用户 2026-10-24 反馈）。结构上分开之后就不存在重叠。 */}
+        <div className="frpio-body">
         <div className="tunnels-hint">
           把服务商给的 <code>frpc.toml</code> 整段粘进来（带不带标语行都行），
           先解析看结果。<b>这一步不会创建任何线路或隧道</b>。
@@ -71,15 +76,6 @@ export function ImportConfigDialog({ onClose, onApplied }: { onClose: () => void
           spellCheck={false}
           className="frpio-textarea"
         />
-
-        <div className="frpio-actions">
-          <button className="primary" onClick={parse} disabled={busy || !text.trim()}>
-            {busy ? '解析中…' : '解析预览'}
-          </button>
-          <button onClick={() => { setText(''); setRes(null) }} disabled={busy}>清空</button>
-          <span className="spacer" />
-          <button onClick={onClose}>关闭</button>
-        </div>
 
         {res && !res.ok && (
           <div className="tunnels-error" style={{ marginTop: 12 }}>
@@ -170,6 +166,16 @@ export function ImportConfigDialog({ onClose, onApplied }: { onClose: () => void
             )}
           </>
         )}
+        </div>
+
+        <div className="frpio-actions">
+          <button className="primary" onClick={parse} disabled={busy || !text.trim()}>
+            {busy ? '解析中…' : '解析预览'}
+          </button>
+          <button onClick={() => { setText(''); setRes(null) }} disabled={busy}>清空</button>
+          <span className="spacer" />
+          <button onClick={onClose}>关闭</button>
+        </div>
       </div>
     </div>
   )
