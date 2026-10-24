@@ -69,12 +69,19 @@ func (s *Server) handleApplyFrpcImport(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// token 的**位置**按导入时的原样记下来（auth / metadatas）。
+	// 服务端只认自己那个位置：实测 Lolia 只发 auth.token 会被拒，
+	// 换成 metadatas.token 才能登录；Sakura 那种则相反。换写法 = 登不上。
+	authMode := "auth"
+	if cfg.TokenField == frp.AuthModeMetadatas {
+		authMode = frp.AuthModeMetadatas
+	}
 	// 第三方线路：没有端口段（0），远端端口由服务商给定，面板不分配
 	res, err := tx.Exec(`
-		INSERT INTO frps_servers (name, host, bind_port, token, port_start, port_end, remark, display_domain, line_type)
-		VALUES (?, ?, ?, ?, 0, 0, ?, '', ?)`,
+		INSERT INTO frps_servers (name, host, bind_port, token, port_start, port_end, remark, display_domain, line_type, auth_mode, user)
+		VALUES (?, ?, ?, ?, 0, 0, ?, '', ?, ?, ?)`,
 		name, cfg.ServerAddr, cfg.ServerPort, cfg.Token,
-		"由导入生成（"+frp.MaskToken(cfg.Token)+"）", frp.LineThirdParty)
+		"由导入生成（"+frp.MaskToken(cfg.Token)+"）", frp.LineThirdParty, authMode, cfg.User)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -95,6 +102,8 @@ func (s *Server) handleApplyFrpcImport(w http.ResponseWriter, r *http.Request) {
 		}
 		// 导入的隧道**没有实例归属**：它描述的是"服务商给了什么"，
 		// 具体挂到哪个实例上由管理员之后在「线路分配」里选。
+		// name 存的就是服务商分配的代理名 —— 下发时第三方线路拿它当 proxyName，
+		// 改了名字服务端就认不出来（实测是这个现象）。
 		// 因此这里不写 local_port 的实例语义，只如实记录配置里的值。
 		if _, err := tx.Exec(`INSERT INTO tunnels (tunnel_id, instance_id, frps_id, name, protocol, local_port, remote_port, subdomain, custom_domain, status) VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, 'imported')`,
 			tunnelID, lineID, tname, p.Type, p.LocalPort, p.RemotePort, sub, domain); err != nil {

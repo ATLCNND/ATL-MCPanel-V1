@@ -755,6 +755,11 @@ type tunExtra struct {
 	UseTLS       bool
 	// PublishMode "direct" 表示公网直出（不跑 frpc）；空 = 走 frpc
 	PublishMode string
+	// AuthMode / FrpsUser：线路的登录方式与租户标识（第三方线路由导入时确定）
+	AuthMode string
+	FrpsUser string
+	// ProxyName：服务商分配的代理名（第三方线路必须原样使用）
+	ProxyName string
 }
 
 // daemonApplyTunnel 把隧道下发给 Daemon，返回 (状态, 提示信息)。
@@ -771,13 +776,23 @@ func (s *Server) daemonApplyTunnelFull(instanceID, tunnelID, name, protocol stri
 	// 线路类型决定出网方式。这里**再查一次库**而不是靠调用方传：
 	// 调用点有五个（含实例自助开端口那两条），漏一个就会出现
 	// "直连线路却按 frpc 下发"的错配 —— 那种错误在真机上表现为端口不通，极难查。
-	if ex.PublishMode == "" {
-		var lt string
-		if err := s.db.QueryRow(`SELECT COALESCE(f.line_type,'self_hosted') FROM tunnels t
-			LEFT JOIN frps_servers f ON f.id = t.frps_id WHERE t.tunnel_id = ?`, tunnelID).Scan(&lt); err == nil {
-			if frp.NormalizeLineType(lt) == frp.LineDirect {
-				ex.PublishMode = "direct"
-			}
+	// 同一次查询里把线路的认证方式、租户、第三方标记一起取出来 ——
+	// 这些都必须与 fsps 下发保持**同源**，否则会出现"线路按 metadatas 登录、
+	// 隧道却按 auth 下发"的错配（同样是真机上极难查的那一类）。
+	var lineType, authMode, frpsUser, tunnelName string
+	if err := s.db.QueryRow(`SELECT COALESCE(f.line_type,'self_hosted'), COALESCE(f.auth_mode,'auth'),
+			COALESCE(f.user,''), COALESCE(t.name,'')
+		FROM tunnels t LEFT JOIN frps_servers f ON f.id = t.frps_id WHERE t.tunnel_id = ?`, tunnelID).
+		Scan(&lineType, &authMode, &frpsUser, &tunnelName); err == nil {
+		if ex.PublishMode == "" && frp.NormalizeLineType(lineType) == frp.LineDirect {
+			ex.PublishMode = "direct"
+		}
+		ex.AuthMode = authMode
+		ex.FrpsUser = frpsUser
+		// 第三方线路：代理名必须是**服务商分配的那一串**（tunnels.name 里存的）。
+		// 自建线路不带 ProxyName，仍用 tunnel_id（保持原有行为）。
+		if frp.NormalizeLineType(lineType) == frp.LineThirdParty {
+			ex.ProxyName = tunnelName
 		}
 	}
 
@@ -805,6 +820,9 @@ func (s *Server) daemonApplyTunnelFull(instanceID, tunnelID, name, protocol stri
 		CustomDomain:  ex.CustomDomain,
 		UseTls:        ex.UseTLS,
 		PublishMode:   ex.PublishMode,
+		FrpsAuthMode:  ex.AuthMode,
+		FrpsUser:      ex.FrpsUser,
+		ProxyName:     ex.ProxyName,
 	})
 	if err != nil {
 		return "error", "下发失败: " + err.Error()

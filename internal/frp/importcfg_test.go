@@ -226,3 +226,25 @@ customDomains = ["a.example.com", "b.example.com"]
 		t.Errorf("customDomains 解析错：%v", p.CustomDomains)
 	}
 }
+
+// token 出自哪个位置必须记下来 —— 服务端只认自己那个位置（见 ImportedConfig.TokenField）。
+func TestImportRecordsTokenField(t *testing.T) {
+	cfg, err := ImportConfig(sampleLolia)
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if cfg.TokenField != "metadatas" {
+		t.Errorf("Lolia 样例的 token 来自 [metadatas]，实际记成 %q", cfg.TokenField)
+	}
+	cfg2, err := ImportConfig(sampleSakura)
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if cfg2.TokenField != "auth" {
+		t.Errorf("Sakura 样例的 token 来自 auth.token，实际记成 %q", cfg2.TokenField)
+	}
+	// user 也要能读出来（Lolia 不写 user 登不上）
+	if cfg.User != "10001" {
+		t.Errorf("user = %q", cfg.User)
+	}
+}

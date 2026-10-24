@@ -42,6 +42,15 @@ type Tunnel struct {
 	// 为什么仍然记在这张表里：它是**跨 daemon 重启**唯一活下来的地方
 	//（tunnels.json），而"容器要不要对外发布端口"这件事必须在实例启动前就知道。
 	Direct bool `json:"direct,omitempty"`
+
+	// ProxyName 覆盖 frpc 代理名。
+	//
+	// 为什么需要：面板自建线路用 tunnel_id 当代理名（唯一且 ASCII 安全），
+	// 但**第三方服务商的隧道名是他们分配的**，改了就注册不上 ——
+	// 实测 Lolia：用我们造的名字 → 服务端回「FRPC 配置文件错误」；
+	// 用他们给的那串 → start proxy success。
+	// 非空时原样使用（仍会过一次 sanitize 的字符白名单，但不再改语义）。
+	ProxyName string `json:"proxy_name,omitempty"`
 }
 
 // Server frps 服务端连接信息。
@@ -49,7 +58,23 @@ type Server struct {
 	Host     string `json:"host"`
 	BindPort int    `json:"bind_port"`
 	Token    string `json:"token"`
+
+	// AuthMode token 放在哪个字段里下发（底账 F16）。
+	//
+	//	""/"auth"   —— auth.method = "token" + auth.token（frp 官方写法，SakuraFRP 这类）
+	//	"metadatas" —— metadatas.token（Lolia 这类自建 frps 的服务商读它）
+	//
+	// 为什么必须区分：实测对 Lolia 只发 auth.token 时，登录直接被拒
+	//（服务端回「FRPC 配置文件错误」）；换成 metadatas.token 才 login success。
+	// 反过来对 Sakura 那种，加了 metadatas 反而没用、必须用 auth.token。
+	AuthMode string `json:"auth_mode,omitempty"`
+
+	// User frp 的 user 字段（服务商用来区分租户，Lolia 要求必须有）。
+	User string `json:"user,omitempty"`
 }
+
+// AuthModeMetadatas 见 Server.AuthMode。
+const AuthModeMetadatas = "metadatas"
 
 // TunnelStatus 隧道运行状态。
 type TunnelStatus struct {
@@ -730,8 +755,17 @@ func renderConfig(st *instanceFRP, dir string) (string, error) {
 	sb.WriteString("# 由 ATL-MCPanel 自动生成，请勿手工修改\n")
 	fmt.Fprintf(&sb, "serverAddr = %q\n", mServer.Host)
 	fmt.Fprintf(&sb, "serverPort = %d\n", mServer.BindPort)
+	// user 是 frp 的正式字段（服务商用来区分租户）。Lolia 这类不写就登不上。
+	if mServer.User != "" {
+		fmt.Fprintf(&sb, "user = %q\n", mServer.User)
+	}
 	if mServer.Token != "" {
-		fmt.Fprintf(&sb, "auth.method = \"token\"\nauth.token = %q\n", mServer.Token)
+		if mServer.AuthMode == AuthModeMetadatas {
+			// 服务商的自制 frps 读这个位置（frp 官方字段，随登录一起发）
+			fmt.Fprintf(&sb, "metadatas.token = %q\n", mServer.Token)
+		} else {
+			fmt.Fprintf(&sb, "auth.method = \"token\"\nauth.token = %q\n", mServer.Token)
+		}
 	}
 	fmt.Fprintf(&sb, "log.to = %q\n", filepath.Join(dir, "logs", "frpc.log"))
 	sb.WriteString("log.level = \"info\"\n")
@@ -754,7 +788,13 @@ func renderConfig(st *instanceFRP, dir string) (string, error) {
 			proto = "tcp"
 		}
 		sb.WriteString("\n[[proxies]]\n")
-		fmt.Fprintf(&sb, "name = %q\n", sanitizeProxyName(t.TunnelID))
+		// 第三方线路的代理名必须**用服务商给的**（见 Tunnel.ProxyName 的说明）；
+		// 自建线路沿用 tunnel_id。
+		proxyName := t.ProxyName
+		if proxyName == "" {
+			proxyName = t.TunnelID
+		}
+		fmt.Fprintf(&sb, "name = %q\n", sanitizeProxyName(proxyName))
 		fmt.Fprintf(&sb, "type = %q\n", proto)
 
 		switch proto {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ATLCNND/ATL-MCPanel/internal/frp"
 	pb "github.com/ATLCNND/ATL-MCPanel/internal/proto/mcpanel"
 )
 
@@ -39,16 +40,34 @@ func (s *Server) handleTestFrpsSaved(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "线路 id 无效")
 		return
 	}
-	var host, token string
+	var host, token, authMode, frpsUser, lineType string
 	var bindPort, portStart, portEnd int32
-	if err := s.db.QueryRow(`SELECT host, bind_port, token, port_start, port_end FROM frps_servers WHERE id = ?`, id).
-		Scan(&host, &bindPort, &token, &portStart, &portEnd); err != nil {
+	if err := s.db.QueryRow(`SELECT host, bind_port, token, port_start, port_end,
+			COALESCE(auth_mode,'auth'), COALESCE(user,''), COALESCE(line_type,'self_hosted')
+		FROM frps_servers WHERE id = ?`, id).
+		Scan(&host, &bindPort, &token, &portStart, &portEnd, &authMode, &frpsUser, &lineType); err != nil {
 		writeErr(w, http.StatusNotFound, "线路不存在")
 		return
 	}
+
+	// 第三方单隧道（底账 F16）：自检**必须用服务商分配的代理名与远端端口**。
+	//
+	// 为什么：这两样都是服务端侧登记的，我们自己造一个上去会被拒
+	// （实测自造 name/port → 服务端回「FRPC 配置文件错误」，看起来像网络/配置问题）。
+	// 所以从该线路下已导入的隧道里取一组真实参数；没有隧道就只能测可达性。
+	var proxyName string
+	var remotePort int32
+	if frp.NormalizeLineType(lineType) == frp.LineThirdParty {
+		_ = s.db.QueryRow(`SELECT COALESCE(name,''), COALESCE(remote_port,0)
+			FROM tunnels WHERE frps_id = ? AND remote_port > 0 ORDER BY id LIMIT 1`, id).
+			Scan(&proxyName, &remotePort)
+	}
+
 	s.runFrpsTest(w, r, frpsTestInput{
 		Host: host, BindPort: bindPort, Token: token,
 		PortStart: portStart, PortEnd: portEnd,
+		AuthMode: authMode, User: frpsUser,
+		ProxyName: proxyName, RemotePort: remotePort,
 	})
 }
 
@@ -61,6 +80,15 @@ type frpsTestInput struct {
 	PortEnd   int32  `json:"port_end"`
 	// NodeID 指定在哪个节点上测；0 = 自动挑第一个可用节点
 	NodeID int64 `json:"node_id"`
+
+	// ---- 第三方单隧道（底账 F16）----
+	// AuthMode / User：登录方式与租户标识（导入时从服务商配置里学到的）
+	AuthMode string `json:"auth_mode"`
+	User     string `json:"user"`
+	// RemotePort / ProxyName：服务商分配的远端端口与代理名。
+	// RemotePort > 0 时自检用这组真实参数试注册，不再自己分配端口。
+	RemotePort int32  `json:"remote_port"`
+	ProxyName  string `json:"proxy_name"`
 }
 
 // readFrpsTestInput 解析并校验自检输入。
@@ -113,6 +141,11 @@ func (s *Server) runFrpsTest(w http.ResponseWriter, r *http.Request, in frpsTest
 		Token:     in.Token,
 		PortStart: in.PortStart,
 		PortEnd:   in.PortEnd,
+		// 第三方线路的真实参数（空/0 时 daemon 退回"自己挑端口"的老行为）
+		RemotePort: in.RemotePort,
+		ProxyName:  in.ProxyName,
+		User:       in.User,
+		AuthMode:   in.AuthMode,
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "自检请求失败："+err.Error())

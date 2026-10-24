@@ -639,6 +639,26 @@ var migrations = []migration{
 			`ALTER TABLE tunnels ADD COLUMN use_tls INTEGER NOT NULL DEFAULT 0`,
 		},
 	},
+	{
+		Version: 25,
+		Name:    "frp_auth_mode",
+		Statements: []string{
+			// 第三方服务商的 token 放在哪个字段（底账 F16）。
+			//
+			//	auth      —— auth.method + auth.token（frp 官方写法，SakuraFRP 这类）
+			//	metadatas —— metadatas.token（Lolia 这类自建 frps 的服务商读它）
+			//
+			// 实测依据（内测节点，bundled frpc 0.61.1 对 Lolia）：
+			//   只发 auth.token            → 服务端回「FRPC 配置文件错误」，登录即失败
+			//   user + metadatas.token     → login to server success
+			//   user + 两者都发             → token in login doesn't match（多余的那个反而坏了）
+			// 所以必须精确按服务商要求只发一种，不能"都发上更保险"。
+			`ALTER TABLE frps_servers ADD COLUMN auth_mode TEXT NOT NULL DEFAULT 'auth'`,
+
+			// user：frp 的正式字段，服务商用它区分租户。Lolia 不写就登不上。
+			`ALTER TABLE frps_servers ADD COLUMN user TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 // migrate 应用尚未执行的迁移。

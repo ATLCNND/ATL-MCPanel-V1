@@ -88,6 +88,16 @@ func (s *Server) TestFrps(ctx context.Context, req *pb.TestFrpsRequest) (*pb.Tes
 	var lastPort int32
 	for attempt := 0; attempt < frpsTestTries; attempt++ {
 		port := portStart + int32(rng.Intn(span))
+		proxyName := fmt.Sprintf("atlmcpanel-selftest-%d", port)
+		// 第三方单隧道（底账 F16）：远端端口与代理名**都是服务商分配的**，
+		// 自己造一个上去必被拒（实测回「FRPC 配置文件错误」）。
+		// 面板会把该线路下真实隧道的参数传进来，这里优先用它。
+		if req.RemotePort > 0 {
+			port = req.RemotePort
+		}
+		if req.ProxyName != "" {
+			proxyName = req.ProxyName
+		}
 		lastPort = port
 
 		tmp, err := os.MkdirTemp("", "frps-selftest-")
@@ -96,22 +106,7 @@ func (s *Server) TestFrps(ctx context.Context, req *pb.TestFrpsRequest) (*pb.Tes
 		}
 		logPath := filepath.Join(tmp, "frpc.log")
 		confPath := filepath.Join(tmp, "frpc.toml")
-		conf := fmt.Sprintf(`# 由 ATL-MCPanel 线路自检生成，用完即删
-serverAddr = %q
-serverPort = %d
-auth.method = "token"
-auth.token = %q
-log.to = %q
-log.level = "info"
-
-[[proxies]]
-name = %q
-type = "tcp"
-localIP = "127.0.0.1"
-localPort = %d
-remotePort = %d
-`, host, bindPort, req.Token, logPath,
-			fmt.Sprintf("atlmcpanel-selftest-%d", port), port, port)
+		conf := selfTestConfig(host, bindPort, req, logPath, proxyName, port)
 
 		if err := os.WriteFile(confPath, []byte(conf), 0o600); err != nil {
 			os.RemoveAll(tmp)
@@ -307,4 +302,38 @@ func describeServerRefusal(msg string) string {
 			"\n提示：这类服务商若使用自制的 frps，通常只认**他们自己提供的客户端**，标准 frpc 改 token 也过不去。"
 	}
 	return "frps 拒绝了这次连接：" + msg
+}
+
+// selfTestConfig 生成自检用的 frpc 配置。
+//
+// 与 renderConfig 分开写（而不是复用）：自检的配置是**一次性的探测**，要的是
+// 「用最小集合复现一次登录 + 注册」；复用生产那条路会把日志路径、证书、
+// vhost 等一堆无关变量带进来，出问题反而更难判断。
+//
+// 但**认证方式必须与生产一致**：第三方服务商的 token 位置不同，
+// 这里若固定写 auth.token，对 Lolia 这类就永远自检失败（实测就是这样）。
+func selfTestConfig(host string, bindPort int32, req *pb.TestFrpsRequest, logPath, proxyName string, remotePort int32) string {
+	var sb strings.Builder
+	sb.WriteString("# 由 ATL-MCPanel 线路自检生成，用完即删\n")
+	fmt.Fprintf(&sb, "serverAddr = %q\n", host)
+	fmt.Fprintf(&sb, "serverPort = %d\n", bindPort)
+	if req.User != "" {
+		fmt.Fprintf(&sb, "user = %q\n", req.User)
+	}
+	if req.Token != "" {
+		if req.AuthMode == "metadatas" {
+			fmt.Fprintf(&sb, "metadatas.token = %q\n", req.Token)
+		} else {
+			fmt.Fprintf(&sb, "auth.method = \"token\"\nauth.token = %q\n", req.Token)
+		}
+	}
+	fmt.Fprintf(&sb, "log.to = %q\n", logPath)
+	sb.WriteString("log.level = \"info\"\n")
+	sb.WriteString("\n[[proxies]]\n")
+	fmt.Fprintf(&sb, "name = %q\n", proxyName)
+	sb.WriteString("type = \"tcp\"\n")
+	sb.WriteString("localIP = \"127.0.0.1\"\n")
+	fmt.Fprintf(&sb, "localPort = %d\n", remotePort)
+	fmt.Fprintf(&sb, "remotePort = %d\n", remotePort)
+	return sb.String()
 }

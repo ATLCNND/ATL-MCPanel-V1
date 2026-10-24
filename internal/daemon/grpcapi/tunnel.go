@@ -52,6 +52,9 @@ func (s *Server) ApplyTunnel(ctx context.Context, req *pb.TunnelRequest) (*pb.Op
 		Host:     req.FrpsHost,
 		BindPort: int(req.FrpsPort),
 		Token:    req.FrpsToken,
+		// 第三方线路的登录方式与租户标识（底账 F16）
+		AuthMode: req.FrpsAuthMode,
+		User:     req.FrpsUser,
 	}, frp.Tunnel{
 		TunnelID:      req.TunnelId,
 		Name:          name,
@@ -61,6 +64,8 @@ func (s *Server) ApplyTunnel(ctx context.Context, req *pb.TunnelRequest) (*pb.Op
 		Subdomain:     req.Subdomain,
 		CustomDomains: splitDomains(req.CustomDomain),
 		UseTLS:        req.UseTls,
+		// 服务商分配的代理名，必须原样使用（改了注册不上）
+		ProxyName: req.ProxyName,
 	})
 	if err != nil {
 		s.log.Error("应用隧道失败", "instance", req.InstanceId, "tunnel", req.TunnelId, "error", err)

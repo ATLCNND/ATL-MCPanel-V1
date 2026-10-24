@@ -2785,6 +2785,12 @@ type TunnelRequest struct {
 	CustomDomain string `protobuf:"bytes,13,opt,name=custom_domain,json=customDomain,proto3" json:"custom_domain,omitempty"`
 	// use_tls：传输层 TLS（对应 frpc 的 transport.tls.enable）。
 	UseTls bool `protobuf:"varint,14,opt,name=use_tls,json=useTls,proto3" json:"use_tls,omitempty"`
+	// frps_auth_mode / frps_user：第三方线路的登录方式（auth / metadatas）与租户标识。
+	// 见 frps_servers.auth_mode / user 的说明（migrate v25）。
+	FrpsAuthMode string `protobuf:"bytes,16,opt,name=frps_auth_mode,json=frpsAuthMode,proto3" json:"frps_auth_mode,omitempty"`
+	FrpsUser     string `protobuf:"bytes,17,opt,name=frps_user,json=frpsUser,proto3" json:"frps_user,omitempty"`
+	// proxy_name：服务商分配的代理名（第三方线路必须原样使用）。
+	ProxyName string `protobuf:"bytes,18,opt,name=proxy_name,json=proxyName,proto3" json:"proxy_name,omitempty"`
 	// publish_mode：这条隧道怎么出网。
 	//
 	//	"frpc"（默认/空）—— 在节点上跑 frpc，按上面的字段生成代理
@@ -2921,6 +2927,27 @@ func (x *TunnelRequest) GetUseTls() bool {
 		return x.UseTls
 	}
 	return false
+}
+
+func (x *TunnelRequest) GetFrpsAuthMode() string {
+	if x != nil {
+		return x.FrpsAuthMode
+	}
+	return ""
+}
+
+func (x *TunnelRequest) GetFrpsUser() string {
+	if x != nil {
+		return x.FrpsUser
+	}
+	return ""
+}
+
+func (x *TunnelRequest) GetProxyName() string {
+	if x != nil {
+		return x.ProxyName
+	}
+	return ""
 }
 
 func (x *TunnelRequest) GetPublishMode() string {
@@ -3113,12 +3140,20 @@ func (x *ListTunnelsResponse) GetTunnels() []*TunnelInfo {
 // 线路自检的输入：管理员在「穿透管理」里填的那几个字段。
 // 允许在**保存之前**调用，所以配置是**传进来的**而不是按 id 查库。
 type TestFrpsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Host          string                 `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`
-	BindPort      int32                  `protobuf:"varint,2,opt,name=bind_port,json=bindPort,proto3" json:"bind_port,omitempty"`
-	Token         string                 `protobuf:"bytes,3,opt,name=token,proto3" json:"token,omitempty"`
-	PortStart     int32                  `protobuf:"varint,4,opt,name=port_start,json=portStart,proto3" json:"port_start,omitempty"` // 端口段：自检会从中挑一个端口试注册
-	PortEnd       int32                  `protobuf:"varint,5,opt,name=port_end,json=portEnd,proto3" json:"port_end,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Host      string                 `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`
+	BindPort  int32                  `protobuf:"varint,2,opt,name=bind_port,json=bindPort,proto3" json:"bind_port,omitempty"`
+	Token     string                 `protobuf:"bytes,3,opt,name=token,proto3" json:"token,omitempty"`
+	PortStart int32                  `protobuf:"varint,4,opt,name=port_start,json=portStart,proto3" json:"port_start,omitempty"` // 端口段：自检会从中挑一个端口试注册
+	PortEnd   int32                  `protobuf:"varint,5,opt,name=port_end,json=portEnd,proto3" json:"port_end,omitempty"`
+	// ---- 第三方单隧道（底账 F16）----
+	// 服务商的远端端口与代理名**都是他们分配的**，我们自己造一个会被拒绝
+	// （实测：自造 name/port → 服务端回「FRPC 配置文件错误」）。
+	// remote_port > 0 时自检用这一组真实参数去试注册，忽略端口段。
+	RemotePort    int32  `protobuf:"varint,6,opt,name=remote_port,json=remotePort,proto3" json:"remote_port,omitempty"`
+	ProxyName     string `protobuf:"bytes,7,opt,name=proxy_name,json=proxyName,proto3" json:"proxy_name,omitempty"`
+	User          string `protobuf:"bytes,8,opt,name=user,proto3" json:"user,omitempty"`
+	AuthMode      string `protobuf:"bytes,9,opt,name=auth_mode,json=authMode,proto3" json:"auth_mode,omitempty"` // auth / metadatas
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3186,6 +3221,34 @@ func (x *TestFrpsRequest) GetPortEnd() int32 {
 		return x.PortEnd
 	}
 	return 0
+}
+
+func (x *TestFrpsRequest) GetRemotePort() int32 {
+	if x != nil {
+		return x.RemotePort
+	}
+	return 0
+}
+
+func (x *TestFrpsRequest) GetProxyName() string {
+	if x != nil {
+		return x.ProxyName
+	}
+	return ""
+}
+
+func (x *TestFrpsRequest) GetUser() string {
+	if x != nil {
+		return x.User
+	}
+	return ""
+}
+
+func (x *TestFrpsRequest) GetAuthMode() string {
+	if x != nil {
+		return x.AuthMode
+	}
+	return ""
 }
 
 // 线路自检的结果。分两步给出，便于定位问题出在哪一层：
@@ -5527,7 +5590,7 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\x13DeleteBackupRequest\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x1b\n" +
-	"\tbackup_id\x18\x02 \x01(\tR\bbackupId\"\xd6\x03\n" +
+	"\tbackup_id\x18\x02 \x01(\tR\bbackupId\"\xb8\x04\n" +
 	"\rTunnelRequest\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x1b\n" +
@@ -5547,7 +5610,11 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\x0edisplay_domain\x18\v \x01(\tR\rdisplayDomain\x12\x1c\n" +
 	"\tsubdomain\x18\f \x01(\tR\tsubdomain\x12#\n" +
 	"\rcustom_domain\x18\r \x01(\tR\fcustomDomain\x12\x17\n" +
-	"\ause_tls\x18\x0e \x01(\bR\x06useTls\x12!\n" +
+	"\ause_tls\x18\x0e \x01(\bR\x06useTls\x12$\n" +
+	"\x0efrps_auth_mode\x18\x10 \x01(\tR\ffrpsAuthMode\x12\x1b\n" +
+	"\tfrps_user\x18\x11 \x01(\tR\bfrpsUser\x12\x1d\n" +
+	"\n" +
+	"proxy_name\x18\x12 \x01(\tR\tproxyName\x12!\n" +
 	"\fpublish_mode\x18\x0f \x01(\tR\vpublishMode\"5\n" +
 	"\x12ListTunnelsRequest\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
@@ -5564,14 +5631,20 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\x06status\x18\x05 \x01(\tR\x06status\x12\x14\n" +
 	"\x05error\x18\x06 \x01(\tR\x05error\"D\n" +
 	"\x13ListTunnelsResponse\x12-\n" +
-	"\atunnels\x18\x01 \x03(\v2\x13.mcpanel.TunnelInfoR\atunnels\"\x92\x01\n" +
+	"\atunnels\x18\x01 \x03(\v2\x13.mcpanel.TunnelInfoR\atunnels\"\x83\x02\n" +
 	"\x0fTestFrpsRequest\x12\x12\n" +
 	"\x04host\x18\x01 \x01(\tR\x04host\x12\x1b\n" +
 	"\tbind_port\x18\x02 \x01(\x05R\bbindPort\x12\x14\n" +
 	"\x05token\x18\x03 \x01(\tR\x05token\x12\x1d\n" +
 	"\n" +
 	"port_start\x18\x04 \x01(\x05R\tportStart\x12\x19\n" +
-	"\bport_end\x18\x05 \x01(\x05R\aportEnd\"\x93\x02\n" +
+	"\bport_end\x18\x05 \x01(\x05R\aportEnd\x12\x1f\n" +
+	"\vremote_port\x18\x06 \x01(\x05R\n" +
+	"remotePort\x12\x1d\n" +
+	"\n" +
+	"proxy_name\x18\a \x01(\tR\tproxyName\x12\x12\n" +
+	"\x04user\x18\b \x01(\tR\x04user\x12\x1b\n" +
+	"\tauth_mode\x18\t \x01(\tR\bauthMode\"\x93\x02\n" +
 	"\x10TestFrpsResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\x12\x17\n" +

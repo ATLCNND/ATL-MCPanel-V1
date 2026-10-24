@@ -47,7 +47,14 @@ type ImportedConfig struct {
 	// User frp v0.52+ 的 user 字段（HTTP Basic 用户名，Lolia 用它区分租户）
 	User string
 	// Token 历史上漂过三个位置：auth.token（现行）/ [metadatas] token（Lolia）/ 老式顶层 token
-	Token   string
+	Token string
+	// TokenField 记下 token **出自哪个位置**：「auth」/「metadatas」/「top」。
+	//
+	// 为什么必须记住：这不只是格式问题 —— 服务端只认自己那个位置。
+	// 实测对 Lolia：只发 auth.token 会被拒（回「FRPC 配置文件错误」），
+	// 必须发 metadatas.token；而对 SakuraFRP 这类则要 auth.token。
+	// 导入时记下来，运行时才能按原样还原。
+	TokenField string
 	TLS     ImportedTLS
 	Proxies []ImportedProxy
 	// Warnings 解析过程中遇到的、不影响导入但值得告知用户的情况（不认识的键等）
@@ -237,6 +244,14 @@ func applyKey(cfg *ImportedConfig, cur *ImportedProxy, scope int, full string, v
 		if cfg.Token == "" {
 			// 同一份文件里可能有多个位置都写了 token（服务商互相抄），取先出现的
 			cfg.Token = s
+			switch full {
+			case "metadatas.token":
+				cfg.TokenField = "metadatas"
+			case "auth.token":
+				cfg.TokenField = "auth"
+			default:
+				cfg.TokenField = "top"
+			}
 		} else if cfg.Token != s {
 			cfg.Warnings = append(cfg.Warnings,
 				fmt.Sprintf("第 %d 行：%s 与前面出现的 token 不一致，已忽略这一处", lineNo, full))

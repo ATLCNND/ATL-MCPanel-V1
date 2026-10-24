@@ -434,3 +434,69 @@ func TestApplyDirectPersistsAndSkipsFrpc(t *testing.T) {
 		t.Error("HasDirect 不该串到别的实例上")
 	}
 }
+
+// 第三方线路的登录方式与代理名（底账 F16）。
+//
+// 这两条都是**实测踩出来的**：对 Lolia 只发 auth.token 会被服务端拒
+//（回「FRPC 配置文件错误」），必须发 metadatas.token；而代理名必须是服务商
+// 分配的那一串，换成我们的 tunnel_id 同样注册不上。
+func TestRenderConfigMetadatasAuth(t *testing.T) {
+	dir := t.TempDir()
+	st := &instanceFRP{
+		server: Server{
+			Host: "tw-1.example.com", BindPort: 60000, Token: "tok-abc",
+			AuthMode: AuthModeMetadatas, User: "11600",
+		},
+		tunnels: map[string]Tunnel{
+			"t1": {
+				TunnelID: "t1", Protocol: "tcp", LocalPort: 25565, RemotePort: 62722,
+				ProxyName: "88b34eae800a4b518fff3075be83920d",
+			},
+		},
+	}
+	cfg, err := renderConfig(st, dir)
+	if err != nil {
+		t.Fatalf("生成配置失败: %v", err)
+	}
+	if !strings.Contains(cfg, `metadatas.token = "tok-abc"`) {
+		t.Errorf("metadatas 模式应写 metadatas.token\n%s", cfg)
+	}
+	if strings.Contains(cfg, `auth.token`) {
+		t.Errorf("metadatas 模式**不应**再写 auth.token（实测多写一个反而被拒）\n%s", cfg)
+	}
+	if !strings.Contains(cfg, `user = "11600"`) {
+		t.Errorf("应写 user 字段（服务商用它区分租户）\n%s", cfg)
+	}
+	// 代理名必须是服务商给的那串，而不是 tunnel_id
+	if !strings.Contains(cfg, `name = "88b34eae800a4b518fff3075be83920d"`) {
+		t.Errorf("应使用 ProxyName 作为代理名\n%s", cfg)
+	}
+	if strings.Contains(cfg, `name = "t1"`) {
+		t.Errorf("不该退回 tunnel_id 当代理名\n%s", cfg)
+	}
+}
+
+// 默认（auth 模式）行为不能被上面那条改坏。
+func TestRenderConfigDefaultAuthStillWorks(t *testing.T) {
+	dir := t.TempDir()
+	st := &instanceFRP{
+		server:  Server{Host: "1.2.3.4", BindPort: 7000, Token: "tok"},
+		tunnels: map[string]Tunnel{"t1": {TunnelID: "t1", Protocol: "tcp", LocalPort: 25565, RemotePort: 25570}},
+	}
+	cfg, err := renderConfig(st, dir)
+	if err != nil {
+		t.Fatalf("生成配置失败: %v", err)
+	}
+	if !strings.Contains(cfg, `auth.token = "tok"`) {
+		t.Errorf("默认模式应写 auth.token\n%s", cfg)
+	}
+	if strings.Contains(cfg, "metadatas.token") {
+		t.Errorf("默认模式不该出现 metadatas.token\n%s", cfg)
+	}
+	if strings.Contains(cfg, "user = ") {
+		t.Errorf("没有 User 时不该写 user 字段\n%s", cfg)
+	}
+	if !strings.Contains(cfg, `name = "t1"`) {
+		t.Errorf("没有 ProxyName 时应沿用 tunnel_id\n%s", cfg)
+	}
+}

@@ -572,6 +572,13 @@ message TunnelRequest {
   string custom_domain = 13;
   // use_tls：传输层 TLS（对应 frpc 的 transport.tls.enable）。
   bool use_tls = 14;
+  // frps_auth_mode / frps_user：第三方线路的登录方式（auth / metadatas）与租户标识。
+  // 见 frps_servers.auth_mode / user 的说明（migrate v25）。
+  string frps_auth_mode = 16;
+  string frps_user = 17;
+  // proxy_name：服务商分配的代理名（第三方线路必须原样使用）。
+  string proxy_name = 18;
+
   // publish_mode：这条隧道怎么出网。
   //   "frpc"（默认/空）—— 在节点上跑 frpc，按上面的字段生成代理
   //   "direct"        —— 公网直出：**不跑 frpc**，端口由实例自己对外监听；
@@ -605,6 +612,15 @@ message TestFrpsRequest {
   string token = 3;
   int32 port_start = 4;  // 端口段：自检会从中挑一个端口试注册
   int32 port_end = 5;
+
+  // ---- 第三方单隧道（底账 F16）----
+  // 服务商的远端端口与代理名**都是他们分配的**，我们自己造一个会被拒绝
+  //（实测：自造 name/port → 服务端回「FRPC 配置文件错误」）。
+  // remote_port > 0 时自检用这一组真实参数去试注册，忽略端口段。
+  int32 remote_port = 6;
+  string proxy_name = 7;
+  string user = 8;
+  string auth_mode = 9;  // auth / metadatas
 }
 
 // 线路自检的结果。分两步给出，便于定位问题出在哪一层：
