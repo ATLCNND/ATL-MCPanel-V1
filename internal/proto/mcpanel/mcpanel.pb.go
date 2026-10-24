@@ -2794,6 +2794,10 @@ type TunnelRequest struct {
 	// 服务商分配的传输参数（Lolia 这类缺了就起不来）：对应 [proxies.transport]。
 	BandwidthLimit     string `protobuf:"bytes,19,opt,name=bandwidth_limit,json=bandwidthLimit,proto3" json:"bandwidth_limit,omitempty"`
 	BandwidthLimitMode string `protobuf:"bytes,20,opt,name=bandwidth_limit_mode,json=bandwidthLimitMode,proto3" json:"bandwidth_limit_mode,omitempty"`
+	// 传输层 TLS（三态：空 = 不写 / "true" / "false"）。
+	// SakuraFRP 这类要求显式 disableCustomTLSFirstByte=false，缺了会「连上但无响应」。
+	TlsEnable                 string `protobuf:"bytes,21,opt,name=tls_enable,json=tlsEnable,proto3" json:"tls_enable,omitempty"`
+	TlsDisableCustomFirstByte string `protobuf:"bytes,22,opt,name=tls_disable_custom_first_byte,json=tlsDisableCustomFirstByte,proto3" json:"tls_disable_custom_first_byte,omitempty"`
 	// publish_mode：这条隧道怎么出网。
 	//
 	//	"frpc"（默认/空）—— 在节点上跑 frpc，按上面的字段生成代理
@@ -2963,6 +2967,20 @@ func (x *TunnelRequest) GetBandwidthLimit() string {
 func (x *TunnelRequest) GetBandwidthLimitMode() string {
 	if x != nil {
 		return x.BandwidthLimitMode
+	}
+	return ""
+}
+
+func (x *TunnelRequest) GetTlsEnable() string {
+	if x != nil {
+		return x.TlsEnable
+	}
+	return ""
+}
+
+func (x *TunnelRequest) GetTlsDisableCustomFirstByte() string {
+	if x != nil {
+		return x.TlsDisableCustomFirstByte
 	}
 	return ""
 }
@@ -3175,9 +3193,12 @@ type TestFrpsRequest struct {
 	BandwidthLimit     string `protobuf:"bytes,10,opt,name=bandwidth_limit,json=bandwidthLimit,proto3" json:"bandwidth_limit,omitempty"`
 	BandwidthLimitMode string `protobuf:"bytes,11,opt,name=bandwidth_limit_mode,json=bandwidthLimitMode,proto3" json:"bandwidth_limit_mode,omitempty"`
 	// dial_only：只测 TCP 可达、不跑 frpc 注册（公网直出线路用）。
-	DialOnly      bool `protobuf:"varint,12,opt,name=dial_only,json=dialOnly,proto3" json:"dial_only,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	DialOnly bool `protobuf:"varint,12,opt,name=dial_only,json=dialOnly,proto3" json:"dial_only,omitempty"`
+	// 传输层 TLS（与 TunnelRequest 同名同义）
+	TlsEnable                 string `protobuf:"bytes,13,opt,name=tls_enable,json=tlsEnable,proto3" json:"tls_enable,omitempty"`
+	TlsDisableCustomFirstByte string `protobuf:"bytes,14,opt,name=tls_disable_custom_first_byte,json=tlsDisableCustomFirstByte,proto3" json:"tls_disable_custom_first_byte,omitempty"`
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
 }
 
 func (x *TestFrpsRequest) Reset() {
@@ -3292,6 +3313,20 @@ func (x *TestFrpsRequest) GetDialOnly() bool {
 		return x.DialOnly
 	}
 	return false
+}
+
+func (x *TestFrpsRequest) GetTlsEnable() string {
+	if x != nil {
+		return x.TlsEnable
+	}
+	return ""
+}
+
+func (x *TestFrpsRequest) GetTlsDisableCustomFirstByte() string {
+	if x != nil {
+		return x.TlsDisableCustomFirstByte
+	}
+	return ""
 }
 
 // 线路自检的结果。分两步给出，便于定位问题出在哪一层：
@@ -5633,7 +5668,7 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\x13DeleteBackupRequest\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x1b\n" +
-	"\tbackup_id\x18\x02 \x01(\tR\bbackupId\"\x93\x05\n" +
+	"\tbackup_id\x18\x02 \x01(\tR\bbackupId\"\xf4\x05\n" +
 	"\rTunnelRequest\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x1b\n" +
@@ -5659,7 +5694,10 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\n" +
 	"proxy_name\x18\x12 \x01(\tR\tproxyName\x12'\n" +
 	"\x0fbandwidth_limit\x18\x13 \x01(\tR\x0ebandwidthLimit\x120\n" +
-	"\x14bandwidth_limit_mode\x18\x14 \x01(\tR\x12bandwidthLimitMode\x12!\n" +
+	"\x14bandwidth_limit_mode\x18\x14 \x01(\tR\x12bandwidthLimitMode\x12\x1d\n" +
+	"\n" +
+	"tls_enable\x18\x15 \x01(\tR\ttlsEnable\x12@\n" +
+	"\x1dtls_disable_custom_first_byte\x18\x16 \x01(\tR\x19tlsDisableCustomFirstByte\x12!\n" +
 	"\fpublish_mode\x18\x0f \x01(\tR\vpublishMode\"5\n" +
 	"\x12ListTunnelsRequest\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
@@ -5676,7 +5714,7 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\x06status\x18\x05 \x01(\tR\x06status\x12\x14\n" +
 	"\x05error\x18\x06 \x01(\tR\x05error\"D\n" +
 	"\x13ListTunnelsResponse\x12-\n" +
-	"\atunnels\x18\x01 \x03(\v2\x13.mcpanel.TunnelInfoR\atunnels\"\xfb\x02\n" +
+	"\atunnels\x18\x01 \x03(\v2\x13.mcpanel.TunnelInfoR\atunnels\"\xdc\x03\n" +
 	"\x0fTestFrpsRequest\x12\x12\n" +
 	"\x04host\x18\x01 \x01(\tR\x04host\x12\x1b\n" +
 	"\tbind_port\x18\x02 \x01(\x05R\bbindPort\x12\x14\n" +
@@ -5693,7 +5731,10 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\x0fbandwidth_limit\x18\n" +
 	" \x01(\tR\x0ebandwidthLimit\x120\n" +
 	"\x14bandwidth_limit_mode\x18\v \x01(\tR\x12bandwidthLimitMode\x12\x1b\n" +
-	"\tdial_only\x18\f \x01(\bR\bdialOnly\"\x93\x02\n" +
+	"\tdial_only\x18\f \x01(\bR\bdialOnly\x12\x1d\n" +
+	"\n" +
+	"tls_enable\x18\r \x01(\tR\ttlsEnable\x12@\n" +
+	"\x1dtls_disable_custom_first_byte\x18\x0e \x01(\tR\x19tlsDisableCustomFirstByte\"\x93\x02\n" +
 	"\x10TestFrpsResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\x12\x17\n" +

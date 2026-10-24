@@ -334,6 +334,14 @@ func selfTestConfig(host string, bindPort int32, req *pb.TestFrpsRequest, logPat
 			fmt.Fprintf(&sb, "auth.method = \"token\"\nauth.token = %q\n", req.Token)
 		}
 	}
+	// 传输层 TLS 必须与生产下发一致：SakuraFRP 要求
+	// disableCustomTLSFirstByte=false，缺了会「TCP 连上但服务端不响应」。
+	if req.TlsEnable != "" {
+		fmt.Fprintf(&sb, "transport.tls.enable = %s\n", req.TlsEnable)
+	}
+	if req.TlsDisableCustomFirstByte != "" {
+		fmt.Fprintf(&sb, "transport.tls.disableCustomTLSFirstByte = %s\n", req.TlsDisableCustomFirstByte)
+	}
 	fmt.Fprintf(&sb, "log.to = %q\n", logPath)
 	sb.WriteString("log.level = \"info\"\n")
 	sb.WriteString("\n[[proxies]]\n")

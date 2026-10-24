@@ -35,6 +35,9 @@ type ExportOptions struct {
 	Header string
 	// User frp 的 user 字段（第三方线路的租户标识，Lolia 这类必须写）。
 	User string
+	// 传输层 TLS（三态字符串，空 = 不输出）
+	TLSEnable                 string
+	TLSDisableCustomFirstByte string
 }
 
 // RenderStandardConfig 把一条线路及其隧道渲染成标准 frpc TOML。
@@ -59,6 +62,13 @@ func RenderStandardConfig(server Server, tunnels []Tunnel, opts ExportOptions) (
 	fmt.Fprintf(&sb, "serverPort = %d\n", server.BindPort)
 	if opts.User != "" {
 		fmt.Fprintf(&sb, "user = %q\n", opts.User)
+	}
+	// 传输层 TLS：三态，只有导出对象里写过才输出（沿用隧道上的取值）
+	if opts.TLSEnable != "" {
+		fmt.Fprintf(&sb, "transport.tls.enable = %s\n", opts.TLSEnable)
+	}
+	if opts.TLSDisableCustomFirstByte != "" {
+		fmt.Fprintf(&sb, "transport.tls.disableCustomTLSFirstByte = %s\n", opts.TLSDisableCustomFirstByte)
 	}
 	if opts.IncludeToken && server.Token != "" {
 		if opts.UseLoliaTokenStyle {

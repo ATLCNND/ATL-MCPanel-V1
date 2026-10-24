@@ -456,17 +456,34 @@ export default function TunnelsPage() {
               <option value="third_party">第三方单隧道（固定远端端口/域名）</option>
               <option value="direct">公网直出（不走穿透）</option>
             </select>
-            <input placeholder="名称（如：香港高防线路）" value={fName} onChange={(e) => setFName(e.target.value)} />
-            <input
-              placeholder={fLineType === 'direct' ? '节点公网 IP（玩家直连它）' : '公网地址（IP 或域名）'}
-              value={fHost}
-              onChange={(e) => setFHost(e.target.value)}
-            />
-            {fLineType !== 'direct' && (
-              <input placeholder="frps 端口" value={fBindPort} onChange={(e) => setFBindPort(e.target.value)} style={{ width: 90 }} />
-            )}
-            {fLineType !== 'direct' && (
-              <input placeholder="认证 token（可选）" value={fToken} onChange={(e) => setFToken(e.target.value)} />
+            {/* 第三方单隧道：地址、端口、token、隧道全靠服务商的配置决定，
+                手填这些既没用也容易填错（多了/少了字段服务端直接拒）。
+                所以这里**只给导入入口**，不给填写框。 */}
+            {fLineType === 'third_party' ? (
+              <>
+                <button className="primary" type="button" onClick={() => setShowImport(true)}
+                  title="粘贴服务商给的 frpc 配置，解析后自动建线路与隧道（含 token 位置、代理名、transport 参数）">
+                  导入配置
+                </button>
+                <span className="muted">
+                  第三方线路的地址 / 端口 / token / 隧道名都由服务商分配，请直接导入他们给的 frpc 配置
+                </span>
+              </>
+            ) : (
+              <>
+                <input placeholder="名称（如：香港高防线路）" value={fName} onChange={(e) => setFName(e.target.value)} />
+                <input
+                  placeholder={fLineType === 'direct' ? '节点公网 IP（玩家直连它）' : '公网地址（IP 或域名）'}
+                  value={fHost}
+                  onChange={(e) => setFHost(e.target.value)}
+                />
+                {fLineType !== 'direct' && (
+                  <input placeholder="frps 端口" value={fBindPort} onChange={(e) => setFBindPort(e.target.value)} style={{ width: 90 }} />
+                )}
+                {fLineType !== 'direct' && (
+                  <input placeholder="认证 token（可选）" value={fToken} onChange={(e) => setFToken(e.target.value)} />
+                )}
+              </>
             )}
             {/* 端口段只对自建 frps 有意义：第三方单隧道的远端端口是服务商给的，
                 公网直出根本没有"远端端口"这个概念 —— 给它们显示一段没人用的数字只会误导。 */}
@@ -483,19 +500,25 @@ export default function TunnelsPage() {
               style={{ width: 220 }}
               title="该线路上所有实例端口对外展示用这个域名（填纯域名，不用带端口，端口会自动拼上）"
             />
-            <button className="primary" onClick={submitFrps} disabled={busy}>添加</button>
+            {fLineType !== 'third_party' && (
+              <button className="primary" onClick={submitFrps} disabled={busy}>添加</button>
+            )}
             {/* 添加前先测：地址/token/端口段填错时当场就能看出来，
                 而不是等实例下发隧道、玩家连不上才发现 */}
-            <button
-              onClick={() => runTest('form', {
-                host: fHost, bind_port: Number(fBindPort) || 7000, token: fToken,
-                port_start: Number(fStart) || 25565, port_end: Number(fEnd) || 25600,
-              })}
-              disabled={testing !== null || !fHost.trim()}
-              title="在节点上真的连一次并注册一个临时端口，随后撤销"
-            >
-              {testing === 'form' ? '测试中…' : '测试连接'}
-            </button>
+            {/* 第三方线路的自检要拿真实隧道参数（导入之后在列表里点「自检」），
+                这里没有 host/token 可测，所以不显示 */}
+            {fLineType !== 'third_party' && (
+              <button
+                onClick={() => runTest('form', {
+                  host: fHost, bind_port: Number(fBindPort) || 7000, token: fToken,
+                  port_start: Number(fStart) || 25565, port_end: Number(fEnd) || 25600,
+                })}
+                disabled={testing !== null || !fHost.trim()}
+                title="在节点上真的连一次并注册一个临时端口，随后撤销"
+              >
+                {testing === 'form' ? '测试中…' : '测试连接'}
+              </button>
+            )}
           </div>
 
           {renderTest('form')}

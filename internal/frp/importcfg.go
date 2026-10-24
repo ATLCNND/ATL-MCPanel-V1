@@ -25,6 +25,15 @@ type ImportedTLS struct {
 	Enable bool
 	// DisableCustomTLSFirstByte transport.tls.disableCustomTLSFirstByte
 	DisableCustomTLSFirstByte bool
+	// EnableSet / DisableCustomTLSFirstByteSet 记「配置里到底有没有写这一项」。
+	//
+	// 为什么必须是三态而不是 bool：这两项的 frp 默认值与「显式 false」含义相反。
+	// SakuraFRP 的样例显式写了 transport.tls.disableCustomTLSFirstByte = false
+	// （要求发自定义首字节），而 frp 默认是 true。只存 bool 就分不出
+	// 「没写，用默认」和「写了 false，必须照发」—— 后者缺了会导致
+	// TCP 连上之后服务端一直不响应（实测表现正是「没有在限定时间内给出结论」）。
+	EnableSet                    bool
+	DisableCustomTLSFirstByteSet bool
 }
 
 // ImportedProxy 一条隧道（frpc 的 [[proxies]]）。
@@ -264,8 +273,10 @@ func applyKey(cfg *ImportedConfig, cur *ImportedProxy, scope int, full string, v
 	// ---- 传输层 TLS ----
 	case "transport.tls.enable", "proxies.transport.tls.enable":
 		cfg.TLS.Enable = asBool(val)
+		cfg.TLS.EnableSet = true
 	case "transport.tls.disableCustomTLSFirstByte", "proxies.transport.tls.disableCustomTLSFirstByte":
 		cfg.TLS.DisableCustomTLSFirstByte = asBool(val)
+		cfg.TLS.DisableCustomTLSFirstByteSet = true
 	// ---- 隧道（必须在 [[proxies]] 里）----
 	case "name", "type", "localIP", "localPort", "remotePort", "subdomain", "customDomains",
 		"proxies.transport.bandwidthLimit", "proxies.transport.bandwidthLimitMode",

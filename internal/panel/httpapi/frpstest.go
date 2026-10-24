@@ -66,13 +66,14 @@ func (s *Server) handleTestFrpsSaved(w http.ResponseWriter, r *http.Request) {
 	// 为什么：这两样都是服务端侧登记的，我们自己造一个上去会被拒
 	// （实测自造 name/port → 服务端回「FRPC 配置文件错误」，看起来像网络/配置问题）。
 	// 所以从该线路下已导入的隧道里取一组真实参数；没有隧道就只能测可达性。
-	var proxyName, bwLimit, bwMode string
+	var proxyName, bwLimit, bwMode, tlsEnable, tlsFirstByte string
 	var remotePort int32
 	if frp.NormalizeLineType(lineType) == frp.LineThirdParty {
 		_ = s.db.QueryRow(`SELECT COALESCE(name,''), COALESCE(remote_port,0),
-				COALESCE(bandwidth_limit,''), COALESCE(bandwidth_limit_mode,'')
+				COALESCE(bandwidth_limit,''), COALESCE(bandwidth_limit_mode,''),
+				COALESCE(tls_enable,''), COALESCE(tls_disable_custom_first_byte,'')
 			FROM tunnels WHERE frps_id = ? AND remote_port > 0 ORDER BY id LIMIT 1`, id).
-			Scan(&proxyName, &remotePort, &bwLimit, &bwMode)
+			Scan(&proxyName, &remotePort, &bwLimit, &bwMode, &tlsEnable, &tlsFirstByte)
 	}
 
 	s.runFrpsTest(w, r, frpsTestInput{
@@ -82,6 +83,8 @@ func (s *Server) handleTestFrpsSaved(w http.ResponseWriter, r *http.Request) {
 		ProxyName: proxyName, RemotePort: remotePort,
 		// 传输参数也要带上：服务端把它当成隧道定义的一部分校验
 		BandwidthLimit: bwLimit, BandwidthLimitMode: bwMode,
+		// 传输层 TLS 同理（缺了会连上但无响应）
+		TLSEnable: tlsEnable, TLSDisableCustomFirstByte: tlsFirstByte,
 	})
 }
 
@@ -106,6 +109,9 @@ type frpsTestInput struct {
 	// 服务商的传输参数：自检必须与生产下发完全一致，否则服务端照样拒
 	BandwidthLimit     string `json:"bandwidth_limit"`
 	BandwidthLimitMode string `json:"bandwidth_limit_mode"`
+	// 传输层 TLS（三态，空 = 不写）
+	TLSEnable                 string `json:"tls_enable"`
+	TLSDisableCustomFirstByte string `json:"tls_disable_custom_first_byte"`
 }
 
 // readFrpsTestInput 解析并校验自检输入。
@@ -165,6 +171,8 @@ func (s *Server) runFrpsTest(w http.ResponseWriter, r *http.Request, in frpsTest
 		AuthMode:           in.AuthMode,
 		BandwidthLimit:     in.BandwidthLimit,
 		BandwidthLimitMode: in.BandwidthLimitMode,
+		TlsEnable:                 in.TLSEnable,
+		TlsDisableCustomFirstByte: in.TLSDisableCustomFirstByte,
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "自检请求失败："+err.Error())

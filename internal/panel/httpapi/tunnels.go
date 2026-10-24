@@ -779,6 +779,9 @@ type tunExtra struct {
 	// 服务商分配的传输参数（缺了服务端会拒，见 frp.Tunnel 的说明）
 	BandwidthLimit     string
 	BandwidthLimitMode string
+	// 传输层 TLS（三态，空 = 沿用 frp 默认）
+	TLSEnable                 string
+	TLSDisableCustomFirstByte string
 }
 
 // daemonApplyTunnel 把隧道下发给 Daemon，返回 (状态, 提示信息)。
@@ -798,14 +801,17 @@ func (s *Server) daemonApplyTunnelFull(instanceID, tunnelID, name, protocol stri
 	// 同一次查询里把线路的认证方式、租户、第三方标记一起取出来 ——
 	// 这些都必须与 fsps 下发保持**同源**，否则会出现"线路按 metadatas 登录、
 	// 隧道却按 auth 下发"的错配（同样是真机上极难查的那一类）。
-	var lineType, authMode, frpsUser, tunnelName, bwLimit, bwMode string
+	var lineType, authMode, frpsUser, tunnelName, bwLimit, bwMode, tlsEnable, tlsFirstByte string
 	if err := s.db.QueryRow(`SELECT COALESCE(f.line_type,'self_hosted'), COALESCE(f.auth_mode,'auth'),
 			COALESCE(f.user,''), COALESCE(t.name,''),
-			COALESCE(t.bandwidth_limit,''), COALESCE(t.bandwidth_limit_mode,'')
+			COALESCE(t.bandwidth_limit,''), COALESCE(t.bandwidth_limit_mode,''),
+			COALESCE(t.tls_enable,''), COALESCE(t.tls_disable_custom_first_byte,'')
 		FROM tunnels t LEFT JOIN frps_servers f ON f.id = t.frps_id WHERE t.tunnel_id = ?`, tunnelID).
-		Scan(&lineType, &authMode, &frpsUser, &tunnelName, &bwLimit, &bwMode); err == nil {
+		Scan(&lineType, &authMode, &frpsUser, &tunnelName, &bwLimit, &bwMode, &tlsEnable, &tlsFirstByte); err == nil {
 		ex.BandwidthLimit = bwLimit
 		ex.BandwidthLimitMode = bwMode
+		ex.TLSEnable = tlsEnable
+		ex.TLSDisableCustomFirstByte = tlsFirstByte
 		if ex.PublishMode == "" && frp.NormalizeLineType(lineType) == frp.LineDirect {
 			ex.PublishMode = "direct"
 		}
@@ -847,6 +853,8 @@ func (s *Server) daemonApplyTunnelFull(instanceID, tunnelID, name, protocol stri
 		ProxyName:     ex.ProxyName,
 		BandwidthLimit:     ex.BandwidthLimit,
 		BandwidthLimitMode: ex.BandwidthLimitMode,
+		TlsEnable:                 ex.TLSEnable,
+		TlsDisableCustomFirstByte: ex.TLSDisableCustomFirstByte,
 	})
 	if err != nil {
 		return "error", "下发失败: " + err.Error()

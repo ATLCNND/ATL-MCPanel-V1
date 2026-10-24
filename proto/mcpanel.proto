@@ -582,6 +582,10 @@ message TunnelRequest {
   // 服务商分配的传输参数（Lolia 这类缺了就起不来）：对应 [proxies.transport]。
   string bandwidth_limit = 19;
   string bandwidth_limit_mode = 20;
+  // 传输层 TLS（三态：空 = 不写 / "true" / "false"）。
+  // SakuraFRP 这类要求显式 disableCustomTLSFirstByte=false，缺了会「连上但无响应」。
+  string tls_enable = 21;
+  string tls_disable_custom_first_byte = 22;
 
   // publish_mode：这条隧道怎么出网。
   //   "frpc"（默认/空）—— 在节点上跑 frpc，按上面的字段生成代理
@@ -630,6 +634,9 @@ message TestFrpsRequest {
   string bandwidth_limit_mode = 11;
   // dial_only：只测 TCP 可达、不跑 frpc 注册（公网直出线路用）。
   bool dial_only = 12;
+  // 传输层 TLS（与 TunnelRequest 同名同义）
+  string tls_enable = 13;
+  string tls_disable_custom_first_byte = 14;
 }
 
 // 线路自检的结果。分两步给出，便于定位问题出在哪一层：

@@ -55,7 +55,8 @@ func (s *Server) handleExportFrps(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := s.db.Query(
 		`SELECT tunnel_id, COALESCE(name,''), COALESCE(protocol,'tcp'), local_port, remote_port,
-		        COALESCE(bandwidth_limit,''), COALESCE(bandwidth_limit_mode,'')
+		        COALESCE(bandwidth_limit,''), COALESCE(bandwidth_limit_mode,''),
+		        COALESCE(tls_enable,''), COALESCE(tls_disable_custom_first_byte,'')
 		 FROM tunnels WHERE frps_id = ? ORDER BY tunnel_id`, id)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -64,11 +65,18 @@ func (s *Server) handleExportFrps(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	tunnels := []frp.Tunnel{}
+	firstTLSEnable, firstTLSFirstByte := "", ""
 	for rows.Next() {
 		var t frp.Tunnel
 		if err := rows.Scan(&t.TunnelID, &t.Name, &t.Protocol, &t.LocalPort, &t.RemotePort,
-			&t.BandwidthLimit, &t.BandwidthLimitMode); err != nil {
+			&t.BandwidthLimit, &t.BandwidthLimitMode, &t.TLSEnable, &t.TLSDisableCustomFirstByte); err != nil {
 			continue
+		}
+		if firstTLSEnable == "" && t.TLSEnable != "" {
+			firstTLSEnable = t.TLSEnable
+		}
+		if firstTLSFirstByte == "" && t.TLSDisableCustomFirstByte != "" {
+			firstTLSFirstByte = t.TLSDisableCustomFirstByte
 		}
 		tunnels = append(tunnels, t)
 	}
@@ -89,6 +97,9 @@ func (s *Server) handleExportFrps(w http.ResponseWriter, r *http.Request) {
 			UseLoliaTokenStyle: style == frp.AuthModeMetadatas,
 			Header:             "ATL-MCPanel 导出：" + name,
 			User:               frpsUser,
+			// 传输层 TLS 取自该线路下第一条隧道的导入结果（同一线路内一致）
+			TLSEnable:                 firstTLSEnable,
+			TLSDisableCustomFirstByte: firstTLSFirstByte,
 		},
 	)
 	if err != nil {

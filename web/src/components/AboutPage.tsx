@@ -36,8 +36,10 @@ export default function AboutPage() {
       <section className="about-card">
         <div className="about-card-title">项目链接</div>
         <div className="about-links">
-          <a href="https://github.com/ATLCNND/ATL-MCPanel" target="_blank" rel="noreferrer noopener">GitHub 仓库 ↗</a>
-          <a href="https://github.com/ATLCNND/ATL-MCPanel/blob/main/README.md" target="_blank" rel="noreferrer noopener">项目文档 ↗</a>
+          {/* 指向**公开**仓库：私人仓库外人打不开，指过去只会看到 404。
+              文档也指公开仓那一套（docs/ 是面向公众重写过的版本）。 */}
+          <a href="https://github.com/ATLCNND/ATL-MCPanel-V1" target="_blank" rel="noreferrer noopener">GitHub 仓库 ↗</a>
+          <a href="https://github.com/ATLCNND/ATL-MCPanel-V1/tree/main/docs" target="_blank" rel="noreferrer noopener">项目文档 ↗</a>
         </div>
       </section>
     </div>

@@ -68,6 +68,8 @@ func (s *Server) ApplyTunnel(ctx context.Context, req *pb.TunnelRequest) (*pb.Op
 		ProxyName:          req.ProxyName,
 		BandwidthLimit:     req.BandwidthLimit,
 		BandwidthLimitMode: req.BandwidthLimitMode,
+		TLSEnable:                 req.TlsEnable,
+		TLSDisableCustomFirstByte: req.TlsDisableCustomFirstByte,
 	})
 	if err != nil {
 		s.log.Error("应用隧道失败", "instance", req.InstanceId, "tunnel", req.TunnelId, "error", err)

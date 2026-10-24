@@ -107,9 +107,19 @@ func (s *Server) handleApplyFrpcImport(w http.ResponseWriter, r *http.Request) {
 		// 因此这里不写 local_port 的实例语义，只如实记录配置里的值。
 		// 服务商的传输参数（bandwidthLimit 等）必须一起存：Lolia 的服务端把它当成
 		// 隧道定义的一部分校验，缺了就回「FRPC 配置文件错误」（实测）。
-		if _, err := tx.Exec(`INSERT INTO tunnels (tunnel_id, instance_id, frps_id, name, protocol, local_port, remote_port, subdomain, custom_domain, bandwidth_limit, bandwidth_limit_mode, status) VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'imported')`,
+		// 传输层 TLS：只有配置里**显式写了**才记（三态），否则留空沿用 frp 默认
+		tlsEnable, tlsFirstByte := "", ""
+		if cfg.TLS.EnableSet {
+			tlsEnable = boolStr(cfg.TLS.Enable)
+		}
+		if cfg.TLS.DisableCustomTLSFirstByteSet {
+			tlsFirstByte = boolStr(cfg.TLS.DisableCustomTLSFirstByte)
+		}
+		if _, err := tx.Exec(`INSERT INTO tunnels (tunnel_id, instance_id, frps_id, name, protocol, local_port, remote_port, subdomain, custom_domain,
+				bandwidth_limit, bandwidth_limit_mode, tls_enable, tls_disable_custom_first_byte, status)
+				VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'imported')`,
 			tunnelID, lineID, tname, p.Type, p.LocalPort, p.RemotePort, sub, domain,
-			p.BandwidthLimit, p.BandwidthLimitMode); err != nil {
+			p.BandwidthLimit, p.BandwidthLimitMode, tlsEnable, tlsFirstByte); err != nil {
 			writeErr(w, http.StatusInternalServerError, "写入隧道失败："+err.Error())
 			return
 		}
@@ -138,3 +148,11 @@ func (s *Server) handleApplyFrpcImport(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+
+// boolStr 三态落库用：true/false → "true"/"false"。
+func boolStr(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}

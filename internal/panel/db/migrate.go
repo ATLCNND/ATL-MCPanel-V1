@@ -685,6 +685,19 @@ var migrations = []migration{
 			`ALTER TABLE nodes ADD COLUMN public_ip TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		Version: 28,
+		Name:    "tunnel_transport_tls",
+		Statements: []string{
+			// 传输层 TLS 的两个开关（底账 F16，第三方服务商常有）。
+			//
+			// 存**三态文本**而不是布尔：空串 = 没写、沿用 frp 默认；
+			// 'true'/'false' = 服务商显式要求。SakuraFRP 要求显式 false，
+			// 而 frp 默认是 true —— 分不出这两者就会「TCP 连上但服务端不响应」。
+			`ALTER TABLE tunnels ADD COLUMN tls_enable TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE tunnels ADD COLUMN tls_disable_custom_first_byte TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 // migrate 应用尚未执行的迁移。

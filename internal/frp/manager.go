@@ -51,6 +51,14 @@ type Tunnel struct {
 	BandwidthLimit     string `json:"bandwidth_limit,omitempty"`
 	BandwidthLimitMode string `json:"bandwidth_limit_mode,omitempty"`
 
+	// 传输层 TLS（"" = 不写这一项，沿用 frp 默认；"true"/"false" = 显式写）。
+	//
+	// 为什么是三态字符串而不是 bool：SakuraFRP 这类要求显式
+	//   transport.tls.disableCustomTLSFirstByte = false（发自定义首字节），
+	// 而 frp 的默认值是 true。写不出来就表现为「TCP 连上了、但服务端一直不响应」。
+	TLSEnable                 string `json:"tls_enable,omitempty"`
+	TLSDisableCustomFirstByte string `json:"tls_disable_custom_first_byte,omitempty"`
+
 	// ProxyName 覆盖 frpc 代理名。
 	//
 	// 为什么需要：面板自建线路用 tunnel_id 当代理名（唯一且 ASCII 安全），
@@ -767,6 +775,11 @@ func renderConfig(st *instanceFRP, dir string) (string, error) {
 	if mServer.User != "" {
 		fmt.Fprintf(&sb, "user = %q\n", mServer.User)
 	}
+	// 传输层 TLS 是**客户端级**配置（不是 proxies 级），写在这里。
+	// 取值来自该实例任意一条隧道的导入结果（同一线路下所有隧道一致）。
+	if tlsLines := clientTLSLines(st); tlsLines != "" {
+		sb.WriteString(tlsLines)
+	}
 	if mServer.Token != "" {
 		if mServer.AuthMode == AuthModeMetadatas {
 			// 服务商的自制 frps 读这个位置（frp 官方字段，随登录一起发）
@@ -917,4 +930,23 @@ func (m *Manager) InstanceTraffic(instanceID string) (inTotal, outTotal, inRate,
 		inRate, outRate = m.sampler.Rate(in, out)
 	}
 	return in, out, inRate, outRate, cn, true
+}
+
+// clientTLSLines 生成 frpc 客户端级的 transport.tls.* 配置行。
+//
+// 三态：字段为空表示**不写**（沿用 frp 默认）；"true"/"false" 表示服务商显式要求。
+// SakuraFRP 的样例是 enable=false + disableCustomTLSFirstByte=false ——
+// 少了后者，TCP 能连上但服务端一直不回应（实测就是这样）。
+func clientTLSLines(st *instanceFRP) string {
+	var sb strings.Builder
+	for _, t := range st.tunnels {
+		if t.TLSEnable != "" {
+			fmt.Fprintf(&sb, "transport.tls.enable = %s\n", t.TLSEnable)
+		}
+		if t.TLSDisableCustomFirstByte != "" {
+			fmt.Fprintf(&sb, "transport.tls.disableCustomTLSFirstByte = %s\n", t.TLSDisableCustomFirstByte)
+		}
+		break // 同一实例内取值一致，取第一条即可
+	}
+	return sb.String()
 }
