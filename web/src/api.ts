@@ -1050,6 +1050,8 @@ export interface NodeInfo {
   ip: string
   /** 玩家连它的公网地址（公网直出线路必须与它一致；可能为空） */
   public_ip: string
+  /** 凭据类型：password / key；空串 = 升级前登记的老节点（按内容自动判断） */
+  auth_type: string
   ssh_user: string
   ssh_port: number
   has_auth: boolean
@@ -1084,8 +1086,23 @@ export async function createNode(payload: {
   /** 玩家连它的公网地址（公网直出用），可留空 */
   public_ip?: string
   ssh_user?: string; ssh_auth?: string; ssh_port?: number
+  /** 凭据类型：显式声明，避免"按内容猜"猜错 */
+  auth_type?: 'password' | 'key' | ''
 }): Promise<any> {
   return apiFetch('/api/nodes', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+/**
+ * 登记节点前先试连一次（地址 + 凭证是否可用）。
+ *
+ * 失败会带回具体原因（私钥解析不了 / 认证被拒 / 端口不通 …），
+ * 不必先保存、再点部署、再读一条模糊报错。
+ */
+export async function testNodeAuth(payload: {
+  ip: string; ssh_port?: number; ssh_user?: string
+  ssh_auth: string; auth_type?: 'password' | 'key' | ''
+}): Promise<{ message: string; probe: any; ready: boolean }> {
+  return apiFetch('/api/nodes/test', { method: 'POST', body: JSON.stringify(payload) })
 }
 
 export async function updateNode(id: number, payload: Partial<NodeInfo> & { ssh_auth?: string }): Promise<any> {

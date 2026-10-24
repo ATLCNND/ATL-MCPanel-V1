@@ -59,6 +59,9 @@ type Options struct {
 	// 留空则用 $ATL_SSH_KNOWN_HOSTS，再退回 ~/.ssh/atlmcpanel_known_hosts。
 	KnownHostsFile string
 
+	// AuthType 凭据类型：AuthPassword / AuthKey / 空（老数据，按内容自动判断）。
+	AuthType string
+
 	// OnHostKey 每次校验主机密钥后回调（addr、指纹、是否首次）。
 	// 供调用方记日志/审计；不做校验决策，决策在 hostKeyCallback 里。
 	OnHostKey func(addr, fingerprint string, first bool)
@@ -90,15 +93,9 @@ func Dial(o Options) (*Client, error) {
 		user = "root"
 	}
 
-	var auths []ssh.AuthMethod
-	if strings.Contains(o.Auth, "PRIVATE KEY") {
-		signer, err := ssh.ParsePrivateKey([]byte(o.Auth))
-		if err != nil {
-			return nil, fmt.Errorf("解析 SSH 私钥失败: %w", err)
-		}
-		auths = append(auths, ssh.PublicKeys(signer))
-	} else {
-		auths = append(auths, ssh.Password(o.Auth))
+	auths, err := authMethods(o)
+	if err != nil {
+		return nil, err
 	}
 
 	cfg := &ssh.ClientConfig{
@@ -624,4 +621,63 @@ WantedBy=multi-user.target
 // shellQuote 单引号转义，防止路径中的特殊字符被 shell 解释。
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// 凭据类型的取值（与 nodes.ssh_auth_type 一致）。
+const (
+	AuthPassword = "password"
+	AuthKey      = "key"
+)
+
+// ValidateAuth 在**保存前**校验凭据形式，返回能直接展示给用户的错误。
+//
+// 为什么要单独有它：以前只有"连一次才知道对不对"，用户得先保存、再点部署、
+// 再读一条含义模糊的报错。登记节点时就把格式问题挡住，体验完全不同。
+func ValidateAuth(authType, auth string) error {
+	switch authType {
+	case AuthKey:
+		if _, err := ssh.ParsePrivateKey([]byte(auth)); err != nil {
+			return fmt.Errorf("私钥无法解析：%v（需要完整的 BEGIN/END PRIVATE KEY 块，注意别少了末尾那行）", err)
+		}
+		return nil
+	case AuthPassword:
+		if strings.TrimSpace(auth) == "" {
+			return fmt.Errorf("凭证类型选了密码，但密码是空的")
+		}
+		return nil
+	case "":
+		return nil
+	default:
+		return fmt.Errorf("未知的凭证类型 %q（只能是 password 或 key）", authType)
+	}
+}
+
+// authMethods 按**显式类型**构造认证方式。
+//
+// AuthType 为空是「老数据」语义：沿用以前那套「内容里含 PRIVATE KEY 就按私钥、否则按密码」
+// 的猜测（升级前登记的节点必须继续能用）。显式给了类型就**只**用那一种 ——
+// 猜错的后果很隐蔽：私钥少一行会被当成密码，最后只报一句「认证失败」，用户不知道错在哪。
+func authMethods(o Options) ([]ssh.AuthMethod, error) {
+	switch o.AuthType {
+	case AuthKey:
+		signer, err := ssh.ParsePrivateKey([]byte(o.Auth))
+		if err != nil {
+			return nil, fmt.Errorf("私钥无法解析：%w（需要完整的 BEGIN/END PRIVATE KEY 块）", err)
+		}
+		return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
+	case AuthPassword:
+		if strings.TrimSpace(o.Auth) == "" {
+			return nil, fmt.Errorf("凭证类型是密码，但密码为空")
+		}
+		return []ssh.AuthMethod{ssh.Password(o.Auth)}, nil
+	default:
+		if strings.Contains(o.Auth, "PRIVATE KEY") {
+			signer, err := ssh.ParsePrivateKey([]byte(o.Auth))
+			if err != nil {
+				return nil, fmt.Errorf("解析 SSH 私钥失败: %w", err)
+			}
+			return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
+		}
+		return []ssh.AuthMethod{ssh.Password(o.Auth)}, nil
+	}
 }

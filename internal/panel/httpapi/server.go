@@ -519,6 +519,8 @@ func (s *Server) Handler() http.Handler {
 	// 节点管理（仅 admin）
 	mux.HandleFunc("GET /api/nodes", s.requireAuth(s.handleListNodes))
 	mux.HandleFunc("POST /api/nodes", s.requireAuth(s.handleCreateNode))
+	// 登记节点时先试连一次（地址 + 凭证），不必等保存后再点部署才发现填错
+	mux.HandleFunc("POST /api/nodes/test", s.requireAuth(s.handleTestNodeAuth))
 	mux.HandleFunc("PUT /api/nodes/{id}", s.requireAuth(s.handleUpdateNode))
 	mux.HandleFunc("DELETE /api/nodes/{id}", s.requireAuth(s.handleDeleteNode))
 	mux.HandleFunc("POST /api/nodes/{id}/probe", s.requireAuth(s.handleProbeNode))

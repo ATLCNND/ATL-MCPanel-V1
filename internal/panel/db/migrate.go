@@ -698,6 +698,20 @@ var migrations = []migration{
 			`ALTER TABLE tunnels ADD COLUMN tls_disable_custom_first_byte TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		Version: 29,
+		Name:    "node_auth_type",
+		Statements: []string{
+			// 节点凭据的**类型**：'' = 未指定（老数据，按内容自动判断）/ 'password' / 'key'。
+			//
+			// 为什么要显式存：以前靠「字符串里有没有 PRIVATE KEY」去猜 —— 猜错的后果
+			// 很隐蔽（私钥少一行就被当成密码，最后只报一句认证失败，用户不知道错在哪）。
+			// 面板也要把这个值原样展示出来（列表里能看见「密钥 / 密码」）。
+			//
+			// 空串必须保留：升级前登记的节点没有这个字段，行为要与以前完全一致。
+			`ALTER TABLE nodes ADD COLUMN ssh_auth_type TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 // migrate 应用尚未执行的迁移。

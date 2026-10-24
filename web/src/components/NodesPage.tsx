@@ -3,7 +3,7 @@ import {
   NodeInfo, NodeProbe, PKIInfo, NodeResource,
   listNodes, createNode, deleteNode, probeNode, deployNode,
   restartDaemon, daemonLogs, getPKI, getNodeCert,
-  listNodeResources, uploadNodeResource, deleteNodeResource, updateNode,
+  listNodeResources, uploadNodeResource, deleteNodeResource, updateNode, testNodeAuth,
 } from '../api'
 import { parseServerTime } from '../time'
 import './NodesPage.css'
@@ -30,7 +30,10 @@ export default function NodesPage() {
 
   // 新增节点表单
   const [showAdd, setShowAdd] = useState(false)
-  const [form, setForm] = useState({ name: '', ip: '', public_ip: '', ssh_user: 'root', ssh_auth: '', ssh_port: '22' })
+  // auth_type：'password' | 'key' —— 显式声明凭据类型，不再靠"猜"
+  const [form, setForm] = useState({ name: '', ip: '', public_ip: '', ssh_user: 'root', ssh_auth: '', auth_type: 'password', ssh_port: '22' })
+  /** 「测试连接」的结果（登记前先验证地址 + 凭证是否可用） */
+  const [authTest, setAuthTest] = useState<{ ok: boolean; text: string } | null>(null)
 
   /**
    * 编辑中的节点（null = 没有在编辑）。
@@ -39,7 +42,7 @@ export default function NodesPage() {
    * 没填都只能删了重建（节点上的 daemon 与证书都白配了）。公网直出又恰好依赖
    * 节点公网 IP，这个缺口必须先补上。
    */
-  const [editing, setEditing] = useState<{ id: number; name: string; ip: string; public_ip: string; ssh_user: string; ssh_port: string; ssh_auth: string } | null>(null)
+  const [editing, setEditing] = useState<{ id: number; name: string; ip: string; public_ip: string; ssh_user: string; ssh_port: string; ssh_auth: string; auth_type: 'password' | 'key' } | null>(null)
 
   // 节点共享资源（一次只展开一个节点）
   const [resNode, setResNode] = useState<number | null>(null)
@@ -160,6 +163,35 @@ export default function NodesPage() {
     }
   }
 
+  /**
+   * 用表单里的地址与凭证当场试连一次。
+   *
+   * 登记节点是唯一"填错要等点部署才发现"的地方，而那时的报错往往只有一句
+   * 认证失败。先在这里点一下，通了再保存。
+   */
+  const testAuth = async () => {
+    setAuthTest(null)
+    setBusy(true)
+    try {
+      const r = await testNodeAuth({
+        ip: form.ip.trim(),
+        ssh_port: Number(form.ssh_port) || 22,
+        ssh_user: form.ssh_user.trim() || 'root',
+        ssh_auth: form.ssh_auth,
+        auth_type: form.auth_type as 'password' | 'key',
+      })
+      const p = r.probe || {}
+      setAuthTest({
+        ok: true,
+        text: `连接成功：${p.os || '?'} / ${p.arch || '?'}，systemd ${p.has_systemd ? '可用' : '不可用'}，剩余磁盘 ${p.free_disk_mb || 0} MB`,
+      })
+    } catch (e: any) {
+      setAuthTest({ ok: false, text: e.message })
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const submitAdd = async (e: React.FormEvent) => {
     e.preventDefault()
     await wrap(() => createNode({
@@ -168,9 +200,11 @@ export default function NodesPage() {
       public_ip: form.public_ip.trim(),
       ssh_user: form.ssh_user,
       ssh_auth: form.ssh_auth,
+      auth_type: form.auth_type as 'password' | 'key',
       ssh_port: Number(form.ssh_port) || 22,
     }), '节点已登记')
-    setForm({ name: '', ip: '', public_ip: '', ssh_user: 'root', ssh_auth: '', ssh_port: '22' })
+    setForm({ name: '', ip: '', public_ip: '', ssh_user: 'root', ssh_auth: '', auth_type: 'password', ssh_port: '22' })
+    setAuthTest(null)
     setShowAdd(false)
   }
 
@@ -190,7 +224,10 @@ export default function NodesPage() {
       ssh_user: editing.ssh_user,
       ssh_port: Number(editing.ssh_port) || 22,
     }
-    if (editing.ssh_auth.trim()) payload.ssh_auth = editing.ssh_auth.trim()
+    if (editing.ssh_auth.trim()) {
+      payload.ssh_auth = editing.ssh_auth.trim()
+      payload.auth_type = editing.auth_type  // 只在改了凭据时一起提交类型
+    }
     const ok = await wrap(() => updateNode(editing.id, payload as any), '节点已更新')
     if (ok) setEditing(null)
   }
@@ -223,22 +260,48 @@ export default function NodesPage() {
             <div className="grid">
               <input placeholder="节点名称（唯一，如 node-002）" value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })} required />
-              <input placeholder="节点 IP（面板/运维连它的地址）" value={form.ip}
+              <input placeholder="管理地址（面板连它用的 IP 或域名）" value={form.ip}
                 onChange={(e) => setForm({ ...form, ip: e.target.value })} required />
-              <input placeholder="公网 IP（玩家连它的地址，公网直出用；可留空）" value={form.public_ip}
+              <input placeholder="公网地址（玩家连它用的，公网直出需要；可留空）" value={form.public_ip}
                 onChange={(e) => setForm({ ...form, public_ip: e.target.value })} />
-              <input placeholder="SSH 用户" value={form.ssh_user}
+              <input placeholder="SSH 用户（默认 root）" value={form.ssh_user}
                 onChange={(e) => setForm({ ...form, ssh_user: e.target.value })} />
-              <input placeholder="SSH 端口" value={form.ssh_port}
+              <input placeholder="SSH 端口（默认 22）" value={form.ssh_port}
                 onChange={(e) => setForm({ ...form, ssh_port: e.target.value })} />
-              <input placeholder="SSH 密码或私钥内容（用于一键部署）" value={form.ssh_auth}
-                onChange={(e) => setForm({ ...form, ssh_auth: e.target.value })}
-                style={{ gridColumn: 'span 4' }} />
+
+              {/* 凭证类型必须显式选：以前靠内容猜，私钥少一行就被当成密码，
+                  最后只报一句认证失败，用户根本不知道哪里错。 */}
+              <label className="node-auth-type" style={{ gridColumn: 'span 4' }}>
+                <span className="muted">凭证类型</span>
+                <label><input type="radio" name="auth_type" checked={form.auth_type === 'password'}
+                  onChange={() => setForm({ ...form, auth_type: 'password' })} /> 密码</label>
+                <label><input type="radio" name="auth_type" checked={form.auth_type === 'key'}
+                  onChange={() => setForm({ ...form, auth_type: 'key' })} /> 私钥</label>
+              </label>
+
+              {form.auth_type === 'key' ? (
+                <textarea placeholder="贴私钥全文（-----BEGIN OPENSSH PRIVATE KEY----- 到 END 那一行，别漏末尾）"
+                  value={form.ssh_auth}
+                  onChange={(e) => setForm({ ...form, ssh_auth: e.target.value })}
+                  rows={5} style={{ gridColumn: 'span 4', fontFamily: 'var(--mono, monospace)', fontSize: 12 }} />
+              ) : (
+                <input type="password" placeholder="SSH 密码" value={form.ssh_auth}
+                  onChange={(e) => setForm({ ...form, ssh_auth: e.target.value })}
+                  style={{ gridColumn: 'span 4' }} />
+              )}
             </div>
             <div className="form-actions">
               <button className="primary" type="submit" disabled={busy}>登记</button>
-              <button type="button" onClick={() => setShowAdd(false)}>取消</button>
+              <button type="button" onClick={testAuth} disabled={busy || !form.ip.trim() || !form.ssh_auth}>
+                测试连接
+              </button>
+              <button type="button" onClick={() => { setShowAdd(false); setAuthTest(null) }}>取消</button>
             </div>
+            {authTest && (
+              <p className={authTest.ok ? 'form-note' : 'err-text'} style={{ marginTop: 6 }}>
+                {authTest.ok ? '✓ ' : '✗ '}{authTest.text}
+              </p>
+            )}
             <p className="form-note">
               SSH 凭据仅用于一键部署（上传 Daemon、安装服务）。凭据保存在面板数据库中，
               请确保数据库访问安全。
@@ -260,7 +323,14 @@ export default function NodesPage() {
                 onChange={(e) => setEditing({ ...editing, ssh_user: e.target.value })} />
               <input placeholder="SSH 端口" value={editing.ssh_port}
                 onChange={(e) => setEditing({ ...editing, ssh_port: e.target.value })} />
-              <input placeholder="新的 SSH 密码/私钥（留空则不修改）" value={editing.ssh_auth}
+              <label className="node-auth-type" style={{ gridColumn: 'span 4' }}>
+                <span className="muted">新凭据类型（留空则不修改凭据）</span>
+                <label><input type="radio" name="edit_auth_type" checked={editing.auth_type === 'password'}
+                  onChange={() => setEditing({ ...editing, auth_type: 'password' })} /> 密码</label>
+                <label><input type="radio" name="edit_auth_type" checked={editing.auth_type === 'key'}
+                  onChange={() => setEditing({ ...editing, auth_type: 'key' })} /> 私钥</label>
+              </label>
+              <input placeholder="新的密码/私钥（留空则不修改）" value={editing.ssh_auth}
                 onChange={(e) => setEditing({ ...editing, ssh_auth: e.target.value })}
                 style={{ gridColumn: 'span 4' }} />
             </div>
@@ -289,6 +359,7 @@ export default function NodesPage() {
                   <button className="small" onClick={() => setEditing({
                     id: n.id, name: n.name, ip: n.ip, public_ip: n.public_ip || '',
                     ssh_user: n.ssh_user || '', ssh_port: String(n.ssh_port || 22), ssh_auth: '',
+                    auth_type: (n.auth_type === 'key' ? 'key' : 'password') as 'password' | 'key',
                   })}>编辑</button>
                   <span className="muted">实例 {n.instances} 个</span>
                   <span className="muted">最后心跳 {fmtTime(n.last_seen)}</span>

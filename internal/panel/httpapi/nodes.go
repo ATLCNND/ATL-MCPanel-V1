@@ -21,12 +21,29 @@ type nodeRequest struct {
 	IP      string `json:"ip"`
 	SSHUser string `json:"ssh_user"`
 	SSHAuth string `json:"ssh_auth"`
-	SSHPort int    `json:"ssh_port"`
+	// AuthType 凭证类型：password / key / 空（按内容自动判断，老行为）。
+	AuthType string `json:"auth_type"`
+	SSHPort  int    `json:"ssh_port"`
 	// PublicIP 节点的**公网地址**（给玩家用的那一个）。
 	//
 	// 与 IP 分开的原因：IP 是"面板/运维怎么连这台机器"，常是内网或 127.0.0.1；
 	// 公网直出的线路地址必须等于这个值，面板才能判断"这条直连线路属于哪个节点"。
 	PublicIP string `json:"public_ip"`
+}
+
+// normalizeAuthType 把请求里的凭证类型收敛到数据库允许的取值。
+//
+// 只认 password / key，其余（含空串）= "" 表示"按内容自动判断"（老行为）。
+// 不做大小写宽容：这个字段是我们自己的前端填的，写错就是 bug，早暴露比晚暴露好。
+func normalizeAuthType(t string) string {
+	switch strings.TrimSpace(t) {
+	case nodeinstall.AuthPassword:
+		return nodeinstall.AuthPassword
+	case nodeinstall.AuthKey:
+		return nodeinstall.AuthKey
+	default:
+		return ""
+	}
 }
 
 // nodeView 节点列表项（不含 SSH 凭据）。
@@ -38,6 +55,8 @@ type nodeView struct {
 	SSHUser   string `json:"ssh_user"`
 	SSHPort   int    `json:"ssh_port"`
 	HasAuth   bool   `json:"has_auth"`
+	// AuthType 当前凭据是密码还是密钥（空 = 升级前登记的老节点，自动判断）
+	AuthType string `json:"auth_type"`
 	Status    string `json:"status"`
 	// Online 界面该用的"在线/离线"：按心跳新鲜度算出来的（见 nodestatus.go）。
 	// status 只是数据库里的原始列——Daemon 失联时它**不会**自己变成 offline，
@@ -57,7 +76,7 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := s.db.Query(`SELECT id, name, ip, COALESCE(public_ip,''), ssh_user, ssh_port, ssh_auth,
-		status, cpu, mem, last_seen FROM nodes ORDER BY id`)
+		COALESCE(ssh_auth_type,''), status, cpu, mem, last_seen FROM nodes ORDER BY id`)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -73,7 +92,7 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 		// 也就没法回答"这个节点到底断了多久"。
 		var lastSeen *time.Time
 		if err := rows.Scan(&v.ID, &v.Name, &v.IP, &v.PublicIP, &v.SSHUser, &v.SSHPort, &auth,
-			&v.Status, &v.CPU, &v.Mem, &lastSeen); err != nil {
+			&v.AuthType, &v.Status, &v.CPU, &v.Mem, &lastSeen); err != nil {
 			continue
 		}
 		v.HasAuth = auth.String != ""
@@ -125,11 +144,17 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 凭据形式在**保存前**就校验：别让用户先保存、再点部署、再读一条模糊报错。
+	if err := nodeinstall.ValidateAuth(req.AuthType, req.SSHAuth); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	res, err := s.db.Exec(
-		`INSERT INTO nodes (name, ip, public_ip, ssh_user, ssh_auth, ssh_port, grpc_port, status)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, 'offline')`,
-		req.Name, req.IP, strings.TrimSpace(req.PublicIP), req.SSHUser, req.SSHAuth, req.SSHPort,
-		s.daemonPortFromListen())
+		`INSERT INTO nodes (name, ip, public_ip, ssh_user, ssh_auth, ssh_auth_type, ssh_port, grpc_port, status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'offline')`,
+		req.Name, req.IP, strings.TrimSpace(req.PublicIP), req.SSHUser, req.SSHAuth,
+		normalizeAuthType(req.AuthType), req.SSHPort, s.daemonPortFromListen())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -173,8 +198,24 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 		args = append(args, req.SSHUser)
 	}
 	if req.SSHAuth != "" {
+		if err := nodeinstall.ValidateAuth(req.AuthType, req.SSHAuth); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		sets = append(sets, "ssh_auth = ?")
 		args = append(args, req.SSHAuth)
+	}
+	// 类型可以单独改（例如把老的"自动判断"改成显式的 key/password），
+	// 但没给凭据就没法校验 —— 只在这两种显式类型之间切换时才允许单独提交。
+	if req.AuthType != "" {
+		if req.SSHAuth == "" {
+			if err := nodeinstall.ValidateAuth(req.AuthType, ""); err != nil {
+				writeErr(w, http.StatusBadRequest, "改凭证类型时请同时重新填写该类型的凭据")
+				return
+			}
+		}
+		sets = append(sets, "ssh_auth_type = ?")
+		args = append(args, normalizeAuthType(req.AuthType))
 	}
 	if req.SSHPort > 0 {
 		sets = append(sets, "ssh_port = ?")
@@ -230,12 +271,64 @@ func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request) {
 func (s *Server) loadNodeSSH(id int64) (*nodeView, string, error) {
 	var v nodeView
 	var auth sql.NullString
-	err := s.db.QueryRow(`SELECT id, name, ip, ssh_user, ssh_port, ssh_auth FROM nodes WHERE id = ?`, id).
-		Scan(&v.ID, &v.Name, &v.IP, &v.SSHUser, &v.SSHPort, &auth)
+	err := s.db.QueryRow(`SELECT id, name, ip, ssh_user, ssh_port, ssh_auth, COALESCE(ssh_auth_type,'')
+		FROM nodes WHERE id = ?`, id).
+		Scan(&v.ID, &v.Name, &v.IP, &v.SSHUser, &v.SSHPort, &auth, &v.AuthType)
 	if err != nil {
 		return nil, "", fmt.Errorf("节点不存在")
 	}
 	return &v, auth.String, nil
+}
+
+// handleTestNodeAuth POST /api/nodes/test —— 用表单里的地址与凭据**当场试连一次**。
+//
+// 为什么要这个接口：登记节点是目前唯一"填错了要等到点部署才发现"的地方，
+// 而报错还往往是模糊的 auth 失败。给协作者用的时候，先在表单里点一下「测试连接」，
+// 通不过就不用保存 —— 省掉来回猜的几轮。
+func (s *Server) handleTestNodeAuth(w http.ResponseWriter, r *http.Request) {
+	if !requireAdminIn(w, r) {
+		return
+	}
+	var req nodeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "无效请求体")
+		return
+	}
+	req.IP = strings.TrimSpace(req.IP)
+	if req.IP == "" {
+		writeErr(w, http.StatusBadRequest, "节点地址不能为空")
+		return
+	}
+	if req.SSHUser == "" {
+		req.SSHUser = "root"
+	}
+	if req.SSHPort <= 0 {
+		req.SSHPort = 22
+	}
+	if err := nodeinstall.ValidateAuth(req.AuthType, req.SSHAuth); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	cli, err := nodeinstall.Dial(nodeinstall.Options{
+		Host: req.IP, Port: req.SSHPort, User: req.SSHUser,
+		Auth: req.SSHAuth, AuthType: normalizeAuthType(req.AuthType),
+	})
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "连接失败："+err.Error())
+		return
+	}
+	defer cli.Close()
+
+	probe, err := cli.Probe(s.remoteInstallDir())
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "已连上，但探测失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"message": "连接成功",
+		"probe":   probe,
+		"ready":   probe.HasSystemd && probe.FreeDiskMB > 200,
+	})
 }
 
 // handleProbeNode POST /api/nodes/{id}/probe
@@ -261,7 +354,7 @@ func (s *Server) handleProbeNode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cli, err := nodeinstall.Dial(nodeinstall.Options{
-		Host: nv.IP, Port: nv.SSHPort, User: nv.SSHUser, Auth: auth,
+		Host: nv.IP, Port: nv.SSHPort, User: nv.SSHUser, Auth: auth, AuthType: nv.AuthType,
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
