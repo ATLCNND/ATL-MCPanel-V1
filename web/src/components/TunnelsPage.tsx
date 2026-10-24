@@ -270,6 +270,12 @@ export default function TunnelsPage() {
   )
 
   const submitTunnel = async () => {
+    // 第三方线路必须明确选一条隧道：后端也要求（不再"自动挑第一条"），
+    // 否则会出现「随手点一下就把线路挂到了默认选中的实例上」。
+    if (selectedLineIsThirdParty && !tTunnelId) {
+      setError('请先选择要绑定的隧道（第三方线路的端口由服务商分配）')
+      return
+    }
     setBusy(true); setError(''); setMsg('')
     try {
       const r = await createTunnel({
@@ -289,6 +295,7 @@ export default function TunnelsPage() {
       // 直连隧道不跑 frpc，状态是 direct —— 这不是失败，界面要如实夸它一句
       if (r.status === 'running' || r.status === 'direct') {
         setMsg(r.status === 'direct' ? `公网直出已登记：${r.message}` : `隧道已建立：${r.public_address}`)
+        if (selectedLineIsThirdParty) setTunnelId('')
       } else {
         setError(`隧道下发未成功：${r.message}`)
       }

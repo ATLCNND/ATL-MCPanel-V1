@@ -482,6 +482,8 @@ export interface MyPortLine {
   usable?: boolean
   /** 不可用的原因，用于界面提示 */
   reason?: string
+  /** 第三方线路上可绑定的隧道（远端端口由服务商分配，固定值） */
+  tunnels?: { tunnel_id: string; name: string; remote_port: number; protocol: string }[]
 }
 
 export async function listMyPorts(): Promise<MyPortLine[]> {

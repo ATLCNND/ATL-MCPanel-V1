@@ -40,6 +40,8 @@ export default function InstancePorts({
   const [adding, setAdding] = useState(false)
   const [newLine, setNewLine] = useState('')
   const [newLocal, setNewLocal] = useState('')
+  // 第三方线路要绑定的隧道（远端端口由服务商分配，是固定值）
+  const [newTunnel, setNewTunnel] = useState('')
   const [newProto, setNewProto] = useState('tcp')
 
   // 就地编辑本地端口
@@ -93,6 +95,10 @@ export default function InstancePorts({
     }
   }
 
+  const pickedLine = lines.find((l) => String(l.frps_id) === newLine)
+  const pickedTunnels = pickedLine?.tunnels || []
+  const lineIsThirdParty = pickedLine?.line_type === 'third_party'
+
   const doAdd = async (e: React.FormEvent) => {
     e.preventDefault()
     const lp = Number(newLocal)
@@ -105,10 +111,16 @@ export default function InstancePorts({
       setError(picked.reason || '该线路对本实例不可用')
       return
     }
+    // 第三方线路必须明确选一条隧道：后端也要求，不再"自动挑第一条"
+    if (picked?.line_type === 'third_party' && !newTunnel) {
+      setError('请选择服务商分配的固定端口（第三方线路的端口不能自己指定）')
+      return
+    }
     const ok = await run(() => addInstancePort(instanceId, {
       frps_id: Number(newLine), local_port: lp, protocol: newProto,
-    }))
-    if (ok) { setAdding(false); setNewLocal('') }
+      tunnel_id: picked?.line_type === 'third_party' ? newTunnel : '',
+    } as any))
+    if (ok) { setAdding(false); setNewLocal(''); setNewTunnel('') }
   }
 
   const doSaveLocal = async (p: InstancePort) => {
@@ -251,12 +263,29 @@ export default function InstancePorts({
                   ))}
                 </select>
               </label>
+              {/* 第三方线路：端口由服务商分配，用户只需**选那条固定端口**。
+                  自己填一个端口没有意义 —— 服务端不认（实测会回「配置文件错误」）。 */}
+              {lineIsThirdParty && (
+                <label className="ip-field">
+                  <span>固定端口</span>
+                  <select value={newTunnel} onChange={(e) => setNewTunnel(e.target.value)}>
+                    <option value="">
+                      {pickedTunnels.length ? '— 选择服务商分配的端口 —' : '（这条线路没有可绑定的隧道）'}
+                    </option>
+                    {pickedTunnels.map((t) => (
+                      <option key={t.tunnel_id} value={t.tunnel_id}>
+                        {t.remote_port}（{t.name}）
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <label className="ip-field narrow">
                 <span>本地端口</span>
                 <input
                   value={newLocal}
                   onChange={(e) => setNewLocal(e.target.value)}
-                  placeholder="如 8123"
+                  placeholder={lineIsThirdParty ? '实例监听的端口，如 25565' : '如 8123'}
                   inputMode="numeric"
                 />
               </label>

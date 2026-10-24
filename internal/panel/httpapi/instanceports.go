@@ -1,10 +1,12 @@
 package httpapi
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/portguard"
 	"github.com/ATLCNND/ATL-MCPanel/internal/frp"
@@ -104,6 +106,15 @@ func (s *Server) handleListInstancePorts(w http.ResponseWriter, r *http.Request)
 	// 不能复用 /api/my/ports —— 那个返回的是**操作者**的配额，
 	// 而这里的开销记在**实例归属者**头上（节点用户替别人的实例开端口时两者不同），
 	// 拿操作者的列表填表单会出现"下拉框显示还剩 3 个，一提交却说配额不足"。
+	// portLineTunnel 第三方线路上一条可绑定的隧道。
+	// 必须先于 portLine 声明（同一函数内的类型在被引用时已经可见）。
+	type portLineTunnel struct {
+		TunnelID   string `json:"tunnel_id"`
+		Name       string `json:"name"`
+		RemotePort int32  `json:"remote_port"`
+		Protocol   string `json:"protocol"`
+	}
+
 	type portLine struct {
 		FrpsID    int64  `json:"frps_id"`
 		FrpsName  string `json:"frps_name"`
@@ -121,6 +132,12 @@ func (s *Server) handleListInstancePorts(w http.ResponseWriter, r *http.Request)
 		// 玩家会连到另一台机器 —— 表现为"端口开了但连不上"（用户 2026-10-24 指出）。
 		Usable bool   `json:"usable"`
 		Reason string `json:"reason"`
+		// Tunnels 第三方线路上「可绑定」的隧道（已导入、尚未绑实例）。
+		//
+		// 第三方线路的远端端口是服务商分配的固定值，不能像自建那样从端口段里
+		// 新分配一个。所以界面必须先让用户看到能选哪几条、各自的固定端口是多少，
+		// 再把 tunnel_id 一起提交（否则后端只能报「请选择要绑定的隧道」）。
+		Tunnels []portLineTunnel `json:"tunnels,omitempty"`
 	}
 
 	lines := []portLine{}
@@ -190,6 +207,23 @@ func (s *Server) handleListInstancePorts(w http.ResponseWriter, r *http.Request)
 	}
 	for i := range lines {
 		lines[i].Usable = true
+		if frp.NormalizeLineType(lines[i].LineType) == frp.LineThirdParty {
+			if trows, err := s.db.Query(`SELECT tunnel_id, COALESCE(name,''), COALESCE(remote_port,0), COALESCE(protocol,'tcp')
+				FROM tunnels WHERE frps_id = ? AND remote_port > 0
+				AND (instance_id IS NULL OR instance_id = '') ORDER BY id`, lines[i].FrpsID); err == nil {
+				for trows.Next() {
+					var pt portLineTunnel
+					if err := trows.Scan(&pt.TunnelID, &pt.Name, &pt.RemotePort, &pt.Protocol); err == nil {
+						lines[i].Tunnels = append(lines[i].Tunnels, pt)
+					}
+				}
+				trows.Close()
+			}
+			if len(lines[i].Tunnels) == 0 {
+				lines[i].Usable = false
+				lines[i].Reason = "这条线路上没有可绑定的隧道了（都已分配，或还没导入配置）"
+			}
+		}
 		if frp.NormalizeLineType(lines[i].LineType) == frp.LineDirect {
 			if nodeAddr == "" || lines[i].FrpsHost != nodeAddr {
 				lines[i].Usable = false
@@ -478,7 +512,24 @@ func (s *Server) handleDeleteInstancePort(w http.ResponseWriter, r *http.Request
 		writeErr(w, http.StatusForbidden, "仅总管理员、该节点的节点用户，或本实例的 owner 可删除公网端口")
 		return
 	}
-	res, err := s.db.Exec(`DELETE FROM tunnels WHERE tunnel_id = ? AND instance_id = ?`, tunnelID, instanceID)
+	// 第三方线路的隧道是**导入来的固定资源**（名字、远端端口、transport 参数都在
+	// 这一行里）。删掉整行 = 把服务商给的那份配置一起丢了，之后既绑不回原实例、
+	// 也分配不到别的实例（用户 2026-10-24 反馈）。
+	// 所以这类「关闭端口」只做**解绑**：清掉归属与本地端口，状态回到 imported。
+	var lineType string
+	_ = s.db.QueryRow(`SELECT COALESCE(f.line_type,'self_hosted') FROM tunnels t
+		LEFT JOIN frps_servers f ON f.id = t.frps_id
+		WHERE t.tunnel_id = ? AND t.instance_id = ?`, tunnelID, instanceID).Scan(&lineType)
+	isThirdParty := frp.NormalizeLineType(lineType) == frp.LineThirdParty
+
+	var res sql.Result
+	var err error
+	if isThirdParty {
+		res, err = s.db.Exec(`UPDATE tunnels SET instance_id = '', status = 'imported'
+			WHERE tunnel_id = ? AND instance_id = ?`, tunnelID, instanceID)
+	} else {
+		res, err = s.db.Exec(`DELETE FROM tunnels WHERE tunnel_id = ? AND instance_id = ?`, tunnelID, instanceID)
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -489,7 +540,11 @@ func (s *Server) handleDeleteInstancePort(w http.ResponseWriter, r *http.Request
 	}
 	s.daemonRemoveTunnel(instanceID, tunnelID)
 	s.audit(r, "delete_instance_port", instanceID, tunnelID)
-	writeJSON(w, http.StatusOK, map[string]string{"message": "端口已关闭"})
+	msg := "端口已关闭"
+	if isThirdParty {
+		msg = "已解除绑定（隧道仍在该线路下，可分配给其它实例）"
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": msg})
 }
 
 // orDash 空串时返回一个占位符，避免提示里出现「节点对外地址是 」这种断句。
@@ -515,16 +570,17 @@ func (s *Server) bindImportedTunnel(w http.ResponseWriter, r *http.Request, inst
 func (s *Server) bindTunnelToInstance(w http.ResponseWriter, r *http.Request, instanceID string,
 	frpsID int64, wantTunnelID string, localPort int32, frpsHost string, bindPort int32, frpsToken, lineDomain string) {
 
-	tunnelID := wantTunnelID
+	// 必须**显式**指定要绑定哪条隧道，不再自动挑第一条。
+	//
+	// 为什么：以前 tunnel_id 为空就自动挑一条未绑定的，而表单里实例选择框默认停在
+	// 第一个实例上 —— 结果是「导入配置后随便点一下，线路就自动挂到了某个实例」，
+	// 用户既没选过隧道也没选过实例（2026-10-24 用户反馈）。
+	// 第三方线路的每条隧道都是一份服务商分配的固定资源，绑错要付出代价。
+	tunnelID := strings.TrimSpace(wantTunnelID)
 	if tunnelID == "" {
-		// 没指定就挑该线路下第一条还没绑实例的
-		if err := s.db.QueryRow(`SELECT tunnel_id FROM tunnels
-			WHERE frps_id = ? AND (instance_id IS NULL OR instance_id = '') ORDER BY id LIMIT 1`, frpsID).
-			Scan(&tunnelID); err != nil {
-			writeErr(w, http.StatusConflict,
-				"这条第三方线路上没有可用的隧道了（已全部绑定）。请先导入服务商给的配置，或解绑某条隧道")
-			return
-		}
+		writeErr(w, http.StatusBadRequest,
+			"请选择要绑定的隧道（第三方线路的端口由服务商分配，需要明确指定绑哪一条）")
+		return
 	}
 
 	var tName, tProto string
