@@ -64,8 +64,10 @@ func (s *Server) ApplyTunnel(ctx context.Context, req *pb.TunnelRequest) (*pb.Op
 		Subdomain:     req.Subdomain,
 		CustomDomains: splitDomains(req.CustomDomain),
 		UseTLS:        req.UseTls,
-		// 服务商分配的代理名，必须原样使用（改了注册不上）
-		ProxyName: req.ProxyName,
+		// 服务商分配的代理名与传输参数，必须原样使用（改了/缺了都注册不上）
+		ProxyName:          req.ProxyName,
+		BandwidthLimit:     req.BandwidthLimit,
+		BandwidthLimitMode: req.BandwidthLimitMode,
 	})
 	if err != nil {
 		s.log.Error("应用隧道失败", "instance", req.InstanceId, "tunnel", req.TunnelId, "error", err)

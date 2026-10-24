@@ -132,7 +132,8 @@ func (s *Server) handleListFrps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := s.db.Query(`
-		SELECT id, name, host, bind_port, token, port_start, port_end, remark, display_domain, line_type
+		SELECT id, name, host, bind_port, token, port_start, port_end, remark, display_domain, line_type,
+		       COALESCE(auth_mode,'auth'), COALESCE(user,'')
 		FROM frps_servers ORDER BY id`)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -155,12 +156,17 @@ func (s *Server) handleListFrps(w http.ResponseWriter, r *http.Request) {
 		// 前端据此决定要不要显示端口段、要不要提示「直连不跑 frpc」。
 		LineType      string `json:"line_type"`
 		LineTypeLabel string `json:"line_type_label"`
+		// AuthMode / User：第三方线路的登录方式与租户标识（底账 F16）。
+		// 前端据此展示"用 metadatas 登录"这类信息，排查时不必去翻库。
+		AuthMode string `json:"auth_mode"`
+		User     string `json:"user"`
 	}
 	list := []item{}
 	for rows.Next() {
 		var it item
 		if err := rows.Scan(&it.ID, &it.Name, &it.Host, &it.BindPort, &it.Token,
-			&it.PortStart, &it.PortEnd, &it.Remark, &it.DisplayDomain, &it.LineType); err != nil {
+			&it.PortStart, &it.PortEnd, &it.Remark, &it.DisplayDomain, &it.LineType,
+			&it.AuthMode, &it.User); err != nil {
 			continue
 		}
 		it.LineTypeLabel = frp.LineTypeLabel(it.LineType)
@@ -432,6 +438,8 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 		Subdomain    string `json:"subdomain"`
 		CustomDomain string `json:"custom_domain"`
 		UseTLS       bool   `json:"use_tls"`
+		// TunnelID 第三方线路专用：绑定一条**已导入的**隧道（不自己分配端口）
+		TunnelID string `json:"tunnel_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "无效请求体")
@@ -492,6 +500,14 @@ func (s *Server) handleCreateTunnel(w http.ResponseWriter, r *http.Request) {
 	if err := s.db.QueryRow(`SELECT host, bind_port, token, port_start, port_end, display_domain, line_type FROM frps_servers WHERE id = ?`, req.FrpsID).
 		Scan(&frpsHost, &bindPort, &frpsToken, &portStart, &portEnd, &lineDomain, &lineType); err != nil {
 		writeErr(w, http.StatusNotFound, "frps 服务器不存在")
+		return
+	}
+
+	// 第三方单隧道（底账 F16）：端口与代理名由服务商分配，**只能绑定已导入的隧道**。
+	// 从端口段分配一个不存在的端口，或者新建一条同名隧道，服务端都会拒。
+	if frp.NormalizeLineType(lineType) == frp.LineThirdParty {
+		s.bindTunnelToInstance(w, r, req.InstanceID, req.FrpsID, req.TunnelID, req.LocalPort,
+			frpsHost, bindPort, frpsToken, lineDomain)
 		return
 	}
 
@@ -760,6 +776,9 @@ type tunExtra struct {
 	FrpsUser string
 	// ProxyName：服务商分配的代理名（第三方线路必须原样使用）
 	ProxyName string
+	// 服务商分配的传输参数（缺了服务端会拒，见 frp.Tunnel 的说明）
+	BandwidthLimit     string
+	BandwidthLimitMode string
 }
 
 // daemonApplyTunnel 把隧道下发给 Daemon，返回 (状态, 提示信息)。
@@ -779,11 +798,14 @@ func (s *Server) daemonApplyTunnelFull(instanceID, tunnelID, name, protocol stri
 	// 同一次查询里把线路的认证方式、租户、第三方标记一起取出来 ——
 	// 这些都必须与 fsps 下发保持**同源**，否则会出现"线路按 metadatas 登录、
 	// 隧道却按 auth 下发"的错配（同样是真机上极难查的那一类）。
-	var lineType, authMode, frpsUser, tunnelName string
+	var lineType, authMode, frpsUser, tunnelName, bwLimit, bwMode string
 	if err := s.db.QueryRow(`SELECT COALESCE(f.line_type,'self_hosted'), COALESCE(f.auth_mode,'auth'),
-			COALESCE(f.user,''), COALESCE(t.name,'')
+			COALESCE(f.user,''), COALESCE(t.name,''),
+			COALESCE(t.bandwidth_limit,''), COALESCE(t.bandwidth_limit_mode,'')
 		FROM tunnels t LEFT JOIN frps_servers f ON f.id = t.frps_id WHERE t.tunnel_id = ?`, tunnelID).
-		Scan(&lineType, &authMode, &frpsUser, &tunnelName); err == nil {
+		Scan(&lineType, &authMode, &frpsUser, &tunnelName, &bwLimit, &bwMode); err == nil {
+		ex.BandwidthLimit = bwLimit
+		ex.BandwidthLimitMode = bwMode
 		if ex.PublishMode == "" && frp.NormalizeLineType(lineType) == frp.LineDirect {
 			ex.PublishMode = "direct"
 		}
@@ -823,6 +845,8 @@ func (s *Server) daemonApplyTunnelFull(instanceID, tunnelID, name, protocol stri
 		FrpsAuthMode:  ex.AuthMode,
 		FrpsUser:      ex.FrpsUser,
 		ProxyName:     ex.ProxyName,
+		BandwidthLimit:     ex.BandwidthLimit,
+		BandwidthLimitMode: ex.BandwidthLimitMode,
 	})
 	if err != nil {
 		return "error", "下发失败: " + err.Error()

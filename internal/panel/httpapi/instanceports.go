@@ -2,10 +2,12 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/portguard"
+	"github.com/ATLCNND/ATL-MCPanel/internal/frp"
 )
 
 // ============================================================================
@@ -110,6 +112,15 @@ func (s *Server) handleListInstancePorts(w http.ResponseWriter, r *http.Request)
 		Used      int    `json:"used"`
 		Available int    `json:"available"`
 		Unlimited bool   `json:"unlimited"`
+		// LineType 线路类型（self_hosted / third_party / direct）。
+		// 前端据此把"这条线路对本实例是否可用"讲清楚，而不是等提交后报错。
+		LineType string `json:"line_type"`
+		// Usable 这条线路对**本实例**能不能用；Reason 说明为什么不能用。
+		//
+		// 公网直出的地址就是某个节点的公网 IP：给别的节点上的实例选它，
+		// 玩家会连到另一台机器 —— 表现为"端口开了但连不上"（用户 2026-10-24 指出）。
+		Usable bool   `json:"usable"`
+		Reason string `json:"reason"`
 	}
 
 	lines := []portLine{}
@@ -118,10 +129,11 @@ func (s *Server) handleListInstancePorts(w http.ResponseWriter, r *http.Request)
 
 	if roleOf(r) == RoleAdmin {
 		// 总管理员：所有线路都可用且不限量
-		if qrows, err := s.db.Query(`SELECT id, name, host FROM frps_servers ORDER BY id`); err == nil {
+		if qrows, err := s.db.Query(`SELECT id, name, host, COALESCE(line_type,'self_hosted')
+			FROM frps_servers ORDER BY id`); err == nil {
 			for qrows.Next() {
 				var l portLine
-				if err := qrows.Scan(&l.FrpsID, &l.FrpsName, &l.FrpsHost); err == nil {
+				if err := qrows.Scan(&l.FrpsID, &l.FrpsName, &l.FrpsHost, &l.LineType); err == nil {
 					l.Unlimited = true
 					l.Quota = -1
 					lines = append(lines, l)
@@ -146,14 +158,15 @@ func (s *Server) handleListInstancePorts(w http.ResponseWriter, r *http.Request)
 		// 这里直接不查它，而不是查出来再清空 —— 少一份能泄露的数据。
 		// 字段本身保留在 JSON 里（空串），否则前端的 frps_host 会变成 undefined。
 		if qrows, err := s.db.Query(`
-			SELECT np.frps_id, COALESCE(f.name, '(已删除线路)'), np.quota
+			SELECT np.frps_id, COALESCE(f.name, '(已删除线路)'), np.quota,
+			       COALESCE(f.line_type,'self_hosted')
 			FROM node_user_ports np
 			LEFT JOIN frps_servers f ON f.id = np.frps_id
 			WHERE np.user_id = ?
 			ORDER BY np.frps_id`, ownerID); err == nil {
 			for qrows.Next() {
 				var l portLine
-				if err := qrows.Scan(&l.FrpsID, &l.FrpsName, &l.Quota); err == nil {
+				if err := qrows.Scan(&l.FrpsID, &l.FrpsName, &l.Quota, &l.LineType); err == nil {
 					l.Used = usage[l.FrpsID]
 					l.Available = maxInt(0, l.Quota-l.Used)
 					remaining += l.Available
@@ -161,6 +174,28 @@ func (s *Server) handleListInstancePorts(w http.ResponseWriter, r *http.Request)
 				}
 			}
 			qrows.Close()
+		}
+	}
+
+	// 逐条判定「对本实例是否可用」：直连线路要与实例所在节点的公网地址一致，
+	// 不一致就明确标不可用并给出原因 —— 而不是让用户提交后才看到一句「不支持」。
+	var nodePublicIP, nodeIP string
+	if id, ok := s.instanceNodeID(instanceID); ok {
+		_ = s.db.QueryRow(`SELECT COALESCE(public_ip,''), COALESCE(ip,'') FROM nodes WHERE id = ?`, id).
+			Scan(&nodePublicIP, &nodeIP)
+	}
+	nodeAddr := nodePublicIP
+	if nodeAddr == "" {
+		nodeAddr = nodeIP
+	}
+	for i := range lines {
+		lines[i].Usable = true
+		if frp.NormalizeLineType(lines[i].LineType) == frp.LineDirect {
+			if nodeAddr == "" || lines[i].FrpsHost != nodeAddr {
+				lines[i].Usable = false
+				lines[i].Reason = "该实例所在节点不支持这条公网直连线路（线路地址 " +
+					lines[i].FrpsHost + "，节点对外地址 " + orDash(nodeAddr) + "）"
+			}
 		}
 	}
 
@@ -181,17 +216,26 @@ func (s *Server) handleListInstancePorts(w http.ResponseWriter, r *http.Request)
 //
 // 权限：总管理员 / 该节点的节点用户 / 本实例的 owner 级用户（见
 // canManageInstancePorts 的注释 —— 开端口是"实例自己的事"，比删除宽松一级）。
+// addPortReq 「给实例开一个公网端口」的请求体。
+type addPortReq struct {
+	FrpsID    int64  `json:"frps_id"`
+	LocalPort int32  `json:"local_port"`
+	Protocol  string `json:"protocol"`
+	// TunnelID 第三方线路专用：把**已导入的那条隧道**绑到本实例上。
+	//
+	// 为什么第三方不能像自建那样"从端口段分配一个新端口"：
+	// 端口与代理名都是服务商分配的，面板只能挑一条现成的绑上去。
+	// 留空则自动挑第一条未绑定的。
+	TunnelID string `json:"tunnel_id"`
+}
+
 func (s *Server) handleAddInstancePort(w http.ResponseWriter, r *http.Request) {
 	instanceID := r.PathValue("id")
 	if !s.canManageInstancePorts(currentUserID(r), roleOf(r), instanceID) {
 		writeErr(w, http.StatusForbidden, "仅总管理员、该节点的节点用户，或本实例的 owner 可开通公网端口")
 		return
 	}
-	var req struct {
-		FrpsID    int64  `json:"frps_id"`
-		LocalPort int32  `json:"local_port"`
-		Protocol  string `json:"protocol"`
-	}
+	var req addPortReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "无效请求体")
 		return
@@ -225,14 +269,33 @@ func (s *Server) handleAddInstancePort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 配额校验（总管理员不限）
+	// 先看线路类型：第三方单隧道与公网直出**不走**端口段分配，也不扣端口配额。
+	//
+	//	third_party —— 端口与代理名是服务商分配的，面板只能"选一条已导入的隧道"绑上来；
+	//	               从端口段里再分配一个根本不存在。
+	//	direct      —— 远端就是节点自己，端口 = 本地端口，同样没有"分配"这回事。
+	// 这两类若还按自建那套走，就会出现"配额不足 / 分配不到端口"这种假故障。
+	var lineType, authModeOfLine, userOfLine string
+	{
+		if err := s.db.QueryRow(
+			`SELECT COALESCE(line_type,'self_hosted'), COALESCE(auth_mode,'auth'), COALESCE(user,'')
+			 FROM frps_servers WHERE id = ?`, req.FrpsID).
+			Scan(&lineType, &authModeOfLine, &userOfLine); err != nil {
+			writeErr(w, http.StatusNotFound, "线路不存在")
+			return
+		}
+	}
+	isThirdParty := frp.NormalizeLineType(lineType) == frp.LineThirdParty
+	isDirect := frp.NormalizeLineType(lineType) == frp.LineDirect
+
+	// 配额校验（总管理员不限；第三方/直连不占我们的端口池，跳过）
 	//
 	// 扣的是**本实例配额归属者**的配额，而不是操作者本人的：
 	//   - 归属者自己开端口时，两者是同一个人（最常见的情况）
 	//   - 节点用户替别人的实例开端口时，若扣操作者的，
 	//     那条隧道的用量永远不会出现在任何人的账上
 	//     （用量是按实例归属者推导的，见 portUsage），配额就形同虚设
-	if roleOf(r) != RoleAdmin {
+	if roleOf(r) != RoleAdmin && !isThirdParty && !isDirect {
 		ownerID := s.instanceQuotaOwner(instanceID)
 		if ownerID == 0 {
 			// 追溯不到归属者（v17 之前建的老实例），退回扣操作者，行为与改动前一致
@@ -268,12 +331,46 @@ func (s *Server) handleAddInstancePort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 避开设该节点上**全部实例**的端口：frps 与节点同机时，公网端口会和实例抢绑定
-	// （见 allocRemotePortAvoiding 的注释）
-	remote, err := s.allocRemotePortAvoiding(req.FrpsID, portStart, portEnd, s.remotePortsToAvoid(req.FrpsID, instanceID))
-	if err != nil {
-		writeErr(w, http.StatusConflict, err.Error())
+	// ---- 第三方单隧道：把一条**已导入的**隧道绑到本实例上 ----
+	if isThirdParty {
+		s.bindImportedTunnel(w, r, instanceID, instName, req, frpsHost, bindPort, frpsToken, lineDomain)
 		return
+	}
+
+	// ---- 公网直出：远端就是本地端口，不分配 ----
+	//
+	// 但先要确认"这条直连线路确实属于**本实例所在的节点**"：
+	// 直连线路的地址就是某个节点的公网 IP，给别的节点上的实例选它，
+	// 玩家人会连到另一台机器上 —— 表现为"端口开了但连不上"。
+	if isDirect {
+		var nodePublicIP, nodeIP string
+		var nodeID int64
+		if id, ok := s.instanceNodeID(instanceID); ok {
+			nodeID = id
+			_ = s.db.QueryRow(`SELECT COALESCE(public_ip,''), COALESCE(ip,'') FROM nodes WHERE id = ?`, nodeID).
+				Scan(&nodePublicIP, &nodeIP)
+		}
+		usable := nodePublicIP
+		if usable == "" {
+			usable = nodeIP
+		}
+		if usable == "" || frpsHost != usable {
+			writeErr(w, http.StatusConflict, fmt.Sprintf(
+				"该实例所在节点不支持这条公网直连线路：线路地址是 %s，而节点对外地址是 %s。"+
+					"公网直出只能用「实例所在节点自己的」那条线路（先在节点管理里补全该节点的公网 IP）",
+				frpsHost, orDash(usable)))
+			return
+		}
+	}
+	remote := req.LocalPort
+	if !isDirect {
+		// 自建：避开设该节点上**全部实例**的端口（frps 与节点同机时公网端口会和实例抢绑定）
+		var err error
+		remote, err = s.allocRemotePortAvoiding(req.FrpsID, portStart, portEnd, s.remotePortsToAvoid(req.FrpsID, instanceID))
+		if err != nil {
+			writeErr(w, http.StatusConflict, err.Error())
+			return
+		}
 	}
 
 	tunnelID := instanceID + "-" + req.Protocol + "-" + strconv.Itoa(int(remote))
@@ -393,4 +490,74 @@ func (s *Server) handleDeleteInstancePort(w http.ResponseWriter, r *http.Request
 	s.daemonRemoveTunnel(instanceID, tunnelID)
 	s.audit(r, "delete_instance_port", instanceID, tunnelID)
 	writeJSON(w, http.StatusOK, map[string]string{"message": "端口已关闭"})
+}
+
+// orDash 空串时返回一个占位符，避免提示里出现「节点对外地址是 」这种断句。
+func orDash(s string) string {
+	if s == "" {
+		return "（未登记）"
+	}
+	return s
+}
+
+// bindImportedTunnel 把第三方线路里**已导入的一条隧道**绑到本实例上。
+//
+// 为什么不是新建一条：第三方隧道的名字 / 远端端口 / transport 参数都是
+// 服务商分配的，新建意味着要重新造一套 —— 造出来的服务端不认（实测回
+// 「FRPC 配置文件错误」）。所以这里的语义是**绑定**：更新那条隧道行的
+// instance_id 与 local_port，其余字段原样保留。
+func (s *Server) bindImportedTunnel(w http.ResponseWriter, r *http.Request, instanceID, instName string,
+	req addPortReq, frpsHost string, bindPort int32, frpsToken, lineDomain string) {
+	s.bindTunnelToInstance(w, r, instanceID, req.FrpsID, req.TunnelID, req.LocalPort, frpsHost, bindPort, frpsToken, lineDomain)
+}
+
+// bindTunnelToInstance 是上面那个的实现，参数是显式的，便于管理端（/api/tunnels）复用。
+func (s *Server) bindTunnelToInstance(w http.ResponseWriter, r *http.Request, instanceID string,
+	frpsID int64, wantTunnelID string, localPort int32, frpsHost string, bindPort int32, frpsToken, lineDomain string) {
+
+	tunnelID := wantTunnelID
+	if tunnelID == "" {
+		// 没指定就挑该线路下第一条还没绑实例的
+		if err := s.db.QueryRow(`SELECT tunnel_id FROM tunnels
+			WHERE frps_id = ? AND (instance_id IS NULL OR instance_id = '') ORDER BY id LIMIT 1`, frpsID).
+			Scan(&tunnelID); err != nil {
+			writeErr(w, http.StatusConflict,
+				"这条第三方线路上没有可用的隧道了（已全部绑定）。请先导入服务商给的配置，或解绑某条隧道")
+			return
+		}
+	}
+
+	var tName, tProto string
+	var tLocal, tRemote int32
+	if err := s.db.QueryRow(`SELECT COALESCE(name,''), COALESCE(protocol,'tcp'), local_port, remote_port
+		FROM tunnels WHERE tunnel_id = ? AND frps_id = ?`, tunnelID, frpsID).
+		Scan(&tName, &tProto, &tLocal, &tRemote); err != nil {
+		writeErr(w, http.StatusNotFound, "该线路下没有这条隧道")
+		return
+	}
+	if tRemote <= 0 {
+		writeErr(w, http.StatusConflict, "这条隧道没有服务商分配的远端端口，无法绑定")
+		return
+	}
+
+	// 绑定：只改归属与本地端口，其余（名字/端口/transport）原样保留
+	if _, err := s.db.Exec(`UPDATE tunnels SET instance_id = ?, local_port = ?, protocol = ?, status = 'pending'
+		WHERE tunnel_id = ? AND frps_id = ?`,
+		instanceID, localPort, tProto, tunnelID, frpsID); err != nil {
+		writeErr(w, http.StatusInternalServerError, "绑定隧道失败："+err.Error())
+		return
+	}
+
+	status, msg := s.daemonApplyTunnel(instanceID, tunnelID, tName, tProto, localPort, tRemote, "",
+		frpsHost, bindPort, frpsToken)
+	_, _ = s.db.Exec(`UPDATE tunnels SET status = ? WHERE tunnel_id = ?`, status, tunnelID)
+	s.audit(r, "bind_imported_tunnel", instanceID,
+		fmt.Sprintf("线路 %s 的隧道 %s（远端 %d）-> %d", frpsHost, tName, tRemote, localPort))
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"tunnel_id":      tunnelID,
+		"remote_port":    tRemote,
+		"status":         status,
+		"message":        msg,
+		"public_address": publicAddress("", lineDomain, frpsHost, tRemote),
+	})
 }

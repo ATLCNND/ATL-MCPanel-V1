@@ -579,6 +579,10 @@ message TunnelRequest {
   // proxy_name：服务商分配的代理名（第三方线路必须原样使用）。
   string proxy_name = 18;
 
+  // 服务商分配的传输参数（Lolia 这类缺了就起不来）：对应 [proxies.transport]。
+  string bandwidth_limit = 19;
+  string bandwidth_limit_mode = 20;
+
   // publish_mode：这条隧道怎么出网。
   //   "frpc"（默认/空）—— 在节点上跑 frpc，按上面的字段生成代理
   //   "direct"        —— 公网直出：**不跑 frpc**，端口由实例自己对外监听；
@@ -621,6 +625,11 @@ message TestFrpsRequest {
   string proxy_name = 7;
   string user = 8;
   string auth_mode = 9;  // auth / metadatas
+  // 服务商分配的传输参数：自检必须与生产一致，否则服务端会拒
+  string bandwidth_limit = 10;
+  string bandwidth_limit_mode = 11;
+  // dial_only：只测 TCP 可达、不跑 frpc 注册（公网直出线路用）。
+  bool dial_only = 12;
 }
 
 // 线路自检的结果。分两步给出，便于定位问题出在哪一层：

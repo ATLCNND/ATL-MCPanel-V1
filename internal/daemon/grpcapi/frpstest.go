@@ -65,6 +65,13 @@ func (s *Server) TestFrps(ctx context.Context, req *pb.TestFrpsRequest) (*pb.Tes
 	_ = conn.Close()
 	resp.DialOk = true
 
+	// 只测可达（公网直出线路用）：这类线路没有 frpc 可跑，
+	// 再往下走"登录/注册"没有意义，直接返回拨测结果。
+	if req.DialOnly {
+		resp.Success = true
+		return resp, nil
+	}
+
 	// ---- ② 真的用 frpc 注册一个临时代理 ----
 	frpcPath, err := exec.LookPath("frpc")
 	if err != nil {
@@ -335,5 +342,16 @@ func selfTestConfig(host string, bindPort int32, req *pb.TestFrpsRequest, logPat
 	sb.WriteString("localIP = \"127.0.0.1\"\n")
 	fmt.Fprintf(&sb, "localPort = %d\n", remotePort)
 	fmt.Fprintf(&sb, "remotePort = %d\n", remotePort)
+	// 服务商的传输参数必须一并带上：实测 Lolia 缺了这段就回
+	// 「FRPC 配置文件错误」（同 name + remotePort 带上就成功）。
+	if req.BandwidthLimit != "" || req.BandwidthLimitMode != "" {
+		sb.WriteString("\n[proxies.transport]\n")
+		if req.BandwidthLimit != "" {
+			fmt.Fprintf(&sb, "bandwidthLimit = %q\n", req.BandwidthLimit)
+		}
+		if req.BandwidthLimitMode != "" {
+			fmt.Fprintf(&sb, "bandwidthLimitMode = %q\n", req.BandwidthLimitMode)
+		}
+	}
 	return sb.String()
 }

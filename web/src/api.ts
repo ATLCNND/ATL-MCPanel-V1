@@ -476,6 +476,12 @@ export interface MyPortLine {
   used: number
   available: number
   unlimited: boolean
+  /** 线路类型：self_hosted / third_party / direct */
+  line_type?: string
+  /** 对本实例是否可用（公网直出要求线路地址 == 实例所在节点的公网地址） */
+  usable?: boolean
+  /** 不可用的原因，用于界面提示 */
+  reason?: string
 }
 
 export async function listMyPorts(): Promise<MyPortLine[]> {
@@ -982,6 +988,11 @@ export async function createTunnel(payload: {
    */
   subdomain?: string
   custom_domain?: string
+  /**
+   * 第三方线路专用：绑定一条**已导入的**隧道（端口/代理名由服务商分配）。
+   * 第三方线路不能像自建那样从端口段分配新端口 —— 服务端不认。
+   */
+  tunnel_id?: string
 }): Promise<any> {
   return apiFetch('/api/tunnels', { method: 'POST', body: JSON.stringify(payload) })
 }
@@ -1031,7 +1042,10 @@ export async function setPanelTunnel(cfg: Partial<PanelTunnelConfig>): Promise<a
 export interface NodeInfo {
   id: number
   name: string
+  /** 面板/运维连它的地址（可能是内网或 127.0.0.1） */
   ip: string
+  /** 玩家连它的公网地址（公网直出线路必须与它一致；可能为空） */
+  public_ip: string
   ssh_user: string
   ssh_port: number
   has_auth: boolean
@@ -1062,7 +1076,10 @@ export async function listNodes(): Promise<NodeInfo[]> {
 }
 
 export async function createNode(payload: {
-  name: string; ip: string; ssh_user?: string; ssh_auth?: string; ssh_port?: number
+  name: string; ip: string
+  /** 玩家连它的公网地址（公网直出用），可留空 */
+  public_ip?: string
+  ssh_user?: string; ssh_auth?: string; ssh_port?: number
 }): Promise<any> {
   return apiFetch('/api/nodes', { method: 'POST', body: JSON.stringify(payload) })
 }

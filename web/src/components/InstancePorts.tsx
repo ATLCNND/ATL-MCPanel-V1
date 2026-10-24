@@ -4,6 +4,7 @@ import {
   listInstancePorts, addInstancePort, updateInstancePort, deleteInstancePort,
 } from '../api'
 import './InstancePorts.css'
+import { copyText } from '../clipboard'
 
 /**
  * InstancePorts 实例的公网端口。
@@ -82,12 +83,12 @@ export default function InstancePorts({
   }
 
   const copy = async (addr: string) => {
-    try {
-      await navigator.clipboard.writeText(addr)
+    // 走公共实现：http 页面下 navigator.clipboard 不存在，直接调用会静默失效
+    // （界面表现就是「点了没反应」）。copyText 内部有 execCommand 兜底并返回真实结果。
+    if (await copyText(addr)) {
       setCopied(addr)
       setTimeout(() => setCopied(''), 1500)
-    } catch {
-      // 非 https 或权限被拒时 clipboard 不可用 —— 退化成提示用户手动选中
+    } else {
       setError('复制失败（浏览器限制），请手动选中地址复制')
     }
   }
@@ -97,6 +98,11 @@ export default function InstancePorts({
     const lp = Number(newLocal)
     if (!newLine || !Number.isInteger(lp) || lp < 1 || lp > 65535) {
       setError('请选择线路，并填写 1~65535 的本地端口')
+      return
+    }
+    const picked = lines.find((l) => String(l.frps_id) === newLine)
+    if (picked && picked.usable === false) {
+      setError(picked.reason || '该线路对本实例不可用')
       return
     }
     const ok = await run(() => addInstancePort(instanceId, {
@@ -238,8 +244,9 @@ export default function InstancePorts({
                 <select value={newLine} onChange={(e) => setNewLine(e.target.value)}>
                   {lines.length === 0 && <option value="">（没有可用线路）</option>}
                   {lines.map((l) => (
-                    <option key={l.frps_id} value={l.frps_id}>
+                    <option key={l.frps_id} value={l.frps_id} disabled={l.usable === false}>
                       {l.frps_name}（{l.unlimited ? '不限' : `剩 ${l.available}`}）
+                      {l.usable === false ? ' — 本节点不支持' : ''}
                     </option>
                   ))}
                 </select>

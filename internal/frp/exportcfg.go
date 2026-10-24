@@ -33,6 +33,8 @@ type ExportOptions struct {
 	UseLoliaTokenStyle bool
 	// Header 可选的自定义注释头（例如面板名与导出时间）。
 	Header string
+	// User frp 的 user 字段（第三方线路的租户标识，Lolia 这类必须写）。
+	User string
 }
 
 // RenderStandardConfig 把一条线路及其隧道渲染成标准 frpc TOML。
@@ -55,6 +57,9 @@ func RenderStandardConfig(server Server, tunnels []Tunnel, opts ExportOptions) (
 	}
 	fmt.Fprintf(&sb, "serverAddr = %q\n", server.Host)
 	fmt.Fprintf(&sb, "serverPort = %d\n", server.BindPort)
+	if opts.User != "" {
+		fmt.Fprintf(&sb, "user = %q\n", opts.User)
+	}
 	if opts.IncludeToken && server.Token != "" {
 		if opts.UseLoliaTokenStyle {
 			sb.WriteString("\n[metadatas]\n")
@@ -109,6 +114,17 @@ func RenderStandardConfig(server Server, tunnels []Tunnel, opts ExportOptions) (
 			fmt.Fprintf(&sb, "remotePort = %d\n", t.RemotePort)
 		default:
 			return "", fmt.Errorf("隧道 %s 的协议 %q 不支持导出（只支持 tcp/udp/http/https）", t.TunnelID, proto)
+		}
+
+		// 服务商的传输参数（Lolia 这类缺了就登不上/起不来），导出要原样带上
+		if t.BandwidthLimit != "" || t.BandwidthLimitMode != "" {
+			sb.WriteString("\n[proxies.transport]\n")
+			if t.BandwidthLimit != "" {
+				fmt.Fprintf(&sb, "bandwidthLimit = %q\n", t.BandwidthLimit)
+			}
+			if t.BandwidthLimitMode != "" {
+				fmt.Fprintf(&sb, "bandwidthLimitMode = %q\n", t.BandwidthLimitMode)
+			}
 		}
 	}
 	return sb.String(), nil

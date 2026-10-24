@@ -16,7 +16,7 @@ import (
 //	             地址就是「线路主机:本地端口」，端口由实例自己监听后直接对外。
 //
 // 为什么必须是一个显式枚举而不是"有没有配置"推断出来的：三种类型的**约束不一样**
-//（要不要端口段、能不能分配端口、节点上要不要起 frpc），靠推断迟早出现
+// （要不要端口段、能不能分配端口、节点上要不要起 frpc），靠推断迟早出现
 // "线路说直连、端口却在分配"这种自相矛盾的状态。
 const (
 	// LineSelfHosted 自建 frps（现有行为）。
@@ -82,4 +82,3 @@ func LineRunsFrpc(t string) bool {
 func LineAllocatesPort(t string) bool {
 	return NormalizeLineType(t) == LineSelfHosted
 }
-

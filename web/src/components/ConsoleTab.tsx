@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import 'xterm/css/xterm.css'
 import { consoleWsUrl, isTokenExpired, notifyAuthExpired, tokenRejectedByServer } from '../api'
 import { clampRetain, needsTrim, trimByUseful, RETAIN_MIN, RETAIN_MAX, REPLAY_MAX } from './consoleBuffer'
+import { copyText } from '../clipboard'
 import { onThemeChange } from '../styles/theme'
 import './ConsoleTab.css'
 
@@ -815,39 +816,9 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
      * 现在改成：**两条路都试，且如实返回结果**（await + 检查返回值），
      * 失败时上层会给出"复制失败"的提示，而不是假装成功。
      */
-    const writeClipboard = async (text: string): Promise<boolean> => {
-      // 路子 1：现代 API（需要安全上下文）。它也会因"用户未激活"而 reject。
-      if (navigator.clipboard?.writeText) {
-        try {
-          await navigator.clipboard.writeText(text)
-          return true
-        } catch { /* 落到下面的兜底 */ }
-      }
-      // 路子 2：execCommand 兜底。
-      // 关键在于先把焦点交给一个**临时 textarea** 并 select() ——
-      // 这样即便用户此前点在别处，复制也能成功（不再依赖"点过终端"）。
-      try {
-        const ta = document.createElement('textarea')
-        ta.value = text
-        // 放在视口内但不可见：某些浏览器对 display:none / opacity:0 的元素
-        // 拒绝 select()，所以用"移出可视区 + 1px"这种更稳妥的写法。
-        ta.style.position = 'fixed'
-        ta.style.top = '-9999px'
-        ta.style.left = '-9999px'
-        ta.setAttribute('readonly', '')
-        document.body.appendChild(ta)
-        const prevFocus = document.activeElement as HTMLElement | null
-        ta.select()
-        ta.setSelectionRange(0, text.length)
-        const ok = document.execCommand('copy')
-        document.body.removeChild(ta)
-        // 把焦点还回去，避免打断用户正在输入的命令
-        prevFocus?.focus?.()
-        return ok
-      } catch {
-        return false
-      }
-    }
+    // 复制实现统一到 web/src/clipboard.ts（两条路都试 + 如实返回结果）。
+    // 这里保留一层薄封装只是为了让调用点读起来短一点。
+    const writeClipboard = (text: string): Promise<boolean> => copyText(text)
 
     const copySelection = async (): Promise<boolean> => {
       const sel = t.getSelection()

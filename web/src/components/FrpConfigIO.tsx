@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { applyFrpcImport, exportFrps, previewFrpcImport, type ImportPreview } from '../api'
+import { copyText } from '../clipboard'
 
 // 穿透配置的导入/导出弹窗（底账 F15）。
 //
@@ -193,12 +194,8 @@ export function ExportConfigDialog({
   }, [lineId, withToken, loliaStyle])
 
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopied('已复制到剪贴板')
-    } catch {
-      setCopied('复制失败：请手动全选文本')
-    }
+    // 同上：http 下 clipboard 不可用，必须走带兜底的公共实现
+    setCopied((await copyText(text)) ? '已复制到剪贴板' : '复制失败：请手动全选文本')
     setTimeout(() => setCopied(''), 2500)
   }
 

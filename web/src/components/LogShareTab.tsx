@@ -7,6 +7,7 @@ import {
 import MiniMarkdown from './MiniMarkdown'
 import { parseServerTime, formatServerTime } from '../time'
 import './LogShareTab.css'
+import { copyText } from '../clipboard'
 
 /**
  * 「日志分析」页。
@@ -399,10 +400,11 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
     }
   }
 
-  const copy = (text: string, what: string) => {
-    navigator.clipboard?.writeText(text)
-      .then(() => setMsg(`${what}已复制到剪贴板`))
-      .catch(() => setError('复制失败：浏览器拒绝了剪贴板访问，请手动选中复制'))
+  const copy = async (text: string, what: string) => {
+    // 以前是 navigator.clipboard?.writeText(...)：http 下该 API 不存在，
+    // 可选链让整条链短路，于是「点了没反应、也没有报错」。
+    if (await copyText(text)) setMsg(`${what}已复制到剪贴板`)
+    else setError('复制失败：浏览器拒绝了剪贴板访问，请手动选中复制')
   }
 
   const needsMclogsNotice = selected?.kind === 'mclogs' && !noticeRead

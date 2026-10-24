@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import ConsoleTab from './ConsoleTab'
+import { copyText } from '../clipboard'
 import LogShareTab from './LogShareTab'
 import FilesTab from './FilesTab'
 import ConfigTab from './ConfigTab'
@@ -217,6 +218,8 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
   onRenamed?: (name: string) => void
 }) {
   const [tab, setTab] = useState<Tab>('console')
+  /** 复制按钮的短暂反馈（http 页面下剪贴板 API 不可用，得让用户知道成没成） */
+  const [copiedAddr, setCopiedAddr] = useState('')
   const [curStatus, setCurStatus] = useState(status)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -793,7 +796,20 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
               <div className="val">
                 <span>{runtime?.public_address || pubAddr || '未配置'}</span>
                 {(runtime?.public_address || pubAddr) && (
-                  <span className="copy" onClick={() => navigator.clipboard?.writeText(runtime?.public_address || pubAddr)}>复制</span>
+                  <span
+                    className="copy"
+                    title="点击复制公网地址"
+                    onClick={async () => {
+                      // 以前这里是 navigator.clipboard?.writeText(...)：面板跑在 http 上时
+                      // 该 API 不存在，可选链把它变成「静默什么都不做」—— 按钮看着就是坏的。
+                      const addr = runtime?.public_address || pubAddr
+                      const ok = await copyText(addr)
+                      setCopiedAddr(ok ? '已复制' : '复制失败，请手动选中')
+                      setTimeout(() => setCopiedAddr(''), 1800)
+                    }}
+                  >
+                    {copiedAddr || '复制'}
+                  </span>
                 )}
               </div>
               <div className="sync">⇄ 与「穿透管理」中的域名同步（含端口）</div>

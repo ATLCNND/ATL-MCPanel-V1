@@ -63,6 +63,8 @@ export default function TunnelsPage() {
   const [tDomain, setTDomain] = useState('')
   // vhost 路由（底账 F16）：http/https 隧道用子域名或自定义域名，二选一。
   // 与 tDomain 是两件事：那个只是"展示用地址"，这两个会真的写进 frpc 配置。
+  // 第三方线路要绑定的隧道（选一条已导入的，而不是自己填端口）
+  const [tTunnelId, setTunnelId] = useState('')
   const [tSubdomain, setTSubdomain] = useState('')
   const [tCustomDomain, setTCustomDomain] = useState('')
 
@@ -161,30 +163,59 @@ export default function TunnelsPage() {
     }
   }
 
-  /** 自检结果面板：分两层说明，失败时给出 frpc 日志尾部。 */
+  /**
+   * 自检结果面板。
+   *
+   * 分三种形态渲染（以前只有一种，于是直连线路也会显示 “frpc 注册失败” ——
+   * 而直连根本不跑 frpc，那行字纯属误导；用户 2026-10-24 实测就撞在这上面）：
+   *   · 直连线路：只讲端口可达性与「hints」，不提 frpc；
+   *   · 第三方/自建：TCP + frpc 注册两层，失败时给 frpc 日志尾部。
+   */
   const renderTest = (key: string) => {
     const r = testResult[key]
     if (!r) return null
+    const isDirect = (r as any).mode === 'direct'
+    const hints: string[] = ((r as any).hints || []) as string[]
     return (
       <div className={`frps-test ${r.success ? 'ok' : 'bad'}`}>
         <div className="frps-test-head">
           {r.success
-            ? `✓ 线路可用（在节点「${r.node_name || r.node_id}」上实测）`
-            : `✗ 线路不可用：${r.error || '未知原因'}`}
+            ? isDirect
+              ? `✓ 公网直出可用（在节点「${r.node_name || r.node_id}」上实测）`
+              : `✓ 线路可用（在节点「${r.node_name || r.node_id}」上实测）`
+            : `✗ ${r.error || '未知原因'}`}
         </div>
         <ul className="frps-test-steps">
-          <li>
-            {r.dial_ok ? '✓' : '✗'} TCP 连接 <code className="mono">{r.address}</code>
-            {r.dial_ok ? ` 成功（${r.dial_ms} ms）` : ` 失败：${r.dial_error || '不可达'}`}
-          </li>
-          <li>
-            {r.register_ok ? '✓' : '✗'} frpc 注册
-            {r.register_ok
-              ? `成功，试用了端口 ${r.used_port}（已释放）`
-              : `失败：${r.register_error || '未能完成注册'}`}
-          </li>
+          {/* 直连：只显示端口可达性；没绑端口时后端会标记 skipped，连这一行也不显示 */}
+          {isDirect && !(r as any).skipped && (
+            <li>
+              {r.dial_ok ? '✓' : '✗'} 端口可达 <code className="mono">{r.address}</code>
+              {r.dial_ok ? ` 成功（${r.dial_ms} ms）` : ` 失败：${r.dial_error || '不可达'}`}
+            </li>
+          )}
+          {!isDirect && (
+            <>
+              <li>
+                {r.dial_ok ? '✓' : '✗'} TCP 连接 <code className="mono">{r.address}</code>
+                {r.dial_ok ? ` 成功（${r.dial_ms} ms）` : ` 失败：${r.dial_error || '不可达'}`}
+              </li>
+              <li>
+                {r.register_ok ? '✓' : '✗'} frpc 注册
+                {r.register_ok
+                  ? `成功，试用了端口 ${r.used_port}（已释放）`
+                  : `失败：${r.register_error || '未能完成注册'}`}
+              </li>
+            </>
+          )}
         </ul>
-        {r.log_tail && !r.register_ok && (
+        {hints.length > 0 && (
+          <ul className="frps-test-steps">
+            {hints.map((h, i) => (
+              <li key={i}>· {h}</li>
+            ))}
+          </ul>
+        )}
+        {r.log_tail && !r.register_ok && !isDirect && (
           <details>
             <summary>frpc 日志尾部</summary>
             <pre className="frps-test-log">{r.log_tail}</pre>
@@ -223,6 +254,21 @@ export default function TunnelsPage() {
     (f) => String(f.id) === tFrps && f.line_type === 'direct',
   )
 
+  /** 当前选中的线路是不是第三方单隧道 —— 端口与代理名都由服务商分配。 */
+  const selectedLineIsThirdParty = frpsList.some(
+    (f) => String(f.id) === tFrps && f.line_type === 'third_party',
+  )
+
+  /**
+   * 第三方线路上可绑给实例的隧道（还没绑实例的那些）。
+   *
+   * 为什么第三方是「选隧道」而不是「填端口」：端口、代理名、transport 参数全是
+   * 服务商分配的，面板自己造一套服务端不认（实测回「FRPC 配置文件错误」）。
+   */
+  const bindableTunnels = tunnels.filter(
+    (t) => String(t.frps_id) === tFrps && !t.instance_id,
+  )
+
   const submitTunnel = async () => {
     setBusy(true); setError(''); setMsg('')
     try {
@@ -237,6 +283,8 @@ export default function TunnelsPage() {
         // vhost 路由：只有 http/https 才传，避免把域名塞给 tcp 隧道（服务端会拒绝）
         subdomain: (tProtocol === 'http' || tProtocol === 'https') ? tSubdomain.trim() : '',
         custom_domain: (tProtocol === 'http' || tProtocol === 'https') ? tCustomDomain.trim() : '',
+        // 第三方线路：把选中的那条已导入隧道绑过来（不自己分配端口）
+        tunnel_id: selectedLineIsThirdParty ? tTunnelId : '',
       })
       // 直连隧道不跑 frpc，状态是 direct —— 这不是失败，界面要如实夸它一句
       if (r.status === 'running' || r.status === 'direct') {
@@ -564,8 +612,35 @@ export default function TunnelsPage() {
               <option value="https">HTTPS</option>
             </select>
             <input placeholder="实例内端口（留空=游戏端口）" value={tLocalPort} onChange={(e) => setTLocalPort(e.target.value)} style={{ width: 180 }} />
+            {/* 第三方线路：端口由服务商分配，只能从已导入的隧道里选一条 */}
+            {selectedLineIsThirdParty && (
+              <>
+                <select
+                  value={tTunnelId}
+                  onChange={(e) => setTunnelId(e.target.value)}
+                  style={{ minWidth: 260 }}
+                  title="第三方线路的端口与代理名由服务商分配，只能绑定已导入的隧道"
+                >
+                  <option value="">
+                    {bindableTunnels.length ? '— 选择一条已导入的隧道 —' : '（还没有可绑定的隧道，请先导入配置）'}
+                  </option>
+                  {bindableTunnels.map((t) => (
+                    <option key={t.tunnel_id} value={t.tunnel_id}>
+                      {t.name}（远端 {t.remote_port}）
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setShowImport(true)}
+                  title="粘贴服务商给的 frpc 配置，解析后建线路与隧道"
+                >
+                  导入配置
+                </button>
+              </>
+            )}
             {/* 域名协议不需要公网端口，直连线路也不需要（远端就是本地端口） */}
-            {tProtocol !== 'http' && tProtocol !== 'https' && !selectedLineIsDirect && (
+            {!selectedLineIsThirdParty && tProtocol !== 'http' && tProtocol !== 'https' && !selectedLineIsDirect && (
               <input placeholder="公网端口（留空=自动分配）" value={tRemotePort} onChange={(e) => setTRemotePort(e.target.value)} style={{ width: 180 }} />
             )}
             {(tProtocol === 'http' || tProtocol === 'https') && (

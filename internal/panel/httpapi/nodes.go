@@ -22,6 +22,11 @@ type nodeRequest struct {
 	SSHUser string `json:"ssh_user"`
 	SSHAuth string `json:"ssh_auth"`
 	SSHPort int    `json:"ssh_port"`
+	// PublicIP 节点的**公网地址**（给玩家用的那一个）。
+	//
+	// 与 IP 分开的原因：IP 是"面板/运维怎么连这台机器"，常是内网或 127.0.0.1；
+	// 公网直出的线路地址必须等于这个值，面板才能判断"这条直连线路属于哪个节点"。
+	PublicIP string `json:"public_ip"`
 }
 
 // nodeView 节点列表项（不含 SSH 凭据）。
@@ -29,6 +34,7 @@ type nodeView struct {
 	ID        int64  `json:"id"`
 	Name      string `json:"name"`
 	IP        string `json:"ip"`
+	PublicIP  string `json:"public_ip"`
 	SSHUser   string `json:"ssh_user"`
 	SSHPort   int    `json:"ssh_port"`
 	HasAuth   bool   `json:"has_auth"`
@@ -50,7 +56,8 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 	if !requireAdminIn(w, r) {
 		return
 	}
-	rows, err := s.db.Query(`SELECT id, name, ip, ssh_user, ssh_port, ssh_auth, status, cpu, mem, last_seen FROM nodes ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, name, ip, COALESCE(public_ip,''), ssh_user, ssh_port, ssh_auth,
+		status, cpu, mem, last_seen FROM nodes ORDER BY id`)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -65,7 +72,8 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 		// 早先这里扫的是字符串，结果只能原样丢给前端 —— 判不了新鲜度，
 		// 也就没法回答"这个节点到底断了多久"。
 		var lastSeen *time.Time
-		if err := rows.Scan(&v.ID, &v.Name, &v.IP, &v.SSHUser, &v.SSHPort, &auth, &v.Status, &v.CPU, &v.Mem, &lastSeen); err != nil {
+		if err := rows.Scan(&v.ID, &v.Name, &v.IP, &v.PublicIP, &v.SSHUser, &v.SSHPort, &auth,
+			&v.Status, &v.CPU, &v.Mem, &lastSeen); err != nil {
 			continue
 		}
 		v.HasAuth = auth.String != ""
@@ -118,8 +126,10 @@ func (s *Server) handleCreateNode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res, err := s.db.Exec(
-		`INSERT INTO nodes (name, ip, ssh_user, ssh_auth, ssh_port, grpc_port, status) VALUES (?, ?, ?, ?, ?, ?, 'offline')`,
-		req.Name, req.IP, req.SSHUser, req.SSHAuth, req.SSHPort, s.daemonPortFromListen())
+		`INSERT INTO nodes (name, ip, public_ip, ssh_user, ssh_auth, ssh_port, grpc_port, status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 'offline')`,
+		req.Name, req.IP, strings.TrimSpace(req.PublicIP), req.SSHUser, req.SSHAuth, req.SSHPort,
+		s.daemonPortFromListen())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -169,6 +179,12 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 	if req.SSHPort > 0 {
 		sets = append(sets, "ssh_port = ?")
 		args = append(args, req.SSHPort)
+	}
+	// public_ip 允许被清空（改成空串），所以用"字段是否出现在请求里"判断，
+	// 而不是"是否非空" —— 否则想把填错的公网 IP 清掉都做不到。
+	if req.PublicIP != "" {
+		sets = append(sets, "public_ip = ?")
+		args = append(args, strings.TrimSpace(req.PublicIP))
 	}
 	if len(sets) == 0 {
 		writeErr(w, http.StatusBadRequest, "没有需要更新的字段")

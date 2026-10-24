@@ -3,7 +3,7 @@ import {
   NodeInfo, NodeProbe, PKIInfo, NodeResource,
   listNodes, createNode, deleteNode, probeNode, deployNode,
   restartDaemon, daemonLogs, getPKI, getNodeCert,
-  listNodeResources, uploadNodeResource, deleteNodeResource,
+  listNodeResources, uploadNodeResource, deleteNodeResource, updateNode,
 } from '../api'
 import { parseServerTime } from '../time'
 import './NodesPage.css'
@@ -30,7 +30,16 @@ export default function NodesPage() {
 
   // 新增节点表单
   const [showAdd, setShowAdd] = useState(false)
-  const [form, setForm] = useState({ name: '', ip: '', ssh_user: 'root', ssh_auth: '', ssh_port: '22' })
+  const [form, setForm] = useState({ name: '', ip: '', public_ip: '', ssh_user: 'root', ssh_auth: '', ssh_port: '22' })
+
+  /**
+   * 编辑中的节点（null = 没有在编辑）。
+   *
+   * 为什么需要它：以前只有"新增节点"，没有"修改节点" —— 于是 IP 填错、公网 IP
+   * 没填都只能删了重建（节点上的 daemon 与证书都白配了）。公网直出又恰好依赖
+   * 节点公网 IP，这个缺口必须先补上。
+   */
+  const [editing, setEditing] = useState<{ id: number; name: string; ip: string; public_ip: string; ssh_user: string; ssh_port: string; ssh_auth: string } | null>(null)
 
   // 节点共享资源（一次只展开一个节点）
   const [resNode, setResNode] = useState<number | null>(null)
@@ -156,12 +165,34 @@ export default function NodesPage() {
     await wrap(() => createNode({
       name: form.name,
       ip: form.ip,
+      public_ip: form.public_ip.trim(),
       ssh_user: form.ssh_user,
       ssh_auth: form.ssh_auth,
       ssh_port: Number(form.ssh_port) || 22,
     }), '节点已登记')
-    setForm({ name: '', ip: '', ssh_user: 'root', ssh_auth: '', ssh_port: '22' })
+    setForm({ name: '', ip: '', public_ip: '', ssh_user: 'root', ssh_auth: '', ssh_port: '22' })
     setShowAdd(false)
+  }
+
+  /**
+   * 保存节点修改。
+   *
+   * 只提交**改过的**字段：SSH 凭据留空表示"不改"，否则一次编辑就会把
+   * 原来存好的密码/私钥清掉（后端对空串是"不更新"语义）。
+   */
+  const submitEdit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!editing) return
+    const payload: Record<string, unknown> = {
+      name: editing.name,
+      ip: editing.ip,
+      public_ip: editing.public_ip.trim(),
+      ssh_user: editing.ssh_user,
+      ssh_port: Number(editing.ssh_port) || 22,
+    }
+    if (editing.ssh_auth.trim()) payload.ssh_auth = editing.ssh_auth.trim()
+    const ok = await wrap(() => updateNode(editing.id, payload as any), '节点已更新')
+    if (ok) setEditing(null)
   }
 
   return (
@@ -192,8 +223,10 @@ export default function NodesPage() {
             <div className="grid">
               <input placeholder="节点名称（唯一，如 node-002）" value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })} required />
-              <input placeholder="节点 IP" value={form.ip}
+              <input placeholder="节点 IP（面板/运维连它的地址）" value={form.ip}
                 onChange={(e) => setForm({ ...form, ip: e.target.value })} required />
+              <input placeholder="公网 IP（玩家连它的地址，公网直出用；可留空）" value={form.public_ip}
+                onChange={(e) => setForm({ ...form, public_ip: e.target.value })} />
               <input placeholder="SSH 用户" value={form.ssh_user}
                 onChange={(e) => setForm({ ...form, ssh_user: e.target.value })} />
               <input placeholder="SSH 端口" value={form.ssh_port}
@@ -213,6 +246,35 @@ export default function NodesPage() {
           </form>
         )}
 
+        {editing && (
+          <form className="node-form" onSubmit={submitEdit}>
+            <h3>编辑节点 #{editing.id}</h3>
+            <div className="grid">
+              <input placeholder="节点名称" value={editing.name}
+                onChange={(e) => setEditing({ ...editing, name: e.target.value })} required />
+              <input placeholder="节点 IP（面板连它的地址）" value={editing.ip}
+                onChange={(e) => setEditing({ ...editing, ip: e.target.value })} required />
+              <input placeholder="公网 IP（玩家连它的地址，公网直出用）" value={editing.public_ip}
+                onChange={(e) => setEditing({ ...editing, public_ip: e.target.value })} />
+              <input placeholder="SSH 用户" value={editing.ssh_user}
+                onChange={(e) => setEditing({ ...editing, ssh_user: e.target.value })} />
+              <input placeholder="SSH 端口" value={editing.ssh_port}
+                onChange={(e) => setEditing({ ...editing, ssh_port: e.target.value })} />
+              <input placeholder="新的 SSH 密码/私钥（留空则不修改）" value={editing.ssh_auth}
+                onChange={(e) => setEditing({ ...editing, ssh_auth: e.target.value })}
+                style={{ gridColumn: 'span 4' }} />
+            </div>
+            <div className="form-actions">
+              <button className="primary" type="submit" disabled={busy}>保存</button>
+              <button type="button" onClick={() => setEditing(null)}>取消</button>
+            </div>
+            <p className="form-note">
+              改了 IP / SSH 参数后面板会重建到该节点的连接。公网 IP 只影响「公网直出」线路的判定与展示，
+              不会改变面板与 Daemon 之间的连接方式。
+            </p>
+          </form>
+        )}
+
         <div className="node-list">
           {nodes.map((n) => {
             const p = probes[n.id]
@@ -222,7 +284,12 @@ export default function NodesPage() {
                   <span className="node-name">{n.name}</span>
                   <span className={`status status-${n.status === 'online' ? 'running' : 'error'}`}>{n.status}</span>
                   <span className="mono muted">{n.ip}</span>
+                  {n.public_ip && <span className="mono muted">公网 {n.public_ip}</span>}
                   <div className="spacer" />
+                  <button className="small" onClick={() => setEditing({
+                    id: n.id, name: n.name, ip: n.ip, public_ip: n.public_ip || '',
+                    ssh_user: n.ssh_user || '', ssh_port: String(n.ssh_port || 22), ssh_auth: '',
+                  })}>编辑</button>
                   <span className="muted">实例 {n.instances} 个</span>
                   <span className="muted">最后心跳 {fmtTime(n.last_seen)}</span>
                 </div>

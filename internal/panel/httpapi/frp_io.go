@@ -44,16 +44,18 @@ func (s *Server) handleExportFrps(w http.ResponseWriter, r *http.Request) {
 
 	var name, host string
 	var bindPort int32
-	var token string
+	var token, authMode, frpsUser string
 	if err := s.db.QueryRow(
-		`SELECT name, host, bind_port, COALESCE(token,'') FROM frps_servers WHERE id = ?`, id).
-		Scan(&name, &host, &bindPort, &token); err != nil {
+		`SELECT name, host, bind_port, COALESCE(token,''), COALESCE(auth_mode,'auth'), COALESCE(user,'')
+		 FROM frps_servers WHERE id = ?`, id).
+		Scan(&name, &host, &bindPort, &token, &authMode, &frpsUser); err != nil {
 		writeErr(w, http.StatusNotFound, "frps 线路不存在")
 		return
 	}
 
 	rows, err := s.db.Query(
-		`SELECT tunnel_id, COALESCE(name,''), COALESCE(protocol,'tcp'), local_port, remote_port
+		`SELECT tunnel_id, COALESCE(name,''), COALESCE(protocol,'tcp'), local_port, remote_port,
+		        COALESCE(bandwidth_limit,''), COALESCE(bandwidth_limit_mode,'')
 		 FROM tunnels WHERE frps_id = ? ORDER BY tunnel_id`, id)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -64,7 +66,8 @@ func (s *Server) handleExportFrps(w http.ResponseWriter, r *http.Request) {
 	tunnels := []frp.Tunnel{}
 	for rows.Next() {
 		var t frp.Tunnel
-		if err := rows.Scan(&t.TunnelID, &t.Name, &t.Protocol, &t.LocalPort, &t.RemotePort); err != nil {
+		if err := rows.Scan(&t.TunnelID, &t.Name, &t.Protocol, &t.LocalPort, &t.RemotePort,
+			&t.BandwidthLimit, &t.BandwidthLimitMode); err != nil {
 			continue
 		}
 		tunnels = append(tunnels, t)
@@ -72,14 +75,20 @@ func (s *Server) handleExportFrps(w http.ResponseWriter, r *http.Request) {
 
 	withToken := r.URL.Query().Get("token") == "1"
 	style := strings.TrimSpace(r.URL.Query().Get("style"))
+	// 线路本身是 metadatas 登录方式的，导出就按那种写法生成 ——
+	// 导出一份「登录方式不对」的配置，对方拿去跑照样登不上（这正是本轮修的坑）。
+	if authMode == frp.AuthModeMetadatas {
+		style = frp.AuthModeMetadatas
+	}
 
 	text, err := frp.RenderStandardConfig(
 		frp.Server{Host: host, BindPort: int(bindPort), Token: token},
 		tunnels,
 		frp.ExportOptions{
 			IncludeToken:       withToken,
-			UseLoliaTokenStyle: style == "metadatas",
+			UseLoliaTokenStyle: style == frp.AuthModeMetadatas,
 			Header:             "ATL-MCPanel 导出：" + name,
+			User:               frpsUser,
 		},
 	)
 	if err != nil {

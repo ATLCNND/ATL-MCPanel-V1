@@ -25,11 +25,11 @@ func TestLineTypeBehaviours(t *testing.T) {
 	// 这三种行为组合是**互相咬合**的，任何一条单独改动都会让状态自相矛盾
 	//（例如"直连也要端口段"或"第三方由面板分配端口"）。
 	cases := []struct {
-		line        string
-		needsSeg    bool
-		runsFrpc    bool
-		allocates   bool
-		label       string
+		line      string
+		needsSeg  bool
+		runsFrpc  bool
+		allocates bool
+		label     string
 	}{
 		{LineSelfHosted, true, true, true, "自建 frps"},
 		{LineThirdParty, false, true, false, "第三方单隧道"},

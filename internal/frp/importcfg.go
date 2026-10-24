@@ -55,8 +55,8 @@ type ImportedConfig struct {
 	// 必须发 metadatas.token；而对 SakuraFRP 这类则要 auth.token。
 	// 导入时记下来，运行时才能按原样还原。
 	TokenField string
-	TLS     ImportedTLS
-	Proxies []ImportedProxy
+	TLS        ImportedTLS
+	Proxies    []ImportedProxy
 	// Warnings 解析过程中遇到的、不影响导入但值得告知用户的情况（不认识的键等）
 	Warnings []string
 }

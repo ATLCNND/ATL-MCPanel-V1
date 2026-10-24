@@ -659,6 +659,32 @@ var migrations = []migration{
 			`ALTER TABLE frps_servers ADD COLUMN user TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		Version: 26,
+		Name:    "tunnel_transport",
+		Statements: []string{
+			// 服务商分配的传输参数（底账 F16）。
+			//
+			// 实测：Lolia 的服务端把 bandwidthLimit 当成**隧道定义的一部分**校验 ——
+			// 同一个 name + remotePort，缺了 transport 段一律回「FRPC 配置文件错误」，
+			// 带上就 start proxy success。所以导入时必须把这两项存下来并原样下发。
+			`ALTER TABLE tunnels ADD COLUMN bandwidth_limit TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE tunnels ADD COLUMN bandwidth_limit_mode TEXT NOT NULL DEFAULT ''`,
+		},
+	},
+	{
+		Version: 27,
+		Name:    "node_public_ip",
+		Statements: []string{
+			// 节点的**公网地址**（底账 F16 公网直出）。
+			//
+			// 为什么必须与 ip 分开：ip 是"面板/运维怎么连这台机器"（常常是内网或
+			// 127.0.0.1），而公网直出要给**玩家**一个地址 —— 两者经常不是同一个值。
+			// 之前没有这一列，于是"这条直连线路是不是这个节点的"根本无从判断，
+			// 自检也只能拿内网 IP 去比对，提示是错的。
+			`ALTER TABLE nodes ADD COLUMN public_ip TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 // migrate 应用尚未执行的迁移。

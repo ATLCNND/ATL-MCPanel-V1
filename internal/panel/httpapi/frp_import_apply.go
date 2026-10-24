@@ -105,8 +105,11 @@ func (s *Server) handleApplyFrpcImport(w http.ResponseWriter, r *http.Request) {
 		// name 存的就是服务商分配的代理名 —— 下发时第三方线路拿它当 proxyName，
 		// 改了名字服务端就认不出来（实测是这个现象）。
 		// 因此这里不写 local_port 的实例语义，只如实记录配置里的值。
-		if _, err := tx.Exec(`INSERT INTO tunnels (tunnel_id, instance_id, frps_id, name, protocol, local_port, remote_port, subdomain, custom_domain, status) VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, 'imported')`,
-			tunnelID, lineID, tname, p.Type, p.LocalPort, p.RemotePort, sub, domain); err != nil {
+		// 服务商的传输参数（bandwidthLimit 等）必须一起存：Lolia 的服务端把它当成
+		// 隧道定义的一部分校验，缺了就回「FRPC 配置文件错误」（实测）。
+		if _, err := tx.Exec(`INSERT INTO tunnels (tunnel_id, instance_id, frps_id, name, protocol, local_port, remote_port, subdomain, custom_domain, bandwidth_limit, bandwidth_limit_mode, status) VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'imported')`,
+			tunnelID, lineID, tname, p.Type, p.LocalPort, p.RemotePort, sub, domain,
+			p.BandwidthLimit, p.BandwidthLimitMode); err != nil {
 			writeErr(w, http.StatusInternalServerError, "写入隧道失败："+err.Error())
 			return
 		}

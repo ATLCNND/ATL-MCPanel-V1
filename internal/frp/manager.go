@@ -43,6 +43,14 @@ type Tunnel struct {
 	//（tunnels.json），而"容器要不要对外发布端口"这件事必须在实例启动前就知道。
 	Direct bool `json:"direct,omitempty"`
 
+	// BandwidthLimit / BandwidthLimitMode 服务商分配的带宽限制（如 10MB / server）。
+	//
+	// 为什么必须带上：Lolia 的服务端把这条**当成隧道定义的一部分**校验 ——
+	// 实测同一 name + remotePort，缺了 transport 段一律回「FRPC 配置文件错误」，
+	// 带上就 start proxy success。没有它，第三方线路根本起不来。
+	BandwidthLimit     string `json:"bandwidth_limit,omitempty"`
+	BandwidthLimitMode string `json:"bandwidth_limit_mode,omitempty"`
+
 	// ProxyName 覆盖 frpc 代理名。
 	//
 	// 为什么需要：面板自建线路用 tunnel_id 当代理名（唯一且 ASCII 安全），
@@ -830,6 +838,17 @@ func renderConfig(st *instanceFRP, dir string) (string, error) {
 			sb.WriteString("localIP = \"127.0.0.1\"\n")
 			fmt.Fprintf(&sb, "localPort = %d\n", t.LocalPort)
 			fmt.Fprintf(&sb, "remotePort = %d\n", t.RemotePort)
+		}
+
+		// 服务商分配的传输参数（Lolia 这类缺了就起不来，见字段说明）
+		if t.BandwidthLimit != "" || t.BandwidthLimitMode != "" {
+			sb.WriteString("\n[proxies.transport]\n")
+			if t.BandwidthLimit != "" {
+				fmt.Fprintf(&sb, "bandwidthLimit = %q\n", t.BandwidthLimit)
+			}
+			if t.BandwidthLimitMode != "" {
+				fmt.Fprintf(&sb, "bandwidthLimitMode = %q\n", t.BandwidthLimitMode)
+			}
 		}
 	}
 	return sb.String(), nil
