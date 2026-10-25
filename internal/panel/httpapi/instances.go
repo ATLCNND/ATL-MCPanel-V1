@@ -41,7 +41,9 @@ func buildCreateInstanceRequest(req createInstanceReq, coreType string, containe
 		CpuQuota:     req.CPUQuota,
 		BackupDir:    req.BackupDir,
 		MemLimit:     req.MemLimit,
-		Container:    resolveContainer(req.Container, containerDefault),
+		// docker 模板**强制容器化**：它天生就是跑镜像，没有「退回原生进程」这条退路
+		//（那样实例会起来但什么都没跑，报错还很难懂）。
+		Container:    resolveContainer(req.Container, containerDefault) || req.Template == "docker",
 		// 实例模板（F9）：minecraft / docker / console 及其容器参数
 		Template: req.Template,
 		Image:    req.Image,
