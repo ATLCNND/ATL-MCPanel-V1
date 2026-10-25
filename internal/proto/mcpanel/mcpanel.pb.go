@@ -256,16 +256,22 @@ func (x *DeleteInstanceRequest) GetRemoveFiles() bool {
 }
 
 type RegisterRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"` // 节点唯一标识（Daemon 生成或配置）
-	Hostname      string                 `protobuf:"bytes,2,opt,name=hostname,proto3" json:"hostname,omitempty"`
-	Os            string                 `protobuf:"bytes,3,opt,name=os,proto3" json:"os,omitempty"`     // 如 "debian 13"
-	Arch          string                 `protobuf:"bytes,4,opt,name=arch,proto3" json:"arch,omitempty"` // amd64
-	CpuCores      int64                  `protobuf:"varint,5,opt,name=cpu_cores,json=cpuCores,proto3" json:"cpu_cores,omitempty"`
-	MemTotal      int64                  `protobuf:"varint,6,opt,name=mem_total,json=memTotal,proto3" json:"mem_total,omitempty"`            // 字节
-	Version       string                 `protobuf:"bytes,7,opt,name=version,proto3" json:"version,omitempty"`                               // daemon 版本
-	JavaVersions  []string               `protobuf:"bytes,8,rep,name=java_versions,json=javaVersions,proto3" json:"java_versions,omitempty"` // 已安装的 Java 版本
-	McInstalled   []string               `protobuf:"bytes,9,rep,name=mc_installed,json=mcInstalled,proto3" json:"mc_installed,omitempty"`    // 已安装的 MC 类型 (folia/paper)
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	NodeId       string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"` // 节点唯一标识（Daemon 生成或配置）
+	Hostname     string                 `protobuf:"bytes,2,opt,name=hostname,proto3" json:"hostname,omitempty"`
+	Os           string                 `protobuf:"bytes,3,opt,name=os,proto3" json:"os,omitempty"`     // 如 "debian 13"
+	Arch         string                 `protobuf:"bytes,4,opt,name=arch,proto3" json:"arch,omitempty"` // amd64
+	CpuCores     int64                  `protobuf:"varint,5,opt,name=cpu_cores,json=cpuCores,proto3" json:"cpu_cores,omitempty"`
+	MemTotal     int64                  `protobuf:"varint,6,opt,name=mem_total,json=memTotal,proto3" json:"mem_total,omitempty"`            // 字节
+	Version      string                 `protobuf:"bytes,7,opt,name=version,proto3" json:"version,omitempty"`                               // daemon 版本
+	JavaVersions []string               `protobuf:"bytes,8,rep,name=java_versions,json=javaVersions,proto3" json:"java_versions,omitempty"` // 已安装的 Java 版本
+	McInstalled  []string               `protobuf:"bytes,9,rep,name=mc_installed,json=mcInstalled,proto3" json:"mc_installed,omitempty"`    // 已安装的 MC 类型 (folia/paper)
+	// node_uid 节点的**稳定身份**（首次启动生成并持久化的 UUID）。
+	//
+	// 与 node_id 的区别：node_id 是显示名/配置值，可改、可重复；node_uid 跟着这台机器的
+	// 安装走，改名也不变。凭证交换与多面板都以它为唯一身份，见
+	// docs/DESIGN-CREDENTIAL-EXCHANGE.md §3.1。
+	NodeUid       string `protobuf:"bytes,10,opt,name=node_uid,json=nodeUid,proto3" json:"node_uid,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -361,6 +367,13 @@ func (x *RegisterRequest) GetMcInstalled() []string {
 		return x.McInstalled
 	}
 	return nil
+}
+
+func (x *RegisterRequest) GetNodeUid() string {
+	if x != nil {
+		return x.NodeUid
+	}
+	return ""
 }
 
 type RegisterResponse struct {
@@ -5413,7 +5426,7 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\x15DeleteInstanceRequest\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12!\n" +
-	"\fremove_files\x18\x02 \x01(\bR\vremoveFiles\"\x86\x02\n" +
+	"\fremove_files\x18\x02 \x01(\bR\vremoveFiles\"\xa1\x02\n" +
 	"\x0fRegisterRequest\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12\x0e\n" +
@@ -5423,7 +5436,9 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\tmem_total\x18\x06 \x01(\x03R\bmemTotal\x12\x18\n" +
 	"\aversion\x18\a \x01(\tR\aversion\x12#\n" +
 	"\rjava_versions\x18\b \x03(\tR\fjavaVersions\x12!\n" +
-	"\fmc_installed\x18\t \x03(\tR\vmcInstalled\"H\n" +
+	"\fmc_installed\x18\t \x03(\tR\vmcInstalled\x12\x19\n" +
+	"\bnode_uid\x18\n" +
+	" \x01(\tR\anodeUid\"H\n" +
 	"\x10RegisterResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\"\xaf\x02\n" +

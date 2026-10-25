@@ -187,6 +187,12 @@ message RegisterRequest {
   string version = 7;        // daemon 版本
   repeated string java_versions = 8; // 已安装的 Java 版本
   repeated string mc_installed = 9;  // 已安装的 MC 类型 (folia/paper)
+  // node_uid 节点的**稳定身份**（首次启动生成并持久化的 UUID）。
+  //
+  // 与 node_id 的区别：node_id 是显示名/配置值，可改、可重复；node_uid 跟着这台机器的
+  // 安装走，改名也不变。凭证交换与多面板都以它为唯一身份，见
+  // docs/DESIGN-CREDENTIAL-EXCHANGE.md §3.1。
+  string node_uid = 10;
 }
 
 message RegisterResponse {

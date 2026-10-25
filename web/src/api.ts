@@ -89,7 +89,7 @@ export async function tokenRejectedByServer(): Promise<boolean> {
   const token = getToken()
   if (!token) return true
   try {
-    const resp = await fetch('/api/auth/me', {
+    const resp = await fetch(basePath() + '/api/auth/me', {
       headers: { Authorization: `Bearer ${token}` },
     })
     // 只有明确的 401 才算"被拒"。网络错误/500 不算 ——
@@ -174,6 +174,16 @@ export interface ApiOptions extends RequestInit {
   skipAuthExpired?: boolean
 }
 
+/**
+ * 面板基路径：配了「自定义安全入口」时后端会把整站挂到 /<entry> 下，
+ * 并在 index.html 里注入 window.__ATL_BASE__。所有请求与 WebSocket 都要带上它，
+ * 否则在启用安全入口时全站接口 404。
+ */
+export function basePath(): string {
+  const b = (window as any).__ATL_BASE__
+  return typeof b === 'string' ? b : ''
+}
+
 export async function apiFetch(path: string, options: ApiOptions = {}): Promise<any> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -182,7 +192,7 @@ export async function apiFetch(path: string, options: ApiOptions = {}): Promise<
   const token = getToken()
   if (token) headers['Authorization'] = `Bearer ${token}`
   const { skipAuthExpired, ...init } = options
-  const resp = await fetch(path, { ...init, headers })
+  const resp = await fetch(basePath() + path, { ...init, headers })
   const data = await resp.json().catch(() => ({}))
   if (!resp.ok) {
     if (resp.status === 401 && !skipAuthExpired && !isCredentialEndpoint(path)) {
@@ -717,7 +727,8 @@ export function consoleWsUrl(instanceId: string, spam?: string): string | null {
   // 参数名沿用 `spam`（历史原因）。面板只做长度校验后原样转发给 Daemon，
   // 判定标准因此只有一份。
   const extra = spam ? `&spam=${encodeURIComponent(spam)}` : ''
-  return `${proto}://${window.location.host}/ws/console/${instanceId}?token=${encodeURIComponent(token)}${extra}`
+  // 配了安全入口时 WebSocket 也在 /<entry> 下，路径要带上前缀
+  return `${proto}://${window.location.host}${basePath()}/ws/console/${instanceId}?token=${encodeURIComponent(token)}${extra}`
 }
 
 // ---- 实例授权 ----
@@ -1056,6 +1067,12 @@ export interface NodeInfo {
   panel_grpc_port: number
   /** 该节点 Daemon 自己的 gRPC 端口（0 = 用面板全局配置）。列表里同时以 grpc_port 回传 */
   daemon_grpc_port: number
+  /**
+   * 接入方式：'' 未标注 / ssh 一键部署远端 / panel 或 node 凭证交换 /
+   * local-probe 本机探测接入 / local-install 本机一键部署。
+   * 界面据此决定哪些操作与提示才有意义。
+   */
+  enroll_mode: string
   /** 与 daemon_grpc_port 同值（后端历史字段名） */
   grpc_port: number
   ssh_user: string
@@ -1133,6 +1150,24 @@ export interface LocalNodeState {
 
 export async function getLocalNode(): Promise<LocalNodeState> {
   return apiFetch('/api/nodes/local')
+}
+
+/** 把本机正在运行的 Daemon 直接登记成节点（ip=127.0.0.1，不需要 SSH 凭据）。 */
+export async function adoptLocalNode(): Promise<{ created: boolean; node: any; message: string }> {
+  return apiFetch('/api/nodes/local/adopt', { method: 'POST', body: '{}' })
+}
+
+/**
+ * 本机一键部署：面板直接在本机安装并启动 Daemon（不走 SSH，需要 root）。
+ * 返回逐步结果，失败时会指明是哪一步。
+ */
+export async function installLocalNode(): Promise<{
+  ready: boolean
+  steps: { name: string; ok: boolean; detail?: string }[]
+  node?: any
+  created?: boolean
+}> {
+  return apiFetch('/api/nodes/local/install', { method: 'POST', body: '{}' })
 }
 
 export async function updateNode(id: number, payload: Partial<NodeInfo> & { ssh_auth?: string }): Promise<any> {

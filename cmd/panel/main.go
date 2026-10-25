@@ -185,6 +185,8 @@ func main() {
 		ExternalURL: cfg.Server.ExternalURL,
 		PanelFrpDir: cfg.Server.PanelFrpDir,
 		TrustProxy:  cfg.Server.TrustProxy,
+		// 自定义安全入口：只在 /<entry>/ 下提供服务（见 config.ServerConfig.SecurityEntry）
+		SecurityEntry: cfg.Server.SecurityEntry,
 		CA:          ca,
 		GRPCMTLS:    cfg.Server.GRPCMTLS,
 		Backup:      backupMgr,

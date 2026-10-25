@@ -76,7 +76,11 @@ type nodeView struct {
 	// 两个可覆盖端口（0 = 用面板全局配置）
 	PanelGRPCPort  int `json:"panel_grpc_port"`
 	DaemonGRPCPort int `json:"daemon_grpc_port"`
-	Status    string `json:"status"`
+	// EnrollMode 接入方式（迁移 v31）：界面据此决定哪些操作与提示才有意义
+	EnrollMode string `json:"enroll_mode"`
+	// NodeUID 节点的稳定身份（迁移 v32，Daemon 首次启动生成）。老节点为空。
+	NodeUID string `json:"node_uid"`
+	Status     string `json:"status"`
 	// Online 界面该用的"在线/离线"：按心跳新鲜度算出来的（见 nodestatus.go）。
 	// status 只是数据库里的原始列——Daemon 失联时它**不会**自己变成 offline，
 	// 只看它会把"已经掉线 4 分钟的节点"显示成在线。
@@ -96,7 +100,7 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.db.Query(`SELECT id, name, ip, COALESCE(public_ip,''), ssh_user, ssh_port, ssh_auth,
 		COALESCE(ssh_auth_type,''), COALESCE(panel_grpc_port,0), COALESCE(grpc_port,0),
-		status, cpu, mem, last_seen FROM nodes ORDER BY id`)
+		COALESCE(enroll_mode,''), COALESCE(node_uid,''), status, cpu, mem, last_seen FROM nodes ORDER BY id`)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -112,7 +116,8 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 		// 也就没法回答"这个节点到底断了多久"。
 		var lastSeen *time.Time
 		if err := rows.Scan(&v.ID, &v.Name, &v.IP, &v.PublicIP, &v.SSHUser, &v.SSHPort, &auth,
-			&v.AuthType, &v.PanelGRPCPort, &v.DaemonGRPCPort, &v.Status, &v.CPU, &v.Mem, &lastSeen); err != nil {
+			&v.AuthType, &v.PanelGRPCPort, &v.DaemonGRPCPort, &v.EnrollMode, &v.NodeUID,
+			&v.Status, &v.CPU, &v.Mem, &lastSeen); err != nil {
 			continue
 		}
 		v.HasAuth = auth.String != ""

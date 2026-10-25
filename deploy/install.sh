@@ -27,6 +27,8 @@ MODE=""
 INSTALL_DIR=""
 NO_SERVICE=""
 PANEL_PORT="${PANEL_PORT:-}"
+# 安全入口（空 = 自动生成随机值；只有面板模式用到）
+PANEL_ENTRY="${PANEL_ENTRY:-}"
 
 # 用 while + shift 而不是 for：--port 需要一个**值**参数，
 # for 逐个吐 token 时拿不到它的下一个 token。
@@ -37,6 +39,10 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || { echo "--port 后面要给端口号" >&2; exit 1; }
       PANEL_PORT="$2"; shift 2 ;;
     --port=*) PANEL_PORT="${1#--port=}"; shift ;;
+    --entry)
+      [ $# -ge 2 ] || { echo "--entry 后面要给入口名（字母数字与 - _. ）" >&2; exit 1; }
+      PANEL_ENTRY="$2"; shift 2 ;;
+    --entry=*) PANEL_ENTRY="${1#--entry=}"; shift ;;
     panel|daemon) MODE="$1"; shift ;;
     -*) echo "未知选项: $1" >&2; exit 1 ;;
     *) INSTALL_DIR="$1"; shift ;;
@@ -45,7 +51,7 @@ done
 INSTALL_DIR="${INSTALL_DIR:-/opt/mcpanel}"
 
 if [ "$MODE" != "panel" ] && [ "$MODE" != "daemon" ]; then
-  echo "用法: $0 <panel|daemon> [安装目录] [--no-service] [--port 端口]" >&2
+  echo "用法: $0 <panel|daemon> [安装目录] [--no-service] [--port 端口] [--entry 安全入口]" >&2
   exit 1
 fi
 
@@ -98,6 +104,18 @@ pick_panel_port() {
   return 1
 }
 
+# 生成一个 12 位的安全入口（小写字母 + 数字）。
+#
+# 为什么这个长度：够长以致无法被字典扫到，又不至于长到用户不想手打。
+# 用 /dev/urandom 而不是 $RANDOM —— 后者是可预测的伪随机，不该用来藏东西。
+pick_panel_entry() {
+  local s
+  s=$(head -c 64 /dev/urandom 2>/dev/null | tr -dc 'a-z0-9' | head -c 12 || true)
+  [ -n "$s" ] && [ "${#s}" -eq 12 ] && { echo "$s"; return 0; }
+  # 极端环境下 /dev/urandom 不可读时退回 $RANDOM 拼接（仍保证唯一性够用）
+  echo "atl$(printf '%04d%04d' $((RANDOM % 9999)) $((RANDOM % 9999)))"
+}
+
 PANEL_PORT_FROM=""
 if [ "$MODE" = "panel" ]; then
   # 已有配置里正在用的端口（可能为空 = 还没装过）
@@ -144,6 +162,36 @@ if [ "$MODE" = "panel" ]; then
   if [ "$PANEL_PORT" = "8080" ]; then
     echo "    ⚠️ 8080 是扫描器与爆破工具的默认目标，也是运营商重点监测的端口。"
     echo "       若不是刻意为之，建议改用其他端口（去掉 --port 重新执行即可）。"
+  fi
+
+  # -------------------------------------------------------------------------
+  # 0a-2. 自定义安全入口（security_entry）
+  # -------------------------------------------------------------------------
+  #
+  # 启用后面板**只在 /<入口>/ 下**提供界面与接口，其余路径返回不带任何面板
+  # 特征的 404。配合随机高位端口，能挡掉绝大部分批量扫描（它们按固定路径探）
+  # 以及家用宽带对 80/443/8080 的入站风控。
+  #
+  # 同样要说清楚：**它不是安全边界**，真正的门锁仍是认证与授权。
+  #
+  # 值只允许字母数字与 - _. （后端对不合法的值直接当作未配置）。
+  EXISTING_ENTRY=""
+  if [ -f "$INSTALL_DIR/config.yaml" ]; then
+    EXISTING_ENTRY=$(grep -E '^[[:space:]]*security_entry:' "$INSTALL_DIR/config.yaml" 2>/dev/null \
+                   | head -1 | sed -E 's/.*security_entry:[[:space:]]*"?([^"#]*)"?.*/\1/' | tr -d ' ' || true)
+  fi
+  if [ -n "$PANEL_ENTRY" ]; then
+    case "$PANEL_ENTRY" in
+      *[!A-Za-z0-9._-]*) echo "错误：--entry 只允许字母数字与 - _ . ，收到 $PANEL_ENTRY" >&2; exit 1 ;;
+    esac
+    echo "==> 安全入口: /$PANEL_ENTRY（命令行 --entry 指定）"
+  elif [ -n "$EXISTING_ENTRY" ]; then
+    PANEL_ENTRY="$EXISTING_ENTRY"
+    echo "==> 安全入口: /$PANEL_ENTRY（沿用已有配置）"
+  else
+    PANEL_ENTRY=$(pick_panel_entry)
+    echo "==> 安全入口: /$PANEL_ENTRY（随机生成，访问地址要带上它）"
+    echo "    ⚠️ 请把它记下来：少了这一段路径，面板会返回 404（这是设计如此）。"
   fi
 fi
 
@@ -392,6 +440,9 @@ if [ -f "$CFG" ]; then
 # 并把 grpc_mtls 改为 true、按 docs/MTLS.md 给节点签发证书。
 server:
   listen: ":$PANEL_PORT"
+  # 自定义安全入口：只在 /<entry>/ 下提供服务（空 = 关闭）。
+  # 与随机高位端口一起，挡掉批量扫描与部分运营商对 80/443/8080 的风控。
+  security_entry: "$PANEL_ENTRY"
   grpc_listen: "127.0.0.1:9090"
   external_url: "http://127.0.0.1:$PANEL_PORT"
   web_dir: "web/dist"
@@ -410,6 +461,9 @@ EOF
 # 明文 gRPC 等于把"注册节点"的能力开放给任何能连上该端口的主机。
 server:
   listen: ":$PANEL_PORT"
+  # 自定义安全入口：只在 /<entry>/ 下提供服务（空 = 关闭）。
+  # 与随机高位端口一起，挡掉批量扫描与部分运营商对 80/443/8080 的风控。
+  security_entry: "$PANEL_ENTRY"
   grpc_listen: ":9090"
   external_url: "http://127.0.0.1:$PANEL_PORT"
   web_dir: "web/dist"
@@ -523,6 +577,9 @@ elif [ -f "$SRC_DIR/config.example.yaml" ]; then
       cat > "$CFG" <<EOF
 server:
   listen: ":$PANEL_PORT"
+  # 自定义安全入口：只在 /<entry>/ 下提供服务（空 = 关闭）。
+  # 与随机高位端口一起，挡掉批量扫描与部分运营商对 80/443/8080 的风控。
+  security_entry: "$PANEL_ENTRY"
   grpc_listen: ":9090"
   external_url: "http://127.0.0.1:$PANEL_PORT"
   web_dir: "web/dist"

@@ -724,6 +724,39 @@ var migrations = []migration{
 			`ALTER TABLE nodes ADD COLUMN panel_grpc_port INTEGER NOT NULL DEFAULT 0`,
 		},
 	},
+	{
+		Version: 31,
+		Name:    "node_enroll_mode",
+		Statements: []string{
+			// 这个节点是**怎么接进来的**（决定界面上哪些操作可用）：
+			//
+			//   ''            未标注（升级前的存量节点）
+			//   ssh           一键部署远端节点（面板用 SSH 推，需要凭据）
+			//   panel         凭证交换 · 面板发起（M4）
+			//   node          凭证交换 · 节点发起（M3）
+			//   local-probe   本机探测接入（同机已有 Daemon）
+			//   local-install 本机一键部署（面板自己装 Daemon）
+			//
+			// 有了它界面才能实事求是：本机节点不该提示「配置凭据」，凭证交换接入的节点
+			// 不该提供「重新推二进制」。
+			`ALTER TABLE nodes ADD COLUMN enroll_mode TEXT NOT NULL DEFAULT ''`,
+		},
+	},
+	{
+		Version: 32,
+		Name:    "node_uid",
+		Statements: []string{
+			// 节点的**稳定身份**（Daemon 首次启动生成、随注册上报）。
+			//
+			// 与 name 的分工：name 是显示名（可改、不同面板里可不同）；node_uid 跟着这台机器
+			// 的安装走。凭证交换用它做唯一身份，多面板（V2）也以它为准。
+			//
+			// 空串 = 升级前的老节点，或非常老的 Daemon（不上报该字段）。唯一索引要排除空串，
+			// 否则所有老节点会互相冲突。
+			`ALTER TABLE nodes ADD COLUMN node_uid TEXT NOT NULL DEFAULT ''`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_node_uid ON nodes(node_uid) WHERE node_uid <> ''`,
+		},
+	},
 }
 
 // migrate 应用尚未执行的迁移。

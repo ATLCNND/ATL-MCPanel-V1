@@ -76,6 +76,15 @@ type ServerConfig struct {
 	Listen      string `yaml:"listen"`       // HTTP 监听地址，如 ":8080"
 	GRPCListen  string `yaml:"grpc_listen"`  // gRPC 监听地址，如 ":9090"
 	ExternalURL string `yaml:"external_url"` // 外部访问地址（用于生成穿透等）
+
+	// SecurityEntry 自定义安全入口：非空时面板**只在 /<entry>/ 下**提供界面与接口，
+	// 其余路径返回不带任何面板特征的 404。
+	//
+	// 作用有两层：① 降低被批量扫描/爆破命中的概率（扫描器按固定路径探）；
+	// ② 避开家用宽带与部分运营商对 80/443/8080 的入站风控。
+	// ⚠️ 它降低的是「被发现」的概率，**不是鉴权替代品**。
+	// 只接受字母数字与 - _. ；含其他字符会被忽略（视为未配置）。
+	SecurityEntry string `yaml:"security_entry"`
 	WebDir      string `yaml:"web_dir"`      // 前端静态资源目录（SPA），为空则不托管
 
 	// PanelName 面板**显示名称**：登录页、侧边栏品牌区、浏览器标题都用它。

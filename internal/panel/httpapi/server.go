@@ -45,7 +45,10 @@ type Options struct {
 	RemoteInstallDir  string            // 节点安装目录
 	DaemonServiceName string            // 节点 systemd 单元名
 	DaemonGRPCListen  string            // 节点 Daemon gRPC 监听
-	Logger            *logger.Logger    // 日志
+	// SecurityEntry 自定义安全入口：非空时面板只在 /<entry>/ 下提供界面与接口，
+	// 其余路径一律 404。用于降低被批量扫描/被运营商风控的命中率（不替代鉴权）。
+	SecurityEntry string
+	Logger        *logger.Logger // 日志
 
 	// LogShare 第三方日志分析接入配置（见 internal/panel/logshare）。
 	// 面板启动时由 config 传入；未配置时功能关闭。
@@ -68,7 +71,8 @@ type Server struct {
 	panelFrpDir string
 	avatarDir   string // 头像存储目录（与数据库同级，便于随面板数据一起备份）
 	logger      *logger.Logger
-	trustProxy  bool              // 是否信任 X-Forwarded-For（面板位于代理之后时开启）
+	trustProxy  bool   // 是否信任 X-Forwarded-For（面板位于代理之后时开启）
+	securityEntry string // 自定义安全入口（空 = 关闭，路径前缀为 /<entry>）
 	userLimiter *loginLimiter     // 按用户名的登录限流
 	ipLimiter   *loginLimiter     // 按来源 IP 的登录限流（阈值更宽松）
 	ca          *pki.CA           // mTLS 证书颁发机构
@@ -190,7 +194,8 @@ func NewServer(d *sql.DB, a *auth.Service, n *nodemgr.Manager, opts Options) *Se
 		avatarDir:   defaultAvatarDir(opts.DataDir),
 		panelFrp:    frp.NewManager(""),
 		logger:      log,
-		trustProxy:  opts.TrustProxy,
+		trustProxy:    opts.TrustProxy,
+		securityEntry: normalizeSecurityEntry(opts.SecurityEntry),
 		userLimiter: newLoginLimiter(userLimiterCfg),
 		ipLimiter:   newLoginLimiter(ipLimiterCfg),
 		ca:          opts.CA,
@@ -520,6 +525,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/nodes", s.requireAuth(s.handleListNodes))
 	// 本机节点探测：面板和节点常在同一台机器上，界面据此给「一键部署本机节点」
 	mux.HandleFunc("GET /api/nodes/local", s.requireAuth(s.handleLocalNodeState))
+	// 把本机正在跑的 Daemon 直接登记成节点（不需要 SSH 凭据）
+	mux.HandleFunc("POST /api/nodes/local/adopt", s.requireAuth(s.handleAdoptLocalNode))
+	// 本机一键部署：面板直接在本机装 Daemon（不走 SSH）
+	mux.HandleFunc("POST /api/nodes/local/install", s.requireAuth(s.handleInstallLocalNode))
 	mux.HandleFunc("POST /api/nodes", s.requireAuth(s.handleCreateNode))
 	// 登记节点时先试连一次（地址 + 凭证），不必等保存后再点部署才发现填错
 	mux.HandleFunc("POST /api/nodes/test", s.requireAuth(s.handleTestNodeAuth))
@@ -552,7 +561,7 @@ func (s *Server) Handler() http.Handler {
 	// 前端静态资源（SPA 回退）；作为兜底路由，必须最后注册
 	mux.HandleFunc("/", s.handleStatic)
 
-	return securityHeaders(mux)
+	return securityHeaders(s.withSecurityEntry(mux))
 }
 
 // securityHeaders 给所有响应补上安全响应头。
@@ -734,5 +743,48 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"id":       id,
 		"username": req.Username,
 		"role":     role,
+	})
+}
+
+// normalizeSecurityEntry 把安全入口收敛成「不含斜杠的单段路径」，不合法就返回空（= 关闭）。
+//
+// 允许字母数字与 - _ . ；其余一律拒绝 —— 这个值会出现在 URL 里、也决定路由前缀，
+// 不该接受任何需要转义的字符。
+func normalizeSecurityEntry(v string) string {
+	v = strings.Trim(strings.TrimSpace(v), "/")
+	if v == "" {
+		return ""
+	}
+	for _, r := range v {
+		ok := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			r == '-' || r == '_' || r == '.'
+		if !ok {
+			return ""
+		}
+	}
+	return v
+}
+
+// withSecurityEntry 把整站挂到 /<entry> 下；其余路径返回**不带任何面板特征**的 404。
+//
+// 它只降低被批量扫描命中的概率，不是安全边界 —— 真正的鉴权仍在每个接口上。
+// 但对家用宽带常见的 80/443/8080 风控与无差别扫描非常有效。
+func (s *Server) withSecurityEntry(next http.Handler) http.Handler {
+	if s.securityEntry == "" {
+		return next
+	}
+	prefix := "/" + s.securityEntry
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		if p != prefix && !strings.HasPrefix(p, prefix+"/") {
+			http.NotFound(w, r)
+			return
+		}
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = strings.TrimPrefix(p, prefix)
+		if r2.URL.Path == "" {
+			r2.URL.Path = "/"
+		}
+		next.ServeHTTP(w, r2)
 	})
 }

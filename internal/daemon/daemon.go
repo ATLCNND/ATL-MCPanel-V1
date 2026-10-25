@@ -3,12 +3,14 @@ package daemon
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -492,8 +494,12 @@ func (d *Daemon) Run() error {
 	client := pb.NewDaemonServiceClient(conn)
 
 	hostname, _ := os.Hostname()
+	// node_uid：这台机器的**安装身份**，首次启动生成后落盘，之后改名/换面板都不变。
+	// 凭证交换与多面板都以它为唯一身份（见 docs/DESIGN-CREDENTIAL-EXCHANGE.md §3.1）。
+	nodeUID := d.ensureNodeUID()
 	regReq := &pb.RegisterRequest{
 		NodeId:   d.cfg.NodeID,
+		NodeUid:  nodeUID,
 		Hostname: hostname,
 		Os:       detectOS(),
 		// 原来这里是硬编码的 "amd64" 与 "0.2.0" —— 在 arm64 包和多版本并存时都是错的：
@@ -615,4 +621,44 @@ func (d *Daemon) registerWithRetry(client pb.DaemonServiceClient, req *pb.Regist
 			}
 		}
 	}
+}
+
+// ensureNodeUID 读取（或首次生成）本节点的稳定身份，存放在 state 目录下。
+//
+// 为什么不用 node_id 当身份：node_id 是配置里的显示名，用户可以改、也可以在两个面板里
+// 用不同名字；node_uid 跟着这台机器的安装走，改名不改变身份。
+// 生成失败（目录只读等）时返回空串 —— 面板按老行为处理，不阻断注册。
+func (d *Daemon) ensureNodeUID() string {
+	dir := d.cfg.StateDir
+	if dir == "" {
+		return ""
+	}
+	p := filepath.Join(dir, "node_uid")
+	if b, err := os.ReadFile(p); err == nil {
+		if v := strings.TrimSpace(string(b)); v != "" {
+			return v
+		}
+	}
+	u := newUUID()
+	if u == "" {
+		return ""
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return ""
+	}
+	if err := os.WriteFile(p, []byte(u+"\n"), 0o600); err != nil {
+		return ""
+	}
+	return u
+}
+
+// newUUID 生成 v4 UUID（标准库足够，不引第三方依赖）。
+func newUUID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }

@@ -4,7 +4,7 @@ import {
   listNodes, createNode, deleteNode, probeNode, deployNode,
   restartDaemon, daemonLogs, getPKI, getNodeCert,
   listNodeResources, uploadNodeResource, deleteNodeResource, updateNode, testNodeAuth,
-  clearNodeCredential, getLocalNode,
+  clearNodeCredential, getLocalNode, adoptLocalNode, installLocalNode,
 } from '../api'
 import { parseServerTime } from '../time'
 import './NodesPage.css'
@@ -197,6 +197,32 @@ export default function NodesPage() {
     }
   }
 
+  /** 本机已装好 daemon → 直接登记（不需要 SSH 凭据） */
+  const adoptLocal = async () => {
+    const r = await wrap(() => adoptLocalNode(), '已接入本机节点')
+    if (r) setLocalNode((cur) => (cur ? { ...cur, registered: true } : cur))
+  }
+
+  /** 本机只有面板 → 面板自己装 daemon（不走 SSH） */
+  const installLocal = async () => {
+    if (!confirm('将在这台机器上安装并启动 Daemon（需要面板以 root 运行）。继续？')) return
+    setBusy(true); setError(''); setMsg('')
+    try {
+      const r = await installLocalNode()
+      const bad = (r.steps || []).filter((s: any) => !s.ok)
+      if (bad.length) {
+        setError('部署未完全成功：' + bad.map((s: any) => s.name + '：' + (s.detail || '失败')).join('；'))
+      } else {
+        setMsg(r.ready ? '本机节点已部署并接入' : '已安装，但 Daemon 端口尚未就绪，请查看服务日志')
+      }
+      await load()
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   /** 移除节点上保存的 SSH 凭据（节点本身保留） */
   const clearCred = async (n: NodeInfo) => {
     if (!confirm(`移除节点「${n.name}」保存的 SSH 凭据？\n\n节点会继续用 mTLS/心跳工作，但「探测 / 部署 / 重启 Daemon / 看日志」这些需要 SSH 的功能将不可用。`)) return
@@ -278,17 +304,27 @@ export default function NodesPage() {
                 ? `检测到 Daemon 端口 ${localNode.daemon_port} 已在监听 —— 直接填 127.0.0.1 登记即可，不需要 SSH。`
                 : '在同一台机器上跑实例时，可以直接登记为 127.0.0.1 节点（无需 SSH 凭据）。'}
             </span>
-            <button className="small primary" onClick={() => {
+            {/* 两条路：本机已有 daemon → 直接接入；本机只有面板 → 面板自己装。
+                都不需要 SSH 凭据 —— 面板本来就有这台机器的权限。 */}
+            {localNode.listening ? (
+              <button className="small primary" onClick={adoptLocal} disabled={busy}>接入本机 Daemon</button>
+            ) : (
+              <button className="small primary" onClick={installLocal} disabled={busy}
+                title="在这台机器上安装并启动 Daemon（不走 SSH，需要 root）">
+                一键部署本机节点
+              </button>
+            )}
+            <button className="small" onClick={() => {
               setShowAdd(true)
               setForm({ ...form, name: localNode.hostname || 'local', ip: '127.0.0.1', ssh_auth: '' })
-            }}>用本机地址登记</button>
+            }}>手动填写</button>
             {localNode.message && <span className="err-text">{localNode.message}</span>}
           </div>
         )}
 
         {showAdd && (
           <form className="node-form" onSubmit={submitAdd}>
-            <h3>登记节点</h3>
+            <h3>一键部署远端节点（SSH）</h3>
             <div className="grid">
               <input placeholder="节点名称（唯一，如 node-002）" value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })} required />
@@ -340,8 +376,10 @@ export default function NodesPage() {
               </p>
             )}
             <p className="form-note">
-              SSH 凭据仅用于一键部署（上传 Daemon、安装服务）。凭据保存在面板数据库中，
-              请确保数据库访问安全。
+              这是「面板用 SSH 连过去把 Daemon 推上去」的方式，面板会保存该节点的 SSH 凭据
+              （明文入库，请确保数据库访问安全）。<br />
+              不想交出 SSH 凭据？同机可以用上面的<b>本机探测接入 / 一键部署本机节点</b>；
+              远端节点等 preview 的<b>凭证交换</b>（token 换证书，面板不存凭据）。
             </p>
           </form>
         )}
@@ -415,8 +453,16 @@ export default function NodesPage() {
                 <div className="node-meta">
                   <span>CPU 核心 {n.cpu}</span>
                   <span>内存 {(n.mem / 1024 / 1024 / 1024).toFixed(1)} GB</span>
-                  <span>SSH {n.ssh_user || '—'}@{n.ip}:{n.ssh_port}</span>
-                  <span>{n.has_auth ? `已配置${n.auth_type === 'key' ? '密钥' : n.auth_type === 'password' ? '密码' : '凭据'}` : '未配置凭据'}</span>
+                  {n.enroll_mode === 'local-probe' || n.enroll_mode === 'local-install'
+                    ? <span className="muted">本机 · Daemon 端口 {n.grpc_port || '默认'}</span>
+                    : <span>SSH {n.ssh_user || '—'}@{n.ip}:{n.ssh_port}</span>}
+                  {/* enroll_mode 决定这条节点是怎么进来的：本机两条路径根本不需要凭据，
+                      所以不显示"未配置凭据"这种会让人以为还缺东西的文案。 */}
+                  {n.enroll_mode === 'local-probe' || n.enroll_mode === 'local-install' ? (
+                    <span className="muted">本机节点 · 无需凭据</span>
+                  ) : (
+                    <span>{n.has_auth ? `已配置${n.auth_type === 'key' ? '密钥' : n.auth_type === 'password' ? '密码' : '凭据'}` : '未配置凭据'}</span>
+                  )}
                   {n.panel_grpc_port > 0 && <span>面板端口 {n.panel_grpc_port}</span>}
                   {n.grpc_port > 0 && n.grpc_port !== 9091 && <span>Daemon 端口 {n.grpc_port}</span>}
                 </div>

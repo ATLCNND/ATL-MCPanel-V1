@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"path"
@@ -64,5 +65,31 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-cache")
+
+	// 配了安全入口时，index.html 要注入两样东西：
+	//   ① <base href>：让 Vue/静态资源按前缀解析（配合 vite 的 base: './'）
+	//   ② window.__ATL_BASE__：让 fetch / WebSocket 自己拼上前缀
+	// 不能靠改 nginx 之类的外部手段 —— 面板是自家进程，直接处理最省事。
+	if s.securityEntry != "" {
+		raw, err := os.ReadFile(index)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "读取 index.html 失败")
+			return
+		}
+		prefix := "/" + s.securityEntry
+		inject := "<base href=\"" + prefix + "/\">" +
+			"<script>window.__ATL_BASE__=" + jsonQuote(prefix) + ";</script>"
+		out := strings.Replace(string(raw), "<head>", "<head>\n    "+inject, 1)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(out))
+		return
+	}
 	http.ServeFile(w, r, index)
+}
+
+// jsonQuote 把字符串安全地嵌进 <script> 里的 JS 字面量。
+// 入口字符集已限定为字母数字与 - _. ，这里仍做一次转义以防将来放宽。
+func jsonQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

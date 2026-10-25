@@ -29,8 +29,8 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"commit":      version.Commit,
 		"built_at":    version.BuildTime,
 		"go_version":  version.GoVersion(),
-		"logo_url":    "/branding/logo-128.png",
-		"favicon_url": "/branding/favicon-64.png",
+		"logo_url":    s.basePath() + "/branding/logo-128.png",
+		"favicon_url": s.basePath() + "/branding/favicon-64.png",
 	})
 }
 
@@ -43,4 +43,12 @@ func (s *Server) displayName() string {
 		return s.panelName
 	}
 	return config.DefaultPanelName
+}
+
+// basePath 资源路径的前缀（配了安全入口时是 /<entry>，否则空串）。
+func (s *Server) basePath() string {
+	if s.securityEntry == "" {
+		return ""
+	}
+	return "/" + s.securityEntry
 }

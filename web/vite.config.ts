@@ -9,6 +9,12 @@ const WS_TARGET = process.env.VITE_WS_TARGET || API_TARGET.replace(/^http/, 'ws'
 
 export default defineConfig({
   plugins: [react()],
+  // 资源路径用**相对**（./assets/...）：
+  //
+  // 面板支持「自定义安全入口」——启用后整站挂在 /<entry>/ 下，后端会在 index.html
+  // 里注入 <base href>。绝对路径（/assets/...）会绕过 <base>，于是启用入口后
+  // 静态资源全部 404。改成相对路径后由 <base> 决定基准，两种形态都对。
+  base: './',
   server: {
     port: 5173,
     // 开发时代理后端 API 和 WS 到 Panel

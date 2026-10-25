@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -106,17 +107,20 @@ func (s *Server) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Reg
 	if err != nil {
 		// 不存在则插入
 		_, err2 := s.db.Exec(
-			`INSERT INTO nodes (name, ip, ssh_user, ssh_auth, ssh_port, status, cpu, mem, last_seen)
-			 VALUES (?, ?, '', '', 22, 'online', ?, ?, CURRENT_TIMESTAMP)`,
-			req.NodeId, daemonIP, req.CpuCores, req.MemTotal,
+			`INSERT INTO nodes (name, ip, ssh_user, ssh_auth, ssh_port, status, cpu, mem, last_seen, node_uid)
+			 VALUES (?, ?, '', '', 22, 'online', ?, ?, CURRENT_TIMESTAMP, ?)`,
+			req.NodeId, daemonIP, req.CpuCores, req.MemTotal, strings.TrimSpace(req.NodeUid),
 		)
 		if err2 != nil {
 			return &pb.RegisterResponse{Accepted: false, Message: "写入节点失败: " + err2.Error()}, nil
 		}
 	} else {
 		_, err2 := s.db.Exec(
-			`UPDATE nodes SET ip=?, status='online', cpu=?, mem=?, last_seen=CURRENT_TIMESTAMP WHERE id=?`,
-			daemonIP, req.CpuCores, req.MemTotal, existingID,
+			// node_uid 只在原本为空时写入：它是稳定身份，不该被后来的上报改写
+			`UPDATE nodes SET ip=?, status='online', cpu=?, mem=?, last_seen=CURRENT_TIMESTAMP,
+			       node_uid = CASE WHEN COALESCE(node_uid,'') = '' THEN ? ELSE node_uid END
+			 WHERE id=?`,
+			daemonIP, req.CpuCores, req.MemTotal, strings.TrimSpace(req.NodeUid), existingID,
 		)
 		if err2 != nil {
 			return &pb.RegisterResponse{Accepted: false, Message: "更新节点失败: " + err2.Error()}, nil
