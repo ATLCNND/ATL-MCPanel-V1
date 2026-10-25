@@ -390,6 +390,12 @@ type Spec struct {
 	// ExtraEnv 额外环境变量（KEY=VALUE）。
 	ExtraEnv []string
 	// Image 覆盖默认镜像（一般不用）。
+	// ExtraPorts 额外端口发布（形如 "8080:80"，宿主:容器）。dockstd 模板用。
+	ExtraPorts []string
+	// ExtraVolumes 额外卷挂载（形如 "/srv/x:/data:ro"）。容器模板用。
+	//
+	// 与 Dir 那个主挂载并存：Dir 是实例自己的可写目录（/data），这里是用户另外声明的。
+	ExtraVolumes []string
 	Image string
 }
 
@@ -473,6 +479,12 @@ func (r *Runtime) Argv(spec Spec) ([]string, error) {
 		argv = append(argv,
 			"-e", "JAVA_HOME="+spec.JavaHome,
 			"-e", "PATH="+binDirs+":/usr/local/bin:/usr/bin:/bin")
+	}
+	for _, v := range spec.ExtraVolumes {
+		argv = append(argv, "-v", v)
+	}
+	for _, p := range spec.ExtraPorts {
+		argv = append(argv, "--publish", p)
 	}
 	for _, kv := range spec.ExtraEnv {
 		argv = append(argv, "-e", kv)

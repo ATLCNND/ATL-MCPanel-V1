@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,6 +42,12 @@ func buildCreateInstanceRequest(req createInstanceReq, coreType string, containe
 		BackupDir:    req.BackupDir,
 		MemLimit:     req.MemLimit,
 		Container:    resolveContainer(req.Container, containerDefault),
+		// 实例模板（F9）：minecraft / docker / console 及其容器参数
+		Template: req.Template,
+		Image:    req.Image,
+		Ports:    req.Ports,
+		Volumes:  req.Volumes,
+		Env:      req.Env,
 	}
 }
 
@@ -83,6 +90,14 @@ func (s *Server) nodeContainerDefault(nodeID int64) bool {
 }
 
 type createInstanceReq struct {
+	// Template 实例模板（F9）：minecraft（默认）/ docker / console。
+	// 空串按 minecraft 处理 —— 老前端不带这个字段时行为不变。
+	Template     string `json:"template"`
+	// Image / Ports / Volumes / Env 仅 docker 模板使用（其余模板忽略）。
+	Image   string   `json:"image"`
+	Ports   []string `json:"ports"`
+	Volumes []string `json:"volumes"`
+	Env     []string `json:"env"`
 	NodeID       int64  `json:"node_id"`
 	InstanceID   string `json:"instance_id"`
 	Name         string `json:"name"`
@@ -161,6 +176,19 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 			"实例 ID 只能用小写字母、数字、连字符与下划线，且必须以字母或数字开头，最长 32 个字符")
 		return
 	}
+	// 模板校验必须**在调用 Daemon 之前**：否则会先让节点开始准备，再回头说参数不对，
+	// 留下半建状态（真机/用例都验证过这个顺序问题）。
+	template, terr := normalizeTemplate(req.Template)
+	if terr != nil {
+		writeErr(w, http.StatusBadRequest, terr.Error())
+		return
+	}
+
+	if err := validateTemplateInput(template, req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	if req.Port < 1 || req.Port > 65535 {
 		writeErr(w, http.StatusBadRequest, "端口需为 1 ~ 65535 之间的整数")
 		return
@@ -231,9 +259,10 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 
 	// 写 instances 表
 	if _, err := s.db.Exec(
-		`INSERT INTO instances (instance_id, node_id, name, mc_type, core_type, java_version, port, max_mem, start_command, cpu_quota, mem_limit, disk_limit_mb, disk_autostop, created_by, status)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped')`,
+		`INSERT INTO instances (instance_id, node_id, name, mc_type, core_type, java_version, port, max_mem, start_command, cpu_quota, mem_limit, disk_limit_mb, disk_autostop, created_by, status, template)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?)`,
 		req.InstanceID, req.NodeID, req.Name, coreType, coreType, req.JavaVersion, req.Port, req.MaxMem, req.StartCommand, req.CPUQuota, req.MemLimit,
+		req.DiskLimitMB, boolInt(req.DiskAutostop), currentUserID(r), template,
 		req.DiskLimitMB, boolInt(req.DiskAutostop), currentUserID(r),
 	); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -426,6 +455,9 @@ type instanceView struct {
 	NodeID     int64  `json:"node_id"`
 	Name       string `json:"name"`
 	CoreType   string `json:"core_type"`
+	// Template 实例模板（F9）：minecraft / docker / console。
+	// 界面据此决定哪些页签有意义（MC 才有 jar/Java 版本，console 模板没有进程可管）。
+	Template   string `json:"template"`
 	Port       int32  `json:"port"`
 	MaxMem     string `json:"max_mem"`
 	Status     string `json:"status"`      // 面板记录的期望状态
@@ -473,7 +505,7 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 	//                 而他恰恰要对那台机器负责）
 	const cols = `i.id, i.instance_id, i.node_id, i.name, i.core_type, i.port, i.max_mem, i.status,
 	              i.cpu_quota, i.mem_limit, i.disk_limit_mb, i.disk_autostop,
-	              i.expires_at, i.expiry_notice_days, i.expiry_autostop`
+	              i.expires_at, i.expiry_notice_days, i.expiry_autostop, COALESCE(i.template,'minecraft')`
 
 	var (
 		rows *sql.Rows
@@ -510,7 +542,7 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 		var expires sql.NullTime
 		if err := rows.Scan(&v.ID, &v.InstanceID, &v.NodeID, &v.Name, &v.CoreType, &v.Port, &v.MaxMem,
 			&v.Status, &v.CPUQuota, &v.MemLimit, &v.DiskLimitMB, &diskAutostop,
-			&expires, &v.ExpiryDays, &v.ExpiryAutostop); err != nil {
+			&expires, &v.ExpiryDays, &v.ExpiryAutostop, &v.Template); err != nil {
 			continue
 		}
 		v.diskAutostop = diskAutostop
@@ -804,4 +836,39 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request, ac
 
 	s.audit(r, action+"_instance", instanceID, resp.Message)
 	writeJSON(w, http.StatusOK, map[string]string{"message": resp.Message, "status": newStatus})
+}
+
+// normalizeTemplate 把请求里的模板收敛到已知取值；空串按 minecraft（存量默认）。
+func normalizeTemplate(t string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(t)) {
+	case "", "minecraft":
+		return "minecraft", nil
+	case "docker":
+		return "docker", nil
+	case "console":
+		return "console", nil
+	default:
+		return "", fmt.Errorf("未知的实例模板 %q（可选：minecraft / docker / console）", t)
+	}
+}
+// validateTemplateInput 按模板检查「该给的参数给没给」。
+//
+// 三种模板的必要条件完全不同，混在一起校验只会给出含糊的报错：
+//   · minecraft：要 jar（或自定义启动命令），Daemon 用 java -jar 模板拉起；
+//   · docker   ：要镜像（image），端口/卷/环境变量可选；
+//   · console  ：要启动命令 —— 它就是一个「跑用户给的命令、把 stdin/stdout 接到控制台」的实例
+//                （脚本启动的输出、交互式提示都从这里看）。**没有命令就没有东西可跑**，
+//                所以必须拦在建实例之前，而不是等到启动时才发现。
+func validateTemplateInput(tpl string, req createInstanceReq) error {
+	switch tpl {
+	case "docker":
+		if strings.TrimSpace(req.Image) == "" {
+			return fmt.Errorf("docker 模板必须指定镜像（image），例如 nginx:alpine")
+		}
+	case "console":
+		if strings.TrimSpace(req.StartCommand) == "" {
+			return fmt.Errorf("通用控制台模板必须指定启动命令（start_command），例如 ./run.sh 或 python3 app.py")
+		}
+	}
+	return nil
 }

@@ -596,10 +596,29 @@ type CreateInstanceRequest struct {
 	JarUrl       string                 `protobuf:"bytes,10,opt,name=jar_url,json=jarUrl,proto3" json:"jar_url,omitempty"`                   // jar 路径（Daemon 本地绝对路径）
 	StartCommand string                 `protobuf:"bytes,12,opt,name=start_command,json=startCommand,proto3" json:"start_command,omitempty"` // 自定义启动命令模板（可选）。为空则用默认 java -jar 模板
 	// 支持占位符：{jar} {max_mem} {min_mem} {java} {dir}
-	CpuQuota      int32  `protobuf:"varint,13,opt,name=cpu_quota,json=cpuQuota,proto3" json:"cpu_quota,omitempty"`   // CPU 配额百分比（100 = 1 核；0 = 不限制）。由 Daemon 通过 cgroup 实施
-	BackupDir     string `protobuf:"bytes,14,opt,name=backup_dir,json=backupDir,proto3" json:"backup_dir,omitempty"` // 备份存放目录（留空则用节点配置的 backup_root，再退回实例目录下的 backups/）
-	MemLimit      string `protobuf:"bytes,15,opt,name=mem_limit,json=memLimit,proto3" json:"mem_limit,omitempty"`    // cgroup 内存上限（如 "4G"；留空 = 不限制）。需比 -Xmx 留出堆外余量
-	Container     bool   `protobuf:"varint,16,opt,name=container,proto3" json:"container,omitempty"`                 // 是否以容器方式运行（容器化隔离）。需节点具备 docker 与基础镜像
+	CpuQuota  int32  `protobuf:"varint,13,opt,name=cpu_quota,json=cpuQuota,proto3" json:"cpu_quota,omitempty"`   // CPU 配额百分比（100 = 1 核；0 = 不限制）。由 Daemon 通过 cgroup 实施
+	BackupDir string `protobuf:"bytes,14,opt,name=backup_dir,json=backupDir,proto3" json:"backup_dir,omitempty"` // 备份存放目录（留空则用节点配置的 backup_root，再退回实例目录下的 backups/）
+	MemLimit  string `protobuf:"bytes,15,opt,name=mem_limit,json=memLimit,proto3" json:"mem_limit,omitempty"`    // cgroup 内存上限（如 "4G"；留空 = 不限制）。需比 -Xmx 留出堆外余量
+	Container bool   `protobuf:"varint,16,opt,name=container,proto3" json:"container,omitempty"`                 // 是否以容器方式运行（容器化隔离）。需节点具备 docker 与基础镜像
+	// ---- 实例模板（F9）----
+	//
+	// template 决定这个实例「是什么」：minecraft（默认，跑 MC 服务端）/ docker（跑任意镜像）
+	// / console（不启动进程，只提供 stdin/stdout 界面）。
+	// minecraft 与 docker 的区别只在启动方式：前者用 java -jar 模板，后者用下面的镜像字段。
+	Template string `protobuf:"bytes,17,opt,name=template,proto3" json:"template,omitempty"`
+	// image 容器镜像（仅 template=docker 时有意义）。留空则用节点的运行时镜像。
+	//
+	// 为什么会允许「任意镜像」：通用模板的用途就是跑 MC 之外的东西（数据库、面板、
+	// 小服务），锁死自家镜像等于没有这个功能。但它也意味着**用户可以决定容器里跑什么**，
+	// 所以节点侧仍然保持只读根、能力全丢弃等既有隔离约束，不因镜像而放宽。
+	Image string `protobuf:"bytes,18,opt,name=image,proto3" json:"image,omitempty"`
+	// ports 端口映射，形如 "8080:80"（可重复）。容器内端口到宿主端口的对应。
+	// 与 port 字段（MC 主端口）并存：docker 模板通常用它，minecraft 模板仍用 port。
+	Ports []string `protobuf:"bytes,19,rep,name=ports,proto3" json:"ports,omitempty"`
+	// volumes 卷映射，形如 "/srv/data:/data"（可重复）。
+	Volumes []string `protobuf:"bytes,20,rep,name=volumes,proto3" json:"volumes,omitempty"`
+	// env 环境变量，形如 "KEY=VALUE"（可重复）。
+	Env           []string `protobuf:"bytes,21,rep,name=env,proto3" json:"env,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -744,6 +763,41 @@ func (x *CreateInstanceRequest) GetContainer() bool {
 		return x.Container
 	}
 	return false
+}
+
+func (x *CreateInstanceRequest) GetTemplate() string {
+	if x != nil {
+		return x.Template
+	}
+	return ""
+}
+
+func (x *CreateInstanceRequest) GetImage() string {
+	if x != nil {
+		return x.Image
+	}
+	return ""
+}
+
+func (x *CreateInstanceRequest) GetPorts() []string {
+	if x != nil {
+		return x.Ports
+	}
+	return nil
+}
+
+func (x *CreateInstanceRequest) GetVolumes() []string {
+	if x != nil {
+		return x.Volumes
+	}
+	return nil
+}
+
+func (x *CreateInstanceRequest) GetEnv() []string {
+	if x != nil {
+		return x.Env
+	}
+	return nil
 }
 
 type InstanceStatus struct {
@@ -5455,7 +5509,7 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\x10backup_disk_used\x18\b \x01(\x03R\x0ebackupDiskUsed\x12*\n" +
 	"\x11backup_disk_total\x18\t \x01(\x03R\x0fbackupDiskTotal\",\n" +
 	"\fPingResponse\x12\x1c\n" +
-	"\ttimestamp\x18\x01 \x01(\x03R\ttimestamp\"\xd3\x03\n" +
+	"\ttimestamp\x18\x01 \x01(\x03R\ttimestamp\"\xc7\x04\n" +
 	"\x15CreateInstanceRequest\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x12\n" +
@@ -5476,7 +5530,12 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\n" +
 	"backup_dir\x18\x0e \x01(\tR\tbackupDir\x12\x1b\n" +
 	"\tmem_limit\x18\x0f \x01(\tR\bmemLimit\x12\x1c\n" +
-	"\tcontainer\x18\x10 \x01(\bR\tcontainer\"\xaf\x01\n" +
+	"\tcontainer\x18\x10 \x01(\bR\tcontainer\x12\x1a\n" +
+	"\btemplate\x18\x11 \x01(\tR\btemplate\x12\x14\n" +
+	"\x05image\x18\x12 \x01(\tR\x05image\x12\x14\n" +
+	"\x05ports\x18\x13 \x03(\tR\x05ports\x12\x18\n" +
+	"\avolumes\x18\x14 \x03(\tR\avolumes\x12\x10\n" +
+	"\x03env\x18\x15 \x03(\tR\x03env\"\xaf\x01\n" +
 	"\x0eInstanceStatus\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x16\n" +

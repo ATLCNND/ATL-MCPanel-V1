@@ -135,6 +135,19 @@ type Instance struct {
 	containerized bool
 	// wantContainer 元数据要求该实例容器化（即使运行时暂不可用）。
 	wantContainer bool
+	// InstanceImage 该实例使用的容器镜像（F9 docker 模板）。空 = 用节点的运行时镜像。
+	//
+	// 放在 Instance 而不是 Runtime 上：镜像属于**实例自身配置**（租户决定跑什么），
+	// 而 Runtime 描述的是这台节点的容器能力，两者不该混。
+	InstanceImage string
+	// InstanceTemplate 实例模板（F9）：minecraft / docker / console。
+	// 启动路径据此决定「要不要 jar」。
+	InstanceTemplate string
+	// InstancePorts / InstanceVolumes / InstanceEnv 容器模板的额外参数（F9）。
+	// 同样属于实例自身配置，与镜像一致。
+	InstancePorts   []string
+	InstanceVolumes []string
+	InstanceEnv     []string
 	// publishPublic 容器端口要对外发布（公网直出，底账 F16）。
 	//
 	// 由 Daemon 在启动实例前依据"该实例是否有直连隧道"设置：
@@ -843,6 +856,7 @@ func (i *Instance) containerArgv(native *exec.Cmd, identity *runas.Identity) ([]
 		}
 	}
 
+	ports, volumes, extraEnv := i.containerParams()
 	spec := container.Spec{
 		InstanceID:   i.ID,
 		Dir:          i.Dir,
@@ -855,6 +869,10 @@ func (i *Instance) containerArgv(native *exec.Cmd, identity *runas.Identity) ([]
 		JavaHome:     javaHome,
 		ResourcesDir: i.ContainerResourcesDir,
 		Command:      inner,
+		Image:        i.Image(),
+		ExtraPorts:   ports,
+		ExtraVolumes: volumes,
+		ExtraEnv:     append([]string{}, extraEnv...),
 	}
 	return i.Container.Argv(spec)
 }
@@ -2004,3 +2022,38 @@ func (i *Instance) watchExit(pid int) {
 		return
 	}
 }
+
+// SetInstanceImage 设置该实例的容器镜像（空串表示回退到节点的运行时镜像）。
+func (i *Instance) SetInstanceTemplate(tpl string) {
+	i.mu.Lock()
+	i.InstanceTemplate = tpl
+	i.mu.Unlock()
+}
+
+func (i *Instance) SetInstanceImage(img string) {
+	i.mu.Lock()
+	i.InstanceImage = img
+	i.mu.Unlock()
+}
+
+// Image 返回该实例应使用的容器镜像（读锁保护；空串表示用节点默认）。
+func (i *Instance) Image() string {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.InstanceImage
+}
+
+// SetInstanceContainerParams 设置容器模板的额外汇编参数（端口/卷/环境变量）。
+func (i *Instance) SetInstanceContainerParams(ports, volumes, env []string) {
+	i.mu.Lock()
+	i.InstancePorts, i.InstanceVolumes, i.InstanceEnv = ports, volumes, env
+	i.mu.Unlock()
+}
+
+// containerParams 读取容器模板参数（读锁保护）。
+func (i *Instance) containerParams() (ports, volumes, env []string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.InstancePorts, i.InstanceVolumes, i.InstanceEnv
+}
+

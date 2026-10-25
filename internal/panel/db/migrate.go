@@ -797,6 +797,20 @@ var migrations = []migration{
 			`CREATE INDEX IF NOT EXISTS idx_enrollments_uid ON node_enrollments(node_uid)`,
 		},
 	},
+	{
+		Version: 34,
+		Name:    "instance_template",
+		Statements: []string{
+			// 实例模板（F9）：决定这个实例「是什么东西」。
+			//
+			//   minecraft  默认，现有全部实例都是这一类（跑 MC 服务端）
+			//   docker     通用容器：给镜像/端口/卷/环境变量，面板只负责起停与日志
+			//   console    通用控制台：不启动任何进程，只提供能收发 stdin/stdout 的界面
+			//
+			// 默认值取 minecraft：存量实例全部按 MC 处理，升级后行为不变。
+			`ALTER TABLE instances ADD COLUMN template TEXT NOT NULL DEFAULT 'minecraft'`,
+		},
+	},
 }
 
 // migrate 应用尚未执行的迁移。

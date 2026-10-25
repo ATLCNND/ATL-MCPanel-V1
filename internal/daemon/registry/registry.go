@@ -51,6 +51,21 @@ type Meta struct {
 	// 它决定实例进程能不能看见宿主，若能由租户改写，就等于给了
 	// "关掉自己的隔离"这个开关 —— 那正是 T0 修复要堵的口子。
 	Container bool `json:"container,omitempty"`
+
+	// ---- 实例模板（F9）----
+	//
+	// Template 决定这个实例怎么跑：minecraft（默认，java -jar）/ docker（跑镜像）/
+	// console（不启动进程，只提供 stdin/stdout 界面）。
+	//
+	// 与 Container 字段的差别要注意：这些描述的是「实例要做什么」，属于实例自身配置；
+	// Container 描述的是「要不要隔离」，那属于平台状态，不能由租户改写。
+	Template string `json:"template,omitempty"`
+	// Image 容器镜像（仅 docker 模板）。留空则用节点的运行时镜像。
+	Image string `json:"image,omitempty"`
+	// Ports / Volumes / Env 容器映射，形如 "8080:80"、"/srv/x:/data"、"K=V"。
+	Ports   []string `json:"ports,omitempty"`
+	Volumes []string `json:"volumes,omitempty"`
+	Env     []string `json:"env,omitempty"`
 }
 
 // Registry 实例注册表。
@@ -119,6 +134,9 @@ func (r *Registry) ContainerRuntime() *container.Runtime {
 // 比直接起不来更危险。所以这里只记录问题、由启动路径拒绝启动（见 Instance.Start
 // 的容器可用性检查）。
 func (r *Registry) bindContainer(inst *mcprocess.Instance, m Meta) {
+	inst.SetInstanceTemplate(m.Template)
+	inst.SetInstanceImage(m.Image)
+	inst.SetInstanceContainerParams(m.Ports, m.Volumes, m.Env)
 	inst.SetContainer(r.container, r.resourcesDir, m.Container)
 }
 
