@@ -2651,3 +2651,7 @@ export interface StatsResponse {
 export async function getInstanceStats(instanceId: string, hours = 24): Promise<StatsResponse> {
   return apiFetch(`/api/instances/${instanceId}/stats?hours=${hours}`)
 }
+
+export async function importJoinRequest(request: string): Promise<any> {
+  return apiFetch('/api/enroll/import', { method: 'POST', body: JSON.stringify({ request }) })
+}

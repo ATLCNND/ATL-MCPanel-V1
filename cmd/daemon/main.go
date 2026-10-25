@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/config"
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/logger"
@@ -109,6 +110,8 @@ func runEnroll(args []string) {
 		}
 	}
 	cfgPath := fs.String("config", defCfg, "配置文件路径（用于取 node_uid 目录与证书目录的默认值）")
+	// --init：③ 节点发起。只生成一段「接入请求」并打印，等管理员贴回面板。
+	initMode := fs.Bool("init", false, "生成接入请求（③ 节点发起）：打印一行字符串，交给管理员粘贴到面板")
 	_ = fs.Parse(args)
 
 	// 默认值取运行中的配置：**必须复用同一个 state 目录**，否则会生成新的 node_uid ——
@@ -146,6 +149,22 @@ func runEnroll(args []string) {
 	}
 	if *certDir == "" {
 		*certDir = cfgCertDir
+	}
+
+	if *initMode {
+		req, err := daemon.BuildJoinRequest(daemon.EnrollOptions{
+			NodeName: *name, CertDir: *certDir, StateDir: *stateDir,
+		}, 30*time.Minute)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "❌ 生成接入请求失败："+err.Error())
+			os.Exit(1)
+		}
+		fmt.Println("把下面这一整行复制到面板「节点管理 → 凭证交换 → 粘贴导入」：")
+		fmt.Println()
+		fmt.Println(req)
+		fmt.Println()
+		fmt.Println("有效期 30 分钟；面板导入后本机即可用同一把钥匙完成接入（无需再跑其它命令）。")
+		return
 	}
 
 	if *panel == "" || *token == "" {

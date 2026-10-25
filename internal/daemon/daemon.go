@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -518,6 +520,8 @@ func (d *Daemon) Run() error {
 
 	// 3. 心跳循环（同时上报主机资源，供「节点监控」页与磁盘告警使用）
 	hostCollector := hoststats.New()
+	// revokedLogged 只在被明确拒绝时提示一次，避免刷屏
+	var revokedLogged bool
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -546,6 +550,23 @@ func (d *Daemon) Run() error {
 			BackupDiskTotal: bstat.DiskTotal,
 		})
 		if err != nil {
+
+			// 被面板**明确拒绝**（凭证已撤销 / 要求凭证交换接入 / 证书不对）时，
+			// 每 10 秒重试一次毫无意义：它不会自愈，只会把日志刷满，
+			// 让人以为是网络抖动。这里降级到每 5 分钟一次，并且只提示一次。
+			//
+			// 说明：**没有**自动删除本地证书。删了之后连「重新接入」都做不了
+			//（enroll 需要旧私钥证明延续性），交给管理员处置更安全。
+			if status.Code(err) == codes.PermissionDenied {
+				if !revokedLogged {
+					d.log.Error("面板拒绝了本节点：凭证已失效，已停止常规心跳",
+						"原因", err.Error(),
+						"下一步", "在面板上重新签发 token 并在节点执行 atl-daemon enroll")
+					revokedLogged = true
+				}
+				ticker.Reset(5 * time.Minute)
+				continue
+			}
 			d.log.Warn("心跳失败", "error", err)
 		}
 	}

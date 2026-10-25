@@ -7,6 +7,9 @@
 package scheduler
 
 import (
+	"crypto/x509"
+	"encoding/pem"
+	"os"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -54,6 +57,8 @@ type Options struct {
 
 	// 磁盘告警阈值（MB）
 	DiskWarnMB int64
+	// TLSCertPath 面板 HTTPS 证书路径（空 = 未配置，不做到期检查）
+	TLSCertPath string
 	// 轮询间隔
 	Interval time.Duration
 }
@@ -121,6 +126,7 @@ func (s *Scheduler) Stop() {
 func (s *Scheduler) RunOnce(ctx context.Context) {
 	s.checkInstances(ctx)
 	s.checkNodes(ctx)
+	s.checkTLSCert(ctx)
 	s.checkExpiry(ctx)
 	s.sampleMetrics(ctx)
 	s.runDueBackups(ctx)
@@ -651,4 +657,51 @@ func (s *Scheduler) stopForDiskLimit(ctx context.Context, instanceID string, use
 	s.raise(ctx, "instance_disk_autostop", "critical", instanceID,
 		fmt.Sprintf("实例 %s 因磁盘超限被自动停止", instanceID),
 		fmt.Sprintf("已用 %d MB 超过配额 %d MB。请清理后手动启动。", usedMB, limitMB))
+}
+
+// checkTLSCert 面板 HTTPS 证书的到期检查（底账 F7 / 验收清单 B-65）。
+//
+// 为什么必须有：证书到期当天面板会突然打不开，而这件事**完全可以提前一个月知道**。
+// 没有这条检查的话，唯一的「告警」就是用户某天访问不了面板。
+//
+// 判据：剩余 <30 天 → warning；剩余 <7 天 → critical；证书读不到/解析失败 → 也告警
+//（配置里指了证书却读不出来，同样是「HTTPS 会挂」的早期信号）。
+func (s *Scheduler) checkTLSCert(ctx context.Context) {
+	if s.opts.TLSCertPath == "" {
+		return
+	}
+	const kind = "tls_cert"
+	const target = "panel"
+	raw, err := os.ReadFile(s.opts.TLSCertPath)
+	if err != nil {
+		s.raise(ctx, kind, "warning", target, "面板证书读不到", s.opts.TLSCertPath+": "+err.Error())
+		return
+	}
+	blk, _ := pem.Decode(raw)
+	if blk == nil {
+		s.raise(ctx, kind, "warning", target, "面板证书不是合法的 PEM", s.opts.TLSCertPath)
+		return
+	}
+	cert, err := x509.ParseCertificate(blk.Bytes)
+	if err != nil {
+		s.raise(ctx, kind, "warning", target, "面板证书解析失败", err.Error())
+		return
+	}
+	days := int(time.Until(cert.NotAfter).Hours() / 24)
+	switch {
+	case days < 0:
+		s.raise(ctx, kind, "critical", target,
+			fmt.Sprintf("面板证书已过期 %d 天", -days),
+			fmt.Sprintf("到期时间 %s；浏览器会直接拒绝连接", cert.NotAfter.Format(time.RFC3339)))
+	case days < 7:
+		s.raise(ctx, kind, "critical", target,
+			fmt.Sprintf("面板证书 %d 天后到期", days),
+			"请尽快更换；到期后面板将无法以 HTTPS 访问")
+	case days < 30:
+		s.raise(ctx, kind, "warning", target,
+			fmt.Sprintf("面板证书 %d 天后到期", days),
+			"建议安排更换；面板「关于 → HTTPS 证书」里可以重新上传或生成")
+	default:
+		s.resolve(ctx, kind, target)
+	}
 }

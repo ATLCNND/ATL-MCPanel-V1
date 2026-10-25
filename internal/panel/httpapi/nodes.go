@@ -64,13 +64,13 @@ func firstNonZero(vals ...int) int {
 
 // nodeView 节点列表项（不含 SSH 凭据）。
 type nodeView struct {
-	ID        int64  `json:"id"`
-	Name      string `json:"name"`
-	IP        string `json:"ip"`
-	PublicIP  string `json:"public_ip"`
-	SSHUser   string `json:"ssh_user"`
-	SSHPort   int    `json:"ssh_port"`
-	HasAuth   bool   `json:"has_auth"`
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	IP       string `json:"ip"`
+	PublicIP string `json:"public_ip"`
+	SSHUser  string `json:"ssh_user"`
+	SSHPort  int    `json:"ssh_port"`
+	HasAuth  bool   `json:"has_auth"`
 	// AuthType 当前凭据是密码还是密钥（空 = 升级前登记的老节点，自动判断）
 	AuthType string `json:"auth_type"`
 	// 两个可覆盖端口（0 = 用面板全局配置）
@@ -80,7 +80,7 @@ type nodeView struct {
 	EnrollMode string `json:"enroll_mode"`
 	// NodeUID 节点的稳定身份（迁移 v32，Daemon 首次启动生成）。老节点为空。
 	NodeUID string `json:"node_uid"`
-	Status     string `json:"status"`
+	Status  string `json:"status"`
 	// Online 界面该用的"在线/离线"：按心跳新鲜度算出来的（见 nodestatus.go）。
 	// status 只是数据库里的原始列——Daemon 失联时它**不会**自己变成 offline，
 	// 只看它会把"已经掉线 4 分钟的节点"显示成在线。
@@ -305,6 +305,23 @@ func (s *Server) handleRevokeNodeCredential(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
+	// 节点上还有实例时不能直接删：instances.node_id 有外键，删了只会得到一句
+	// FOREIGN KEY constraint failed（真机踩到），用户看不懂也不知道该做什么。
+	//
+	// 注意顺序：**凭证已经在上一步被标撤销了**，所以即使节点行保留，它下一次心跳
+	// 同样会被拒。「切断授权」与「清理记录」是两件事，不该互相拖累。
+	var instCount int
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM instances WHERE node_id = ?`, id).Scan(&instCount)
+	if instCount > 0 {
+		s.audit(r, "revoke_node_credential", strconv.FormatInt(id, 10),
+			fmt.Sprintf("uid=%s 实例=%d 保留记录", uid, instCount))
+		writeJSON(w, http.StatusConflict, map[string]interface{}{
+			"revoked": true,
+			"message": fmt.Sprintf("凭证已撤销，该节点下一次心跳就会被拒；但节点上还有 %d 个实例，"+
+				"为避免误删它们的记录，节点条目先保留。迁移或删除这些实例后即可彻底移除节点。", instCount),
+		})
+		return
+	}
 	if _, err := s.db.Exec(`DELETE FROM nodes WHERE id = ?`, id); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -528,8 +545,8 @@ func (s *Server) handleDeployNode(w http.ResponseWriter, r *http.Request) {
 		// 直接把配置里的 `:9091` 下发的话，每台节点的管理口都会监听所有网卡
 		//（2026-10-02 安全审查发现内测节点的 9091 从公网可达就是这个原因）。
 		// 该节点自己的 Daemon 端口（nodes.grpc_port，0/缺省时用面板配置）
-		GRPCListen: s.daemonListenForWithPort(nv.IP, nv.DaemonGRPCPort),
-		ServiceName:  s.daemonServiceName,
+		GRPCListen:  s.daemonListenForWithPort(nv.IP, nv.DaemonGRPCPort),
+		ServiceName: s.daemonServiceName,
 		// frpc 就在面板二进制旁边（面板包 bin/ 里带着）——有就一并下发，
 		// 让"给实例开公网端口"开箱可用；没有时跳过（穿透是可选能力）。
 		FrpcBinary: readSiblingBinary(binPath, "frpc"),
@@ -722,7 +739,7 @@ func readSiblingBinary(refPath, name string) []byte {
 // 为什么要按节点算，而不是把配置里的值原样下发（2026-10-02 安全审查）：
 // `server.daemon_grpc_listen` 的默认值是 `":9091"` —— 也就是**所有网卡**。
 // 一键部署会把它写进节点配置，于是每台节点的 Daemon 管理口都摆在公网上
-//（虽然要求 mTLS，但没有任何理由多开这个面）。实测内测节点上 `:::9091`
+// （虽然要求 mTLS，但没有任何理由多开这个面）。实测内测节点上 `:::9091`
 // 从公网可达，就是因为这个默认值。
 //
 // 规则（既修掉默认值，又不覆盖管理员的显式选择）：
@@ -768,7 +785,7 @@ func isLoopbackHost(host string) bool {
 // grpcAddressFor 返回**这个节点**该用来连面板 gRPC 的地址。
 //
 // 为什么要按节点区分（2026-09-30 实测踩到）：面板的 gRPC 默认只监听回环
-//（`grpc_listen: 127.0.0.1:9090`，gRPC 是**明文 + 仅 CA 校验节点证书**的管理口，
+// （`grpc_listen: 127.0.0.1:9090`，gRPC 是**明文 + 仅 CA 校验节点证书**的管理口，
 // 不该直接暴露公网）。如果节点就是面板本机，却把 external_url 推导出来的
 // 公网域名交给它，Daemon 会一直 `connect: connection refused`：
 //

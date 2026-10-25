@@ -2,11 +2,14 @@ package httpapi
 
 import (
 	crand "crypto/rand"
+	"crypto/ecdsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"strings"
@@ -254,4 +257,120 @@ func randomTokenString() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+// handleEnrollImport POST /api/enroll/import（管理员）——「③ 节点发起」的导入端。
+//
+// 请求体：{ "request": "atl-join-v1.<payload>.<sig>" }
+//
+// 校验链（任何一步不过就拒，且不透露具体哪一步 —— 这个端点是管理员接口，但没必要帮人试探）：
+//   1. 格式与版本；
+//   2. **过期时间**（默认 30 分钟，粘贴晚了就失效）；
+//   3. **签名**：用 payload 里 CSR 的公钥验证 —— 验签通过即证明发起方持有该私钥。
+//      这是这套流程的安全根基：请求字符串被旁观者抄走也用不了。
+//   4. node_uid 非空、CSR 可解析。
+//
+// 通过后：签 CSR、记录 pubkey 指纹（后续续期必须沿用）、按 node_uid 建/更新节点行。
+func (s *Server) handleEnrollImport(w http.ResponseWriter, r *http.Request) {
+	if !requireAdminIn(w, r) {
+		return
+	}
+	if s.ca == nil {
+		writeErr(w, http.StatusServiceUnavailable, "面板未启用 PKI，无法签发节点证书")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var body struct {
+		Request string `json:"request"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "无效请求体")
+		return
+	}
+	req, err := verifyJoinRequest(strings.TrimSpace(body.Request))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	certPEM, err := s.ca.SignCSR([]byte(req.CSR), req.NodeName, req.NodeUID, enrollCertTTL)
+	if err != nil {
+		s.audit(r, "enroll_import_failed", req.NodeUID, err.Error())
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	expires := time.Now().Add(enrollCertTTL)
+	if _, err := s.db.Exec(`INSERT INTO node_enrollments (node_uid, cert_fp, pubkey_fp, expires_at)
+		VALUES (?, ?, ?, ?)`, req.NodeUID, sha256Hex(certPEM), csrPubkeyFingerprint(req.CSR), expires.Unix()); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.upsertEnrolledNode(req.NodeName, req.NodeUID, "")
+	s.audit(r, "enroll_import", req.NodeUID, "name="+req.NodeName)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"cert":        string(certPEM),
+		"ca":          string(s.ca.CertPEM),
+		"node_uid":    req.NodeUID,
+		"node_name":   req.NodeName,
+		"panel_grpc":  s.grpcPublicAddress(),
+		"expires_at":  expires.UTC().Format(time.RFC3339),
+		"renew_after": time.Now().Add(enrollCertTTL - 7*24*time.Hour).UTC().Format(time.RFC3339),
+	})
+}
+
+// verifyJoinRequest 解析并校验「③ 节点发起」的接入请求。
+func verifyJoinRequest(s string) (daemonJoinRequest, error) {
+	var out daemonJoinRequest
+	parts := strings.Split(s, ".")
+	if len(parts) != 3 || parts[0] != "atl-join-v1" {
+		return out, fmt.Errorf("不是合法的接入请求（应为 atl-join-v1.<载荷>.<签名>）")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return out, fmt.Errorf("载荷不是合法的 base64url")
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return out, fmt.Errorf("签名不是合法的 base64url")
+	}
+	if err := json.Unmarshal(payload, &out); err != nil {
+		return out, fmt.Errorf("载荷不是合法的 JSON")
+	}
+	if out.V != 1 {
+		return out, fmt.Errorf("不支持的请求版本 %d（面板最高支持 1）", out.V)
+	}
+	if out.ExpiresAt < time.Now().Unix() {
+		return out, fmt.Errorf("接入请求已过期，请在节点上重新执行 atl-daemon enroll --init")
+	}
+	if strings.TrimSpace(out.NodeUID) == "" {
+		return out, fmt.Errorf("请求里缺少 node_uid")
+	}
+	blk, _ := pem.Decode([]byte(out.CSR))
+	if blk == nil {
+		return out, fmt.Errorf("请求里的 CSR 不是合法 PEM")
+	}
+	csr, err := x509.ParseCertificateRequest(blk.Bytes)
+	if err != nil {
+		return out, fmt.Errorf("解析 CSR 失败: %w", err)
+	}
+	// 签名校验：用 CSR 里的公钥验，而不是信任请求里自称的任何东西。
+	sum := sha256.Sum256([]byte(parts[1]))
+	pub, ok := csr.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return out, fmt.Errorf("请求里的公钥类型不受支持")
+	}
+	if !ecdsa.VerifyASN1(pub, sum[:], sig) {
+		return out, fmt.Errorf("接入请求的签名无效（可能被篡改，或不是由该私钥签发）")
+	}
+	return out, nil
+}
+
+// daemonJoinRequest 与 daemon.JoinRequest 同构（面板不 import daemon 包，避免依赖倒挂）。
+type daemonJoinRequest struct {
+	V         int    `json:"v"`
+	NodeUID   string `json:"node_uid"`
+	NodeName  string `json:"node_name"`
+	Hostname  string `json:"hostname,omitempty"`
+	CSR       string `json:"csr"`
+	ExpiresAt int64  `json:"exp"`
+	Nonce     string `json:"nonce"`
 }

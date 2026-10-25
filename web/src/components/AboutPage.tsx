@@ -7,12 +7,14 @@ import './AboutPage.css'
 /** 关于页直接复用全局元数据缓存，确保品牌、版本和构建信息来自同一个接口。 */
 export default function AboutPage() {
   const meta = usePanelMeta()
-  const rows = [
+  const rows: [string, string][] = [
     ['面板名称', meta.name],
     ['版本', meta.version ? `v${meta.version}` : '—'],
     ['Commit', meta.commit || '—'],
     ['构建时间', formatServerTime(meta.built_at)],
     ['Go 版本', meta.go_version || '—'],
+    // 启用安全入口时把访问路径显示出来：这段随机串否则只能从安装输出里找
+    ...((meta as any).security_entry ? [["访问入口", '/' + (meta as any).security_entry]] as [string, string][] : []),
   ]
 
   return (

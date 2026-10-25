@@ -90,6 +90,26 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ⚠️ ParseToken 只验签名与有效期，**不验 token_version**。
+	//
+	// 那条校验原先只在 requireAuth 中间件里做（见 authUser），而控制台走的是
+	// WebSocket、绕过了中间件 —— 于是「改密码 / 管理员撤销令牌」之后，**旧令牌仍能连控制台**。
+	// 验收清单 B-98 的三条件测试把这个洞测出来了：推进 token_version 后 WSS 依然 101。
+	//
+	// 这里补上同样的检查：用户状态必须 active，且令牌世代号与库里一致。
+	var role, state string
+	var tv int64
+	if err := s.db.QueryRow(
+		`SELECT role, COALESCE(status,''), COALESCE(token_version,0) FROM users WHERE id = ?`,
+		claims.UserID).Scan(&role, &state, &tv); err != nil {
+		writeErr(w, http.StatusUnauthorized, "登录状态已失效")
+		return
+	}
+	if (state != "" && state != "active") || tv != claims.TokenVersion {
+		writeErr(w, http.StatusUnauthorized, "登录状态已失效，请重新登录")
+		return
+	}
+
 	// 权限检查：至少 viewer 才能观察
 	level, ok := s.instanceLevel(claims.UserID, claims.Role, instanceID)
 	if !ok {

@@ -448,3 +448,66 @@ th {
   border: 1px dashed var(--border);
   border-radius: var(--r-xl);
 }
+/* ---- 表单控件统一（底账 A4）----
+ *
+ * 背景：新增的容器模板字段（端口映射 / 卷 / 环境变量 / 可写路径）与「粘贴接入请求」
+ * 用的是 textarea，而页面里原有的输入框样式只覆盖了 input / select ——
+ * 于是这些新控件在表单里明显“不像一家人”（用户直接指出过）。
+ *
+ * 这里把三类控件一起收进同一套外观：背景、边框、圆角、内边距、聚焦态。
+ * 用 tokens 里的变量，浅色/深色主题都跟着走。
+ */
+.cf-grid input,
+.cf-grid select,
+.cf-grid textarea,
+.node-form input,
+.node-form select,
+.node-form textarea,
+.pki-banner input,
+.pki-banner textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-1);
+  background: var(--bg-2, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+.cf-grid textarea,
+.node-form textarea,
+.pki-banner textarea {
+  resize: vertical;
+  min-height: 56px;
+  font-family: inherit;
+}
+
+/* 多行技术值（镜像名、映射、环境变量）用等宽字体更好读 */
+.cf-grid textarea.mono,
+.pki-banner textarea.mono {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+.cf-grid input:focus,
+.cf-grid select:focus,
+.cf-grid textarea:focus,
+.node-form input:focus,
+.node-form select:focus,
+.node-form textarea:focus,
+.pki-banner input:focus,
+.pki-banner textarea:focus {
+  border-color: var(--accent-border, var(--accent));
+  box-shadow: 0 0 0 2px var(--accent-bg);
+}
+
+.cf-grid input::placeholder,
+.cf-grid textarea::placeholder,
+.node-form input::placeholder,
+.pki-banner textarea::placeholder {
+  color: var(--text-3, var(--text-2));
+}

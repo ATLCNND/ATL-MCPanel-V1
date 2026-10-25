@@ -31,6 +31,9 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"go_version":  version.GoVersion(),
 		"logo_url":    s.basePath() + "/branding/logo-128.png",
 		"favicon_url": s.basePath() + "/branding/favicon-64.png",
+		// 自定义安全入口（空 = 未启用）。界面用它告诉管理员「本面板的访问路径」，
+		// 否则这段随机串只能从安装时的输出里找。
+		"security_entry": s.securityEntry,
 	})
 }
 

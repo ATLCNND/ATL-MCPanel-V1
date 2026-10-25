@@ -469,6 +469,7 @@ export default function Instances({ onOpen }: {
           <div className="cf-section">
             <div className="cf-section-title">网络与资源</div>
             <div className="cf-grid">
+              {form.template === 'minecraft' && (<>
               <Field
                 label="游戏端口"
                 required
@@ -494,6 +495,7 @@ export default function Instances({ onOpen }: {
               >
                 <input value={form.min_mem} onChange={set('min_mem')} placeholder="1G" />
               </Field>
+              </>)}
 
               <Field
                 label="CPU 核数"
@@ -568,7 +570,8 @@ export default function Instances({ onOpen }: {
             </div>
           </div>
 
-          {/* ---------------- 启动配置 ---------------- */}
+          {/* ---------------- 启动配置（仅 Minecraft：Java 版本 / 核心 jar / 启动命令）---------------- */}
+          {form.template === 'minecraft' && (
           <div className="cf-section">
             <div className="cf-section-title">启动配置</div>
             <div className="cf-grid">
@@ -636,6 +639,7 @@ export default function Instances({ onOpen }: {
               </Field>
             </div>
           </div>
+          )}
 
           {/* ---------------- 公网端口 ---------------- */}
           {portLines.length > 0 && (

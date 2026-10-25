@@ -549,6 +549,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/tls/status", s.requireAuth(s.handleTLSStatus))
 	// 续期：不要求 token，凭据是**当前仍有效的证书**（走 mTLS），公钥指纹必须一致
 	mux.HandleFunc("POST /api/enroll/renew", s.handleEnrollRenew)
+	// ③ 节点发起：管理员把节点生成的一行「接入请求」粘进来（靠请求内自签名验真，不靠 token）
+	mux.HandleFunc("POST /api/enroll/import", s.requireAuth(s.handleEnrollImport))
 	mux.HandleFunc("POST /api/nodes", s.requireAuth(s.handleCreateNode))
 	// 登记节点时先试连一次（地址 + 凭证），不必等保存后再点部署才发现填错
 	mux.HandleFunc("POST /api/nodes/test", s.requireAuth(s.handleTestNodeAuth))
