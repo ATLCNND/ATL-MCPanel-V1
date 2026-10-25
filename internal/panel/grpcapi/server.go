@@ -33,19 +33,24 @@ type Server struct {
 	online map[string]time.Time // node_id -> 最近心跳时刻
 
 	heartbeats *heartbeatTracker // 心跳写库节流
+	// requireEnrollment 只允许通过凭证交换接入的节点（M4）。见 config.RequireEnrollment。
+	requireEnrollment bool
 }
 
 // NewServer 创建 gRPC 服务。
 //
 // requirePeerCN 传 cfg.Server.GRPCMTLS：开启 mTLS 时对端一定有证书，
 // 于是可以把"节点名"这个自述字段与证书身份绑定起来。
-func NewServer(d *sql.DB, log *logger.Logger, requirePeerCN bool) *Server {
+//
+// requireEnrollment 传 cfg.Server.RequireEnrollment（M4）：开启后只允许走过凭证交换的节点接入。
+func NewServer(d *sql.DB, log *logger.Logger, requirePeerCN, requireEnrollment bool) *Server {
 	return &Server{
-		db:            d,
-		log:           log,
-		requirePeerCN: requirePeerCN,
-		online:        make(map[string]time.Time),
-		heartbeats:    newHeartbeatTracker(heartbeatPersistInterval),
+		db:                d,
+		log:               log,
+		requirePeerCN:     requirePeerCN,
+		requireEnrollment: requireEnrollment,
+		online:            make(map[string]time.Time),
+		heartbeats:        newHeartbeatTracker(heartbeatPersistInterval),
 	}
 }
 
@@ -92,6 +97,10 @@ func (s *Server) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Reg
 		s.log.Warn("节点注册被拒绝：证书身份与节点名不匹配",
 			"node_id", req.NodeId, "cert_cn", peerCertCN(ctx), "error", err)
 		return &pb.RegisterResponse{Accepted: false, Message: "节点身份校验失败"}, nil
+	}
+	if err := s.checkEnrollmentRequired(req.NodeId, req.NodeUid); err != nil {
+		s.log.Warn("节点注册被拒绝：未通过凭证交换", "node_id", req.NodeId, "error", err)
+		return &pb.RegisterResponse{Accepted: false, Message: err.Error()}, nil
 	}
 	s.log.Info("节点注册", "node_id", req.NodeId, "hostname", req.Hostname, "os", req.Os, "cores", req.CpuCores, "mem", req.MemTotal)
 
@@ -163,6 +172,10 @@ func (s *Server) Ping(ctx context.Context, req *pb.PingRequest) (*pb.PingRespons
 	// 为什么放在心跳而不是依赖面板去拨节点：撤销必须能在「面板根本连不到节点」的场景下生效
 	//（这正是凭证交换要解决的部署形态）。节点每 10 秒心跳一次，所以撤销最迟 10 秒生效。
 	// 拒绝用 PermissionDenied：daemon 侧会把它当作「不要再连」处理，而不是普通网络错误重试。
+	if err := s.checkEnrollmentRequired(req.NodeId, ""); err != nil {
+		s.log.Warn("节点心跳被拒绝：未通过凭证交换", "node_id", req.NodeId)
+		return nil, err
+	}
 	if revoked, reason := s.nodeRevoked(req.NodeId); revoked {
 		s.log.Warn("节点心跳被拒绝：已被撤销", "node_id", req.NodeId, "reason", reason)
 		return nil, status.Error(codes.PermissionDenied, "节点已被移除（"+reason+"），请重新接入")
@@ -218,4 +231,31 @@ func (s *Server) nodeRevoked(nodeID string) (bool, string) {
 		return true, "凭证已被撤销"
 	}
 	return false, ""
+}
+
+
+// checkEnrollmentRequired 开启 require_enrollment 时，拒绝**没有走过凭证交换**的节点。
+//
+// 判据：节点行上有 node_uid，且存在未撤销的 enrollment 记录。老的一键部署节点两样都没有，
+// 于是会被拒 —— 这正是这个开关的用途（强制迁移到「面板不存 SSH 凭据」的接入方式）。
+// 默认关闭：升级不会把现存节点直接踢下线。
+func (s *Server) checkEnrollmentRequired(nodeID, nodeUID string) error {
+	if !s.requireEnrollment {
+		return nil
+	}
+	uid := strings.TrimSpace(nodeUID)
+	if uid == "" {
+		_ = s.db.QueryRow("SELECT COALESCE(node_uid,'') FROM nodes WHERE name = ?", nodeID).Scan(&uid)
+	}
+	if uid == "" {
+		return status.Error(codes.PermissionDenied,
+			"本面板要求通过凭证交换接入：请在节点上执行 atl-daemon enroll --panel <面板地址> --token <一次性token>")
+	}
+	var n int
+	_ = s.db.QueryRow("SELECT COUNT(*) FROM node_enrollments WHERE node_uid = ? AND revoked_at IS NULL", uid).Scan(&n)
+	if n == 0 {
+		return status.Error(codes.PermissionDenied,
+			"该节点没有有效的凭证记录：请重新执行一次凭证交换（atl-daemon enroll）")
+	}
+	return nil
 }

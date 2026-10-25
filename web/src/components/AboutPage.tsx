@@ -1,4 +1,5 @@
 import Brand from './Brand'
+import TlsSettings from './TlsSettings'
 import { usePanelMeta } from './usePanelMeta'
 import { formatServerTime } from '../time'
 import './AboutPage.css'
@@ -32,6 +33,8 @@ export default function AboutPage() {
           ))}
         </dl>
       </section>
+
+      <TlsSettings />
 
       <section className="about-card">
         <div className="about-card-title">项目链接</div>

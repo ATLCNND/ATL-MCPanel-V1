@@ -203,3 +203,58 @@ func nodeUIDFromCert(c *x509.Certificate) string {
 	}
 	return ""
 }
+
+// makeCSRWithKey 用**指定密钥**造 CSR —— 续期用例需要「同一把钥匙再签一次」。
+func makeCSRWithKey(t *testing.T, cn string, key *ecdsa.PrivateKey) string {
+	t.Helper()
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: cn},
+	}, key)
+	if err != nil {
+		t.Fatalf("生成 CSR 失败: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
+}
+
+// 续期必须与接入使用**同一个公钥指纹**：同一把钥匙 → 200；换一把钥匙 → 403。
+//
+// 这条用例防的是「两处各算一个指纹」——真机验证抓到过一次：接入存 csr 文本的哈希、
+// 续期比公钥 DER 的哈希，二者永远不等，于是同一把钥匙续期也被拒。单测若只走一条路径
+// 是发现不了的，所以这里刻意让接入与续期各走一次真实 HTTP。
+func TestRenewAcceptsSameKeyRejectsOtherKey(t *testing.T) {
+	srv, ts := newTestServerWithCA(t)
+	admin := loginAs(t, srv, ts, "adm-r1", "adm-r1-pass-1234")
+	uid := "abcdabcd-1111-4222-8333-444455556666"
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("生成密钥失败: %v", err)
+	}
+
+	token := issueJoinToken(t, ts, admin, "panel", uid)
+	code, body := doJSON(t, ts, "POST", "/api/enroll", "", map[string]interface{}{
+		"token": token, "csr": makeCSRWithKey(t, "n1", key), "node_uid": uid, "node_name": "n1",
+	})
+	if code != http.StatusOK {
+		t.Fatalf("接入应成功: %d %v", code, body)
+	}
+
+	// 同一把钥匙续期：必须成功
+	code, body = doJSON(t, ts, "POST", "/api/enroll/renew", "", map[string]interface{}{
+		"node_uid": uid, "csr": makeCSRWithKey(t, "n1", key),
+	})
+	if code != http.StatusOK {
+		t.Fatalf("同一把钥匙续期应成功，实际 %d %v", code, body)
+	}
+	if _, ok := body["cert"]; !ok {
+		t.Error("续期响应里没有新证书")
+	}
+
+	// 换一把钥匙续期：必须拒绝（否则等于把身份让给了别人）
+	other, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	code, _ = doJSON(t, ts, "POST", "/api/enroll/renew", "", map[string]interface{}{
+		"node_uid": uid, "csr": makeCSRWithKey(t, "n1", other),
+	})
+	if code != http.StatusForbidden {
+		t.Errorf("换钥匙续期应 403，实际 %d", code)
+	}
+}

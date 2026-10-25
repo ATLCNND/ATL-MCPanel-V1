@@ -24,21 +24,25 @@ func (s *Server) handleEnrollRenew(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "面板未启用 PKI，无法续期")
 		return
 	}
-	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
-		writeErr(w, http.StatusUnauthorized, "续期必须通过 mTLS 提供当前证书")
+	// 认证方式：**不看连接层证书**（面板的 HTTP 监听并不请求客户端证书，靠它永远拿不到）。
+	// 证明「你就是那个节点」靠两件事：
+	//   ① 请求里声明的 node_uid 在 panel 有**未撤销**的 enrollment 记录；
+	//   ② 新 CSR 的公钥指纹与该记录里登记的一致 —— 而 CSR 自带自签名校验（在 SignCSR 里），
+	//      自签名有效即证明对方**持有对应私钥**。
+	// 于是不需要 mTLS 也具备同样的安全属性：拿不到原私钥就换不出新证书。
+	var req struct {
+		NodeUID string `json:"node_uid"`
+		CSR     string `json:"csr"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "无效请求体")
 		return
 	}
-	cur := r.TLS.PeerCertificates[0]
-	uid := certNodeUID(cur)
-	if uid == "" {
-		writeErr(w, http.StatusBadRequest, "当前证书里没有节点身份（node_uid），请重新走一次凭证交换")
+	uid := strings.TrimSpace(req.NodeUID)
+	if uid == "" || req.CSR == "" {
+		writeErr(w, http.StatusBadRequest, "node_uid 与 csr 均为必填")
 		return
 	}
-	if time.Now().After(cur.NotAfter) {
-		writeErr(w, http.StatusUnauthorized, "当前证书已过期，请重新走一次凭证交换")
-		return
-	}
-
 	var revoked int
 	_ = s.db.QueryRow(`SELECT COUNT(*) FROM node_enrollments WHERE node_uid = ? AND revoked_at IS NOT NULL`, uid).Scan(&revoked)
 	if revoked > 0 {
@@ -46,15 +50,13 @@ func (s *Server) handleEnrollRenew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, enrollBodyLimit)
-	var req struct {
-		CSR string `json:"csr"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CSR == "" {
-		writeErr(w, http.StatusBadRequest, "缺少 csr")
+	// 用节点行上的名字作为证书 CN（保持显示名一致）
+	name := ""
+	_ = s.db.QueryRow(`SELECT name FROM nodes WHERE node_uid = ?`, uid).Scan(&name)
+	if name == "" {
+		writeErr(w, http.StatusForbidden, "找不到该节点记录，请重新走一次凭证交换")
 		return
 	}
-
 	// 公钥指纹必须与首次登记一致：续期是「同一把钥匙换张新证」，不是换钥匙
 	newFP := csrPubkeyFingerprint(req.CSR)
 	if newFP == "" {
@@ -69,7 +71,6 @@ func (s *Server) handleEnrollRenew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name := cur.Subject.CommonName
 	certPEM, err := s.ca.SignCSR([]byte(req.CSR), name, uid, enrollCertTTL)
 	if err != nil {
 		s.auditAs(0, r, "enroll_renew_failed", uid, err.Error())

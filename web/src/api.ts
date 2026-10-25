@@ -1152,6 +1152,38 @@ export async function getLocalNode(): Promise<LocalNodeState> {
   return apiFetch('/api/nodes/local')
 }
 
+/**
+ * 签发一次性 join token（凭证交换）。
+ * mode=panel：面板发起（把 token 贴到节点上执行 enroll）；mode=node：节点发起（预留）。
+ */
+export async function issueJoinToken(mode: 'panel' | 'node', nodeUID = ''): Promise<{
+  token: string; expires_at: string; ttl_seconds: number; panel_grpc: string; mode: string
+}> {
+  return apiFetch('/api/enroll/token', {
+    method: 'POST',
+    body: JSON.stringify({ mode, node_uid: nodeUID }),
+  })
+}
+
+/** 面板 HTTPS 证书的当前状态（配置路径、是否已启用、证书详情与剩余天数）。 */
+export async function getTLSStatus(): Promise<{
+  cert_path: string; key_path: string; configured: boolean; https_now: boolean;
+  generated_path?: string; subject?: string; dns_names?: string[]; ip_names?: string[];
+  not_after?: string; days_left?: number; self_signed?: boolean
+}> {
+  return apiFetch('/api/tls/status')
+}
+
+/** 生成自签证书（返回落盘路径与到期时间）。 */
+export async function generateSelfSigned(hosts: string[]): Promise<any> {
+  return apiFetch('/api/tls/self-signed', { method: 'POST', body: JSON.stringify({ hosts }) })
+}
+
+/** 上传正式证书（Nginx 格式 pem + key 文本）。 */
+export async function uploadCert(cert: string, key: string): Promise<any> {
+  return apiFetch('/api/tls/upload', { method: 'POST', body: JSON.stringify({ cert, key }) })
+}
+
 /** 把本机正在运行的 Daemon 直接登记成节点（ip=127.0.0.1，不需要 SSH 凭据）。 */
 export async function adoptLocalNode(): Promise<{ created: boolean; node: any; message: string }> {
   return apiFetch('/api/nodes/local/adopt', { method: 'POST', body: '{}' })

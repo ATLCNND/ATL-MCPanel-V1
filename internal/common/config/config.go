@@ -85,6 +85,13 @@ type ServerConfig struct {
 	// ⚠️ 它降低的是「被发现」的概率，**不是鉴权替代品**。
 	// 只接受字母数字与 - _. ；含其他字符会被忽略（视为未配置）。
 	SecurityEntry string `yaml:"security_entry"`
+
+	// RequireEnrollment 只允许**凭证交换接入**的节点（M4）。
+	//
+	// 打开后，没有 node_uid 或没有 enrollment 记录的节点会在注册/心跳时被拒 ——
+	// 也就是「老的一键部署节点必须迁移一次」才能继续用。
+	// 默认 false：升级不会把现存节点直接踢下线；迁移完成后再打开。
+	RequireEnrollment bool `yaml:"require_enrollment"`
 	WebDir      string `yaml:"web_dir"`      // 前端静态资源目录（SPA），为空则不托管
 
 	// PanelName 面板**显示名称**：登录页、侧边栏品牌区、浏览器标题都用它。

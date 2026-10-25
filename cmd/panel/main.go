@@ -160,7 +160,7 @@ func main() {
 	grpcSrv := grpc.NewServer(grpcOpts...)
 	// 启用 mTLS 时，Register/Ping 必须校验"对端证书身份 == 它声称的节点名"，
 	// 否则任何持有 CA 签发证书的节点都能冒名顶替另一个节点。
-	pb.RegisterDaemonServiceServer(grpcSrv, grpcapi.NewServer(d, log, cfg.Server.GRPCMTLS))
+	pb.RegisterDaemonServiceServer(grpcSrv, grpcapi.NewServer(d, log, cfg.Server.GRPCMTLS, cfg.Server.RequireEnrollment))
 
 	// 在独立 goroutine 启动 gRPC
 	lis, err := net.Listen("tcp", cfg.Server.GRPCListen)
@@ -182,6 +182,8 @@ func main() {
 		PanelName:   cfg.Server.PanelName,
 		ListenAddr:  cfg.Server.Listen,
 		TLSListen:   cfg.Server.TLSListen,
+		TLSCert:     cfg.Server.TLSCert,
+		TLSKey:      cfg.Server.TLSKey,
 		ExternalURL: cfg.Server.ExternalURL,
 		PanelFrpDir: cfg.Server.PanelFrpDir,
 		TrustProxy:  cfg.Server.TrustProxy,
@@ -189,6 +191,7 @@ func main() {
 		SecurityEntry: cfg.Server.SecurityEntry,
 		CA:          ca,
 		GRPCMTLS:    cfg.Server.GRPCMTLS,
+
 		Backup:      backupMgr,
 
 		DaemonBinary:   cfg.Server.DaemonBinary,

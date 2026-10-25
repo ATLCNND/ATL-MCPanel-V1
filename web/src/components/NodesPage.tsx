@@ -4,9 +4,11 @@ import {
   listNodes, createNode, deleteNode, probeNode, deployNode,
   restartDaemon, daemonLogs, getPKI, getNodeCert,
   listNodeResources, uploadNodeResource, deleteNodeResource, updateNode, testNodeAuth,
-  clearNodeCredential, getLocalNode, adoptLocalNode, installLocalNode,
+  clearNodeCredential, getLocalNode, adoptLocalNode, installLocalNode, issueJoinToken,
 } from '../api'
 import { parseServerTime } from '../time'
+import { basePath } from '../api'
+import { copyText } from '../clipboard'
 import './NodesPage.css'
 
 function fmtTime(s: string): string {
@@ -197,6 +199,24 @@ export default function NodesPage() {
     }
   }
 
+  /** 凭证交换：面板签一次性 token，并给出节点上要执行的那条命令 */
+  const [joinCmd, setJoinCmd] = useState<{ cmd: string; expires: string } | null>(null)
+  const startCredExchange = async () => {
+    setBusy(true); setError(''); setMsg(''); setJoinCmd(null)
+    try {
+      const r = await issueJoinToken('panel', '')
+      const panelURL = window.location.origin + basePath()
+      setJoinCmd({
+        cmd: `atl-daemon enroll --panel ${panelURL} --token ${r.token}`,
+        expires: r.expires_at,
+      })
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   /** 本机已装好 daemon → 直接登记（不需要 SSH 凭据） */
   const adoptLocal = async () => {
     const r = await wrap(() => adoptLocalNode(), '已接入本机节点')
@@ -278,6 +298,11 @@ export default function NodesPage() {
       <div className="page-toolbar">
         <button onClick={load} disabled={busy}>刷新</button>
         <button className="primary" onClick={() => setShowAdd(!showAdd)}>+ 登记节点</button>
+        {/* 凭证交换：面板签 token，节点上跑一条命令换证书（面板不存任何凭据） */}
+        <button onClick={startCredExchange} disabled={busy}
+          title="生成一次性 token，在节点上执行一条命令即可接入（面板不保存 SSH 凭据）">
+          凭证交换接入
+        </button>
       </div>
 
       <div className="nodes-body">
@@ -292,6 +317,18 @@ export default function NodesPage() {
             <span className="muted">CA：{pki.subject}</span>
             <span className="muted">到期：{parseServerTime(pki.not_after).toLocaleDateString('zh-CN')}</span>
             {!pki.grpc_mtls && <span className="err-text">建议在 config.yaml 中设置 server.grpc_mtls: true</span>}
+          </div>
+        )}
+
+        {joinCmd && (
+          <div className="pki-banner">
+            <span className="status status-running">一次性 token 已生成</span>
+            <span className="muted">请在<b>目标节点</b>上以 root 执行下面这条命令（token {joinCmd.expires} 过期，用后即焚）：</span>
+            <div style={{ width: '100%' }}>
+              <code className="mono" style={{ wordBreak: 'break-all' }}>{joinCmd.cmd}</code>
+            </div>
+            <button className="small" onClick={() => { copyText(joinCmd.cmd); setMsg('命令已复制') }}>复制命令</button>
+            <button className="small" onClick={() => setJoinCmd(null)}>关闭</button>
           </div>
         )}
 

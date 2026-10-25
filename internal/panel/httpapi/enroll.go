@@ -191,7 +191,10 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 
 	// ---- 记录 enrollment 并登记节点 ----
 	certFP := sha256Hex(certPEM)
-	pubFP := sha256Hex([]byte(req.CSR))
+	// 指纹必须与续期侧用**同一个函数**算：续期比的是「公钥 DER 的 sha256」。
+	// 这里原先存的是 CSR 文本的哈希 —— 两者永远不相等，于是续期一律被判「换了钥匙」
+	//（真机验证当场抓到：同一把钥匙续期返回 403）。
+	pubFP := csrPubkeyFingerprint(req.CSR)
 	expires := time.Now().Add(enrollCertTTL)
 	if _, err := s.db.Exec(`INSERT INTO node_enrollments (node_uid, cert_fp, pubkey_fp, expires_at)
 		VALUES (?, ?, ?, ?)`, req.NodeUID, certFP, pubFP, expires.Unix()); err != nil {

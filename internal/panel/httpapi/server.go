@@ -47,6 +47,9 @@ type Options struct {
 	DaemonGRPCListen  string            // 节点 Daemon gRPC 监听
 	// SecurityEntry 自定义安全入口：非空时面板只在 /<entry>/ 下提供界面与接口，
 	// 其余路径一律 404。用于降低被批量扫描/被运营商风控的命中率（不替代鉴权）。
+	// TLSCert / TLSKey 面板 HTTPS 证书与私钥路径（来自 config），供 /api/tls/status 展示
+	TLSCert string
+	TLSKey  string
 	SecurityEntry string
 	Logger        *logger.Logger // 日志
 
@@ -73,6 +76,8 @@ type Server struct {
 	logger      *logger.Logger
 	trustProxy  bool   // 是否信任 X-Forwarded-For（面板位于代理之后时开启）
 	securityEntry string // 自定义安全入口（空 = 关闭，路径前缀为 /<entry>）
+	tlsCert       string // 当前配置的面板证书路径（展示用）
+	tlsKey        string // 当前配置的私钥路径（展示用）
 	// enrollLimit 给未鉴权的 /api/enroll 限速（见 enroll.go）
 	enrollLimit *enrollLimiter
 	userLimiter *loginLimiter     // 按用户名的登录限流
@@ -198,6 +203,8 @@ func NewServer(d *sql.DB, a *auth.Service, n *nodemgr.Manager, opts Options) *Se
 		logger:      log,
 		trustProxy:    opts.TrustProxy,
 		securityEntry: normalizeSecurityEntry(opts.SecurityEntry),
+		tlsCert:       opts.TLSCert,
+		tlsKey:        opts.TLSKey,
 		enrollLimit:   newEnrollLimiter(),
 		userLimiter: newLoginLimiter(userLimiterCfg),
 		ipLimiter:   newLoginLimiter(ipLimiterCfg),
@@ -535,6 +542,11 @@ func (s *Server) Handler() http.Handler {
 	// 凭证交换：签发一次性 token（管理员）；用 token 换证书（**未鉴权**，靠 token + 限速）
 	mux.HandleFunc("POST /api/enroll/token", s.requireAuth(s.handleIssueJoinToken))
 	mux.HandleFunc("POST /api/enroll", s.handleEnroll)
+	// 生成自签证书（M5/F7）：给没有正式证书的人一条立刻能用 HTTPS 的路
+	mux.HandleFunc("POST /api/tls/self-signed", s.requireAuth(s.handleGenerateSelfSigned))
+	// 上传正式证书（Nginx 格式），落盘前校验配对、有效期与 SAN
+	mux.HandleFunc("POST /api/tls/upload", s.requireAuth(s.handleUploadCert))
+	mux.HandleFunc("GET /api/tls/status", s.requireAuth(s.handleTLSStatus))
 	// 续期：不要求 token，凭据是**当前仍有效的证书**（走 mTLS），公钥指纹必须一致
 	mux.HandleFunc("POST /api/enroll/renew", s.handleEnrollRenew)
 	mux.HandleFunc("POST /api/nodes", s.requireAuth(s.handleCreateNode))
