@@ -50,6 +50,7 @@ func buildCreateInstanceRequest(req createInstanceReq, coreType string, containe
 		Ports:    req.Ports,
 		Volumes:  req.Volumes,
 		Env:      req.Env,
+		Tmpfs:    req.Tmpfs,
 	}
 }
 
@@ -100,6 +101,9 @@ type createInstanceReq struct {
 	Ports   []string `json:"ports"`
 	Volumes []string `json:"volumes"`
 	Env     []string `json:"env"`
+	// Tmpfs 需要可写的路径（docker 模板）：只读根下给这些路径挂内存盘，
+	// 解决 nginx 之类的镜像启动时要写 /var/cache 的问题。
+	Tmpfs   []string `json:"tmpfs"`
 	NodeID       int64  `json:"node_id"`
 	InstanceID   string `json:"instance_id"`
 	Name         string `json:"name"`

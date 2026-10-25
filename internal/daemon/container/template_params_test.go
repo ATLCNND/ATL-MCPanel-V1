@@ -77,3 +77,30 @@ func TestArgvNoDoublePortPublish(t *testing.T) {
 		t.Errorf("用户的映射没进 argv: %s", joined)
 	}
 }
+
+// tmpfs 必须真的进 docker run（只读根下的可写例外，nginx 这类镜像靠它）。
+func TestArgvIncludesTmpfs(t *testing.T) {
+	rt := NewWithBin("docker", "img:test")
+	argv, err := rt.Argv(Spec{
+		InstanceID:        "t1",
+		Dir:               "/srv/t1",
+		UID:               1000,
+		GID:               1000,
+		ExtraTmpfs:        []string{"/var/cache/nginx", "/var/run"},
+		AllowEmptyCommand: true,
+	})
+	if err != nil {
+		t.Fatalf("构造 argv 失败: %v", err)
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--tmpfs /var/cache/nginx:size=64m,mode=1777") {
+		t.Errorf("tmpfs 没进 argv: %s", joined)
+	}
+	if !strings.Contains(joined, "--tmpfs /var/run:size=64m,mode=1777") {
+		t.Errorf("第二个 tmpfs 没进 argv: %s", joined)
+	}
+	// 隔离不能被 tmpfs 换掉
+	if !strings.Contains(joined, "--read-only") {
+		t.Errorf("根文件系统应仍是只读: %s", joined)
+	}
+}

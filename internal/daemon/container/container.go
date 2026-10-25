@@ -401,6 +401,8 @@ type Spec struct {
 	// AllowEmptyCommand 允许 Command 为空：此时不覆盖镜像入口，直接用镜像自带的
 	// ENTRYPOINT / CMD。通用 Docker 模板靠它 —— 用户只给镜像，不该被迫再写启动命令。
 	AllowEmptyCommand bool
+	// ExtraTmpfs 额外挂 tmpfs 的路径（只读根下的可写例外，默认 64MB/条）
+	ExtraTmpfs []string
 }
 
 // Argv 生成完整的 docker 命令行（第一个元素是 docker 可执行文件）。
@@ -483,6 +485,12 @@ func (r *Runtime) Argv(spec Spec) ([]string, error) {
 		argv = append(argv,
 			"-e", "JAVA_HOME="+spec.JavaHome,
 			"-e", "PATH="+binDirs+":/usr/local/bin:/usr/bin:/bin")
+	}
+	for _, t := range spec.ExtraTmpfs {
+		// mode=1777：容器以**实例专用 UID** 运行，而 tmpfs 根默认属 root 0755，
+		// 于是镜像连自己的缓存目录都建不出来（真机从 “Read-only file system” 变成
+		// “Permission denied” 才发现的）。1777 与 /tmp 同语义：谁都能建自己的文件。
+		argv = append(argv, "--tmpfs", t+":size=64m,mode=1777")
 	}
 	for _, v := range spec.ExtraVolumes {
 		argv = append(argv, "-v", v)

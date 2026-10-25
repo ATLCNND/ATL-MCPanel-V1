@@ -148,6 +148,7 @@ type Instance struct {
 	InstancePorts   []string
 	InstanceVolumes []string
 	InstanceEnv     []string
+	InstanceTmpfs   []string
 	// publishPublic 容器端口要对外发布（公网直出，底账 F16）。
 	//
 	// 由 Daemon 在启动实例前依据"该实例是否有直连隧道"设置：
@@ -875,7 +876,7 @@ func (i *Instance) containerArgv(native *exec.Cmd, identity *runas.Identity) ([]
 		}
 	}
 
-	ports, volumes, extraEnv := i.containerParamsLocked()
+	ports, volumes, extraEnv, tmpfs := i.containerParamsLocked()
 	spec := container.Spec{
 		InstanceID:        i.ID,
 		Dir:               i.Dir,
@@ -893,6 +894,7 @@ func (i *Instance) containerArgv(native *exec.Cmd, identity *runas.Identity) ([]
 		ExtraPorts:        ports,
 		ExtraVolumes:      volumes,
 		ExtraEnv:          append([]string{}, extraEnv...),
+		ExtraTmpfs:        tmpfs,
 	}
 	return i.Container.Argv(spec)
 }
@@ -2062,9 +2064,9 @@ func (i *Instance) imageLocked() string {
 }
 
 // SetInstanceContainerParams 设置容器模板的额外汇编参数（端口/卷/环境变量）。
-func (i *Instance) SetInstanceContainerParams(ports, volumes, env []string) {
+func (i *Instance) SetInstanceContainerParams(ports, volumes, env, tmpfs []string) {
 	i.mu.Lock()
-	i.InstancePorts, i.InstanceVolumes, i.InstanceEnv = ports, volumes, env
+	i.InstancePorts, i.InstanceVolumes, i.InstanceEnv, i.InstanceTmpfs = ports, volumes, env, tmpfs
 	i.mu.Unlock()
 }
 
@@ -2073,6 +2075,6 @@ func (i *Instance) SetInstanceContainerParams(ports, volumes, env []string) {
 // 名字带 Locked 是这个文件的惯例（见 renderCommandLocked 等）。之前这里加了锁，
 // 而调用它的 containerArgv 是在 Start() 持锁期间跑的 —— 于是自死锁，表现为
 // docker 模板一点启动就卡 30 秒直到 gRPC 超时（真机逐段打点定位到的）。
-func (i *Instance) containerParamsLocked() (ports, volumes, env []string) {
-	return i.InstancePorts, i.InstanceVolumes, i.InstanceEnv
+func (i *Instance) containerParamsLocked() (ports, volumes, env, tmpfs []string) {
+	return i.InstancePorts, i.InstanceVolumes, i.InstanceEnv, i.InstanceTmpfs
 }

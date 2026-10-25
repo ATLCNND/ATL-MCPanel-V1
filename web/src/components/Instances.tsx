@@ -74,6 +74,7 @@ export default function Instances({ onOpen }: {
     ports_text: '',
     volumes_text: '',
     env_text: '',
+    tmpfs_text: '',
     node_id: '',
     instance_id: '',
     name: '',
@@ -234,6 +235,7 @@ export default function Instances({ onOpen }: {
         ports: splitLines(form.ports_text),
         volumes: splitLines(form.volumes_text),
         env: splitLines(form.env_text),
+        tmpfs: splitLines(form.tmpfs_text),
         core_type: form.core_type,
         java_version: form.java_version,
         port: portNum,
@@ -431,6 +433,9 @@ export default function Instances({ onOpen }: {
                   </Field>
                   <Field label="环境变量" hint={<>每行一条，形如 <span className="mono">TZ=Asia/Shanghai</span>。</>}>
                     <textarea rows={2} value={form.env_text} onChange={set('env_text')} placeholder="TZ=Asia/Shanghai" />
+                  </Field>
+                  <Field label="需要可写的路径" hint={<>每行一条。容器根文件系统是<b>只读</b>的，而有些镜像启动时要往固定路径写缓存（如 nginx 的 <span className="mono">/var/cache/nginx</span>）。填在这里会为其挂一块内存盘（每条 64MB，重启即清空）。</>}>
+                    <textarea rows={2} value={form.tmpfs_text} onChange={set('tmpfs_text')} placeholder="/var/cache/nginx" />
                   </Field>
                 </>
               )}

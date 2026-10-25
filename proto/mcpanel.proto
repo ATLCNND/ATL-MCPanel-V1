@@ -264,6 +264,14 @@ message CreateInstanceRequest {
 
   // env 环境变量，形如 "KEY=VALUE"（可重复）。
   repeated string env = 21;
+
+  // tmpfs 需要**可写**的路径（可重复），形如 "/var/cache/nginx"。
+  //
+  // 为什么需要这个：容器默认只读根（这是隔离的一部分），而不少镜像会在启动时
+  // 往固定路径写缓存/pid/socket（nginx 的 /var/cache/nginx 就是典型）。
+  // 没有它，这些镜像一律以「Read-only file system」失败，而用户很难自己想到原因。
+  // 语义：只在该路径挂一块内存盘（默认 64MB，容器重启即清空），**不放宽其它隔离**。
+  repeated string tmpfs = 22;
 }
 
 message InstanceStatus {

@@ -618,7 +618,14 @@ type CreateInstanceRequest struct {
 	// volumes 卷映射，形如 "/srv/data:/data"（可重复）。
 	Volumes []string `protobuf:"bytes,20,rep,name=volumes,proto3" json:"volumes,omitempty"`
 	// env 环境变量，形如 "KEY=VALUE"（可重复）。
-	Env           []string `protobuf:"bytes,21,rep,name=env,proto3" json:"env,omitempty"`
+	Env []string `protobuf:"bytes,21,rep,name=env,proto3" json:"env,omitempty"`
+	// tmpfs 需要**可写**的路径（可重复），形如 "/var/cache/nginx"。
+	//
+	// 为什么需要这个：容器默认只读根（这是隔离的一部分），而不少镜像会在启动时
+	// 往固定路径写缓存/pid/socket（nginx 的 /var/cache/nginx 就是典型）。
+	// 没有它，这些镜像一律以「Read-only file system」失败，而用户很难自己想到原因。
+	// 语义：只在该路径挂一块内存盘（默认 64MB，容器重启即清空），**不放宽其它隔离**。
+	Tmpfs         []string `protobuf:"bytes,22,rep,name=tmpfs,proto3" json:"tmpfs,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -796,6 +803,13 @@ func (x *CreateInstanceRequest) GetVolumes() []string {
 func (x *CreateInstanceRequest) GetEnv() []string {
 	if x != nil {
 		return x.Env
+	}
+	return nil
+}
+
+func (x *CreateInstanceRequest) GetTmpfs() []string {
+	if x != nil {
+		return x.Tmpfs
 	}
 	return nil
 }
@@ -5509,7 +5523,7 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\x10backup_disk_used\x18\b \x01(\x03R\x0ebackupDiskUsed\x12*\n" +
 	"\x11backup_disk_total\x18\t \x01(\x03R\x0fbackupDiskTotal\",\n" +
 	"\fPingResponse\x12\x1c\n" +
-	"\ttimestamp\x18\x01 \x01(\x03R\ttimestamp\"\xc7\x04\n" +
+	"\ttimestamp\x18\x01 \x01(\x03R\ttimestamp\"\xdd\x04\n" +
 	"\x15CreateInstanceRequest\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x12\n" +
@@ -5535,7 +5549,8 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\x05image\x18\x12 \x01(\tR\x05image\x12\x14\n" +
 	"\x05ports\x18\x13 \x03(\tR\x05ports\x12\x18\n" +
 	"\avolumes\x18\x14 \x03(\tR\avolumes\x12\x10\n" +
-	"\x03env\x18\x15 \x03(\tR\x03env\"\xaf\x01\n" +
+	"\x03env\x18\x15 \x03(\tR\x03env\x12\x14\n" +
+	"\x05tmpfs\x18\x16 \x03(\tR\x05tmpfs\"\xaf\x01\n" +
 	"\x0eInstanceStatus\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x16\n" +

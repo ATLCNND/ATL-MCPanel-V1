@@ -66,6 +66,8 @@ type Meta struct {
 	Ports   []string `json:"ports,omitempty"`
 	Volumes []string `json:"volumes,omitempty"`
 	Env     []string `json:"env,omitempty"`
+	// Tmpfs 需要可写的路径（容器里挂 tmpfs；只读根下的例外，不放宽其它隔离）
+	Tmpfs []string `json:"tmpfs,omitempty"`
 }
 
 // Registry 实例注册表。
@@ -136,7 +138,7 @@ func (r *Registry) ContainerRuntime() *container.Runtime {
 func (r *Registry) bindContainer(inst *mcprocess.Instance, m Meta) {
 	inst.SetInstanceTemplate(m.Template)
 	inst.SetInstanceImage(m.Image)
-	inst.SetInstanceContainerParams(m.Ports, m.Volumes, m.Env)
+	inst.SetInstanceContainerParams(m.Ports, m.Volumes, m.Env, m.Tmpfs)
 	inst.SetContainer(r.container, r.resourcesDir, m.Container)
 }
 
@@ -732,5 +734,5 @@ func (r *Registry) Runtime(id string) (startCount, stopCount int, lastStartAt in
 func (r *Registry) applyMeta(inst *mcprocess.Instance, m Meta) {
 	inst.SetInstanceTemplate(m.Template)
 	inst.SetInstanceImage(m.Image)
-	inst.SetInstanceContainerParams(m.Ports, m.Volumes, m.Env)
+	inst.SetInstanceContainerParams(m.Ports, m.Volumes, m.Env, m.Tmpfs)
 }

@@ -266,6 +266,8 @@ export interface CreateInstancePayload {
 	volumes?: string[]
 	/** docker 模板：环境变量，形如 "K=V" */
 	env?: string[]
+	/** docker 模板：需要可写的路径（挂 tmpfs，只读根的例外） */
+	tmpfs?: string[]
   node_id: number
   instance_id: string
   name: string
