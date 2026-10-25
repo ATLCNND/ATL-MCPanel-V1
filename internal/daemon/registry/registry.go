@@ -170,6 +170,7 @@ func (r *Registry) registerContainerInstance(m Meta, dir, sdir string) *mcproces
 		inst.BackupDir = m.BackupDir
 		inst.MemLimitBytes = mcprocess.ParseMemBytes(m.MemLimit)
 		inst.Port = int(m.Port)
+		r.applyMeta(inst, m)
 		r.bindContainer(inst, m)
 		r.bindRunAs(inst)
 	}
@@ -346,6 +347,7 @@ func (r *Registry) Create(m Meta) (*mcprocess.Instance, error) {
 	inst.BackupDir = m.BackupDir
 	inst.MemLimitBytes = mcprocess.ParseMemBytes(m.MemLimit)
 	inst.Port = int(m.Port) // 启动前要按它校准 server.properties
+	r.applyMeta(inst, m)
 	r.bindContainer(inst, m)
 	r.bindRunAs(inst)
 	r.instances[m.ID] = inst
@@ -445,6 +447,7 @@ func (r *Registry) Load() (loaded int, adopted int) {
 			inst.BackupDir = m.BackupDir
 			inst.MemLimitBytes = mcprocess.ParseMemBytes(m.MemLimit)
 			inst.Port = int(m.Port)
+			r.applyMeta(inst, m)
 			r.bindContainer(inst, m)
 			r.bindRunAs(inst)
 			r.instances[m.ID] = inst
@@ -718,4 +721,16 @@ func (r *Registry) Runtime(id string) (startCount, stopCount int, lastStartAt in
 		return 0, 0, 0
 	}
 	return m.StartCount, m.StopCount, m.LastStartAt
+}
+
+// applyMeta 把实例元数据里「属于实例自身」的部分灌进内存实例。
+//
+// 为什么要有这一层：原先这些只在 bindContainer 里设置，而 bindContainer 只在
+// **容器化**时才被调用。于是「模板是 docker 但当前没容器化」这种情况，实例根本不知道
+// 自己是什么模板，启动时落到 java 分支去要 jar（真机验收踩到过，报「jar 不存在」）。
+// 模板/镜像描述的是「实例要做什么」，与「有没有容器可用」无关，必须无条件带上。
+func (r *Registry) applyMeta(inst *mcprocess.Instance, m Meta) {
+	inst.SetInstanceTemplate(m.Template)
+	inst.SetInstanceImage(m.Image)
+	inst.SetInstanceContainerParams(m.Ports, m.Volumes, m.Env)
 }
