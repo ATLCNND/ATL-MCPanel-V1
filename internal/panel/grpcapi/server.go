@@ -158,6 +158,16 @@ func (s *Server) Ping(ctx context.Context, req *pb.PingRequest) (*pb.PingRespons
 		return nil, status.Error(codes.PermissionDenied, "节点身份校验失败")
 	}
 
+	// 撤销检查：节点的 enrollment 被撤销、或节点记录已被删除时，**拒绝心跳**。
+	//
+	// 为什么放在心跳而不是依赖面板去拨节点：撤销必须能在「面板根本连不到节点」的场景下生效
+	//（这正是凭证交换要解决的部署形态）。节点每 10 秒心跳一次，所以撤销最迟 10 秒生效。
+	// 拒绝用 PermissionDenied：daemon 侧会把它当作「不要再连」处理，而不是普通网络错误重试。
+	if revoked, reason := s.nodeRevoked(req.NodeId); revoked {
+		s.log.Warn("节点心跳被拒绝：已被撤销", "node_id", req.NodeId, "reason", reason)
+		return nil, status.Error(codes.PermissionDenied, "节点已被移除（"+reason+"），请重新接入")
+	}
+
 	now := time.Now()
 
 	s.mu.Lock()
@@ -184,3 +194,28 @@ func (s *Server) Ping(ctx context.Context, req *pb.PingRequest) (*pb.PingRespons
 
 // heartbeatPersistInterval 心跳写库的最小间隔。
 const heartbeatPersistInterval = 30 * time.Second
+
+// nodeRevoked 该节点是否已被撤销/移除。返回 (是否撤销, 原因)。
+//
+// 判据两条：① 它的 node_uid 有被撤销的 enrollment；② nodes 表里根本没有这一行
+//（管理员删了节点）。第二条是「删了节点它还连得回来」这个问题的直接答案。
+func (s *Server) nodeRevoked(nodeID string) (bool, string) {
+	var uid string
+	err := s.db.QueryRow(`SELECT COALESCE(node_uid,'') FROM nodes WHERE name = ?`, nodeID).Scan(&uid)
+	if err == sql.ErrNoRows {
+		return true, "节点记录已被删除"
+	}
+	if err != nil {
+		// 查不动数据库时不误杀：放行，让上面那条 UPDATE 去报错
+		return false, ""
+	}
+	if uid == "" {
+		return false, ""
+	}
+	var revoked int
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM node_enrollments WHERE node_uid = ? AND revoked_at IS NOT NULL`, uid).Scan(&revoked)
+	if revoked > 0 {
+		return true, "凭证已被撤销"
+	}
+	return false, ""
+}

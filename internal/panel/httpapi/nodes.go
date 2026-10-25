@@ -279,6 +279,42 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"message": "节点已更新"})
 }
 
+// handleRevokeNodeCredential POST /api/nodes/{id}/revoke
+//
+// 撤销该节点的凭证交换授权：把它的 enrollment 标为已撤销，并**删除节点记录**。
+//
+// 与「移除凭据」的区别：那个只清 SSH 凭据、节点照常工作；这个是**彻底切断**——
+// 节点下一次心跳会被 PermissionDenied 拒绝（面板侧判据：node_uid 有撤销记录，或节点行已不存在），
+// 于是「我删掉节点，它还能不能连回来」的答案是：不能，最迟 10 秒。
+//
+// 不依赖面板能连到节点（撤销必须在这种场景下也生效），见 grpcapi/nodeRevoked。
+func (s *Server) handleRevokeNodeCredential(w http.ResponseWriter, r *http.Request) {
+	if !requireAdminIn(w, r) {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "id 无效")
+		return
+	}
+	uid := s.nodeUIDOf(id)
+	if uid != "" {
+		if _, err := s.db.Exec(`UPDATE node_enrollments SET revoked_at = CURRENT_TIMESTAMP, reason = '管理员撤销'
+			WHERE node_uid = ? AND revoked_at IS NULL`, uid); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if _, err := s.db.Exec(`DELETE FROM nodes WHERE id = ?`, id); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.audit(r, "revoke_node_credential", strconv.FormatInt(id, 10), "uid="+uid)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"message": "已撤销并删除该节点；它下一次心跳会被拒绝（最迟 10 秒）",
+	})
+}
+
 // handleClearNodeCredential DELETE /api/nodes/{id}/credential
 //
 // 把节点上保存的 SSH 凭据**清掉**（密码/私钥与类型一起），节点本身保留。
@@ -501,7 +537,9 @@ func (s *Server) handleDeployNode(w http.ResponseWriter, r *http.Request) {
 
 	// 启用 mTLS 时为新节点签发证书
 	if s.grpcMTLS && s.ca != nil {
-		certPEM, keyPEM, err := s.ca.IssueClientCert(nv.Name)
+		// 证书里带上 node_uid（URI SAN）：显示名可改，身份不能跟着改。
+		// 老节点没有 node_uid 时该参数为空，签发结果与以前完全一致。
+		certPEM, keyPEM, err := s.ca.IssueClientCertWithUID(nv.Name, s.nodeUIDOf(nv.ID), 90*24*time.Hour)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "签发节点证书失败: "+err.Error())
 			return
@@ -842,4 +880,11 @@ func (s *Server) daemonListenForWithPort(nodeIP string, port int) string {
 		return addr[:i+1] + strconv.Itoa(port)
 	}
 	return ":" + strconv.Itoa(port)
+}
+
+// nodeUIDOf 读某节点的 node_uid（可能为空：升级前的老节点）。
+func (s *Server) nodeUIDOf(id int64) string {
+	var uid string
+	_ = s.db.QueryRow(`SELECT COALESCE(node_uid,'') FROM nodes WHERE id = ?`, id).Scan(&uid)
+	return uid
 }

@@ -73,6 +73,8 @@ type Server struct {
 	logger      *logger.Logger
 	trustProxy  bool   // 是否信任 X-Forwarded-For（面板位于代理之后时开启）
 	securityEntry string // 自定义安全入口（空 = 关闭，路径前缀为 /<entry>）
+	// enrollLimit 给未鉴权的 /api/enroll 限速（见 enroll.go）
+	enrollLimit *enrollLimiter
 	userLimiter *loginLimiter     // 按用户名的登录限流
 	ipLimiter   *loginLimiter     // 按来源 IP 的登录限流（阈值更宽松）
 	ca          *pki.CA           // mTLS 证书颁发机构
@@ -196,6 +198,7 @@ func NewServer(d *sql.DB, a *auth.Service, n *nodemgr.Manager, opts Options) *Se
 		logger:      log,
 		trustProxy:    opts.TrustProxy,
 		securityEntry: normalizeSecurityEntry(opts.SecurityEntry),
+		enrollLimit:   newEnrollLimiter(),
 		userLimiter: newLoginLimiter(userLimiterCfg),
 		ipLimiter:   newLoginLimiter(ipLimiterCfg),
 		ca:          opts.CA,
@@ -529,6 +532,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/nodes/local/adopt", s.requireAuth(s.handleAdoptLocalNode))
 	// 本机一键部署：面板直接在本机装 Daemon（不走 SSH）
 	mux.HandleFunc("POST /api/nodes/local/install", s.requireAuth(s.handleInstallLocalNode))
+	// 凭证交换：签发一次性 token（管理员）；用 token 换证书（**未鉴权**，靠 token + 限速）
+	mux.HandleFunc("POST /api/enroll/token", s.requireAuth(s.handleIssueJoinToken))
+	mux.HandleFunc("POST /api/enroll", s.handleEnroll)
+	// 续期：不要求 token，凭据是**当前仍有效的证书**（走 mTLS），公钥指纹必须一致
+	mux.HandleFunc("POST /api/enroll/renew", s.handleEnrollRenew)
 	mux.HandleFunc("POST /api/nodes", s.requireAuth(s.handleCreateNode))
 	// 登记节点时先试连一次（地址 + 凭证），不必等保存后再点部署才发现填错
 	mux.HandleFunc("POST /api/nodes/test", s.requireAuth(s.handleTestNodeAuth))
@@ -536,6 +544,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/nodes/{id}", s.requireAuth(s.handleDeleteNode))
 	// 只清 SSH 凭据、保留节点本身（不再"想停止用面板推部署就只能删整台节点"）
 	mux.HandleFunc("DELETE /api/nodes/{id}/credential", s.requireAuth(s.handleClearNodeCredential))
+	// 彻底撤销：标撤销 + 删节点，之后心跳被拒（最迟 10 秒）
+	mux.HandleFunc("POST /api/nodes/{id}/revoke", s.requireAuth(s.handleRevokeNodeCredential))
 	mux.HandleFunc("POST /api/nodes/{id}/probe", s.requireAuth(s.handleProbeNode))
 	mux.HandleFunc("POST /api/nodes/{id}/deploy", s.requireAuth(s.handleDeployNode))
 	mux.HandleFunc("POST /api/nodes/{id}/daemon/restart", s.requireAuth(s.handleRestartDaemon))

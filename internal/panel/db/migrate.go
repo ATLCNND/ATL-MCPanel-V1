@@ -757,6 +757,46 @@ var migrations = []migration{
 			`CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_node_uid ON nodes(node_uid) WHERE node_uid <> ''`,
 		},
 	},
+	{
+		Version: 33,
+		Name:    "credential_exchange",
+		Statements: []string{
+			// 一次性 join token（凭证交换）。
+			//
+			// mode: panel = 面板发起（token 由面板签、管理员贴到节点上执行）
+			//       node  = 节点发起（Daemon 生成并自签名，管理员把 token 粘回面板）
+			// 语义见 docs/DESIGN-CREDENTIAL-EXCHANGE.md §4。
+			//
+			// jti 唯一：消耗时用 `UPDATE ... WHERE used_at IS NULL` 原子抢占，天然防并发重放。
+			`CREATE TABLE IF NOT EXISTS join_tokens (
+				id          INTEGER PRIMARY KEY AUTOINCREMENT,
+				jti         TEXT NOT NULL UNIQUE,
+				mode        TEXT NOT NULL,
+				node_uid    TEXT NOT NULL DEFAULT '',
+				node_name   TEXT NOT NULL DEFAULT '',
+				created_by  INTEGER NOT NULL DEFAULT 0,
+				created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				expires_at  DATETIME NOT NULL,
+				used_at     DATETIME,
+				used_from   TEXT NOT NULL DEFAULT '',
+				revoked_at  DATETIME
+			)`,
+
+			// 每次签发/续期的记录。撤销查这张表；续期要求公钥指纹一致。
+			`CREATE TABLE IF NOT EXISTS node_enrollments (
+				id          INTEGER PRIMARY KEY AUTOINCREMENT,
+				node_uid    TEXT NOT NULL,
+				cert_fp     TEXT NOT NULL DEFAULT '',
+				pubkey_fp   TEXT NOT NULL DEFAULT '',
+				issued_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				expires_at  DATETIME NOT NULL,
+				revoked_at  DATETIME,
+				reason      TEXT NOT NULL DEFAULT '',
+				replaced_by TEXT NOT NULL DEFAULT ''
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_enrollments_uid ON node_enrollments(node_uid)`,
+		},
+	},
 }
 
 // migrate 应用尚未执行的迁移。

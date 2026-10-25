@@ -57,6 +57,13 @@ var allowedAnonymous = []struct {
 	{"POST /api/auth/login", "登录本身。它是唯一的凭据入口，失败限流在 ratelimit.go（用户 5 次/15 分钟、IP 50 次/10 分钟）"},
 	{"GET /api/avatars/{id}", "用户头像：`<img src>` 带不上 Authorization 头。handler 只返回**已审核通过**的头像，未通过的取不到"},
 	{"GET /ws/console/{id}", "控制台 WebSocket：浏览器无法给 WS 握手加自定义头，所以 handler 内部自己校验 `?token=` 的 JWT（缺 token 直接 401）"},
+	// 凭证交换：节点此时既没有身份也没有证书，无法先登录。安全性由**一次性 token** 承担
+	//（15 分钟、用后即焚、失败不透露原因），并按来源 IP 限速 10 次/分钟（见 enroll.go 的 enrollLimiter）。
+	// 签发 token 的 POST /api/enroll/token 仍是 requireAuth 的管理员接口。
+	{"POST /api/enroll", "凭证交换换证书；靠一次性 token 鉴权 + IP 限速，不能挂 requireAuth（节点还没有身份）"},
+	// 续期：不要求登录 token，凭据是当前仍有效的客户端证书（走 mTLS，handler 自己校验:
+	// 证书存在、未过期、URI SAN 里的 node_uid 未被撤销、新 CSR 公钥指纹与首次登记一致）。
+	{"POST /api/enroll/renew", "证书续期；靠 mTLS 的当前证书鉴权，不能挂 requireAuth（节点没有登录态）"},
 	{"/", "前端静态资源兜底（SPA 路由）。只是个静态文件服务器，不含任何接口"},
 }
 

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,6 +204,60 @@ func (ca *CA) IssueClientCert(nodeName string) (certPEM, keyPEM []byte, err erro
 	return ca.IssueClientCertWithTTL(nodeName, defaultCertTTL)
 }
 
+// NodeUIDURI 把 node_uid 编码成证书里的 URI SAN。
+//
+// 为什么用 URI 而不是塞进 CN：CN 已经被节点显示名占用，而显示名是**可以改**的；
+// node_uid 才是跟着这台机器安装走的稳定身份（凭证交换、多面板都以它为准）。
+// 证书里同时保留两者：CN/DNS 供旧校验用，URI 供新逻辑识别同一台机器。
+func NodeUIDURI(nodeUID string) (*url.URL, error) {
+	nodeUID = strings.TrimSpace(nodeUID)
+	if nodeUID == "" {
+		return nil, nil
+	}
+	return url.Parse("atlmcpanel://node/" + nodeUID)
+}
+
+// CertNodeUID 从证书里取出 node_uid（没有则空串）。校验侧用它识别节点身份。
+func CertNodeUID(cert *x509.Certificate) string {
+	if cert == nil {
+		return ""
+	}
+	for _, u := range cert.URIs {
+		if u != nil && u.Scheme == "atlmcpanel" && u.Host == "node" {
+			return strings.TrimPrefix(u.Path, "/")
+		}
+	}
+	return ""
+}
+
+// IssueClientCertWithUID 签发带 node_uid 的节点证书。
+//
+// nodeUID 为空时行为与 IssueClientCertWithTTL 完全一致（老节点/老流程不受影响）。
+func (ca *CA) IssueClientCertWithUID(nodeName, nodeUID string, ttl time.Duration) (certPEM, keyPEM []byte, err error) {
+	if nodeName == "" {
+		return nil, nil, fmt.Errorf("节点名不能为空")
+	}
+	name := certNodeName(nodeName)
+	if name == "" {
+		return nil, nil, fmt.Errorf("节点名 %q 无法转换成可用的证书标识", nodeName)
+	}
+	var uris []*url.URL
+	if u, err := NodeUIDURI(nodeUID); err == nil && u != nil {
+		uris = []*url.URL{u}
+	}
+	return ca.issueCert(issueOptions{
+		commonName: name,
+		dnsNames:   []string{name},
+		uris:       uris,
+		usages: []x509.ExtKeyUsage{
+			x509.ExtKeyUsageClientAuth,
+			x509.ExtKeyUsageServerAuth,
+		},
+		ttl:          ttl,
+		organization: "ATL-MCPanel Node",
+	})
+}
+
 // IssueClientCertWithTTL 指定有效期的签发（节点证书，含 SAN = 节点名）。
 //
 // 节点名会先经过 certNodeName 归一化 —— 中文名、含空格的名字都能正常签发。
@@ -282,8 +337,11 @@ type issueOptions struct {
 	commonName   string
 	dnsNames     []string
 	ipAddresses  []net.IP
-	usages       []x509.ExtKeyUsage
-	ttl          time.Duration
+	// uris 证书里的 URI SAN。用来承载**机器的稳定身份**（node_uid），
+	// 形如 atlmcpanel://node/<uid> —— CN 是给人看/兼容旧校验的显示名，URI 才是身份。
+	uris        []*url.URL
+	usages      []x509.ExtKeyUsage
+	ttl         time.Duration
 	organization string
 }
 
@@ -307,6 +365,7 @@ func (ca *CA) issueCert(o issueOptions) (certPEM, keyPEM []byte, err error) {
 		ExtKeyUsage:  o.usages,
 		DNSNames:     o.dnsNames,
 		IPAddresses:  o.ipAddresses,
+		URIs:         o.uris,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tpl, ca.Cert, &key.PublicKey, ca.Key)
 	if err != nil {
