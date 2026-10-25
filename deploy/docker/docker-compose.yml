@@ -1,0 +1,42 @@
+# ATL-MCPanel 面板的容器化部署（底账 S9）
+#
+# 用法：
+#   1. 把 config.yaml 放在本文件同级目录（首次可从 config.example.yaml 复制）
+#   2. docker compose -f deploy/docker/docker-compose.yml up -d
+#
+# 说明：
+#   · 容器**不加 privileged、不挂 docker.sock、丢全部 capability** ——
+#     面板不管理实例进程，那是节点守护进程的事，没理由给它这些权限。
+#   · 根文件系统只读（read_only），只有数据卷与 tmpfs 可写。
+#   · 端口默认只发布到回环（127.0.0.1）。对外之前请先配好 HTTPS 证书 ——
+#     直接裸奔暴露面板到公网不是我们希望你做的事。
+services:
+  panel:
+    image: atl-mcpanel-panel:0.12
+    container_name: atl-panel
+    restart: unless-stopped
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - panel-data:/app/data
+      - panel-certs:/app/certs
+    ports:
+      - "127.0.0.1:25080:25080"
+    environment:
+      TZ: Asia/Shanghai
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "/app/bin/atl-panel", "-version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  panel-data:
+  panel-certs:

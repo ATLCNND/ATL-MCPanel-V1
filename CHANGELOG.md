@@ -4,6 +4,33 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.9] - 2026-10-25
+
+> 底账 S9 / 1.0.0-preview 的 D 项：面板加固与容器化部署。到这一版，preview 的四项内容全部落地。
+
+### systemd 加固
+
+面板单元开启了一整套内核级沙箱：`NoNewPrivileges`、`ProtectSystem=strict` + 只允许写安装目录、
+`ProtectHome`、`PrivateTmp`/`PrivateDevices`、`ProtectKernel*`、`ProtectControlGroups`、
+`ProtectClock`/`ProtectHostname`、`RestrictAddressFamilies`、`RestrictSUIDSGID`、
+`LockPersonality`、`RestrictNamespaces`、`RestrictRealtime`、`SystemCallArchitectures=native`。
+
+守护进程**刻意更宽松**（它要 useradd、exec docker、用命名空间），每条不开启的理由都写在单元文件里。
+`KillMode=process` 保持不变 —— 那条与加固无关，是「重启守护进程不能连实例一起杀掉」的正确性要求。
+
+### 容器化部署
+
+新增 `deploy/docker/Dockerfile.panel` 与 `docker-compose.yml`：非 root（10001）、只读根文件系统、
+丢弃全部 capability、不挂 docker.sock、数据全走卷。
+
+### 真机验证
+
+- 加固后的面板：健康检查 200、节点/实例/证书接口正常，并**成功创建并启动一个 docker 模板实例**（200 / 0.2s）
+- 容器化面板：镜像 124MB，容器 HTTP 200，`ReadonlyRootfs=true` / `CapDrop=[ALL]` / `no-new-privileges` / `User=10001:10001`
+
+详见 `docs/SECURITY-HARDENING.md`（含每条开关的取舍理由与验证记录）。
+
+---
 ## [0.12.8] - 2026-10-25
 
 > tmpfs 的权限修正：从「只读」变成「权限拒绝」才发现的第二个坑。
@@ -821,7 +848,3 @@ v25 `frps_servers.auth_mode` / `user` · v26 `tunnels.bandwidth_limit(_mode)` ·
   现在面板与 Daemon 都**拒绝启动**这种组合，要跑必须显式写
   `allow_insecure_grpc: true`。真机确认过内测节点的 9091 是公网可达的。
 - **节点可以冒名注册**：面板的 `Register`/`Ping` 采信对端自述的节点名，
-  任何持有 CA 证书的节点都能把自己注册成**别的节点**，进而让面板带着那台节点
-  已存的 SSH 凭据去连攻击者的机器。现在校验"证书 CN == 该节点名"，心跳同样。
-- **节点之间可以横向控制**：Daemon 原先只校验"证书由本 CA 签发"，于是任意节点
-  都能调用**别的节点**的 Daemon 控制其上的所有实例。现在只接受面板的客户端证书。

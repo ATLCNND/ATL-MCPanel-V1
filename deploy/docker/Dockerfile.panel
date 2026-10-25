@@ -1,0 +1,42 @@
+# ATL-MCPanel 面板容器镜像（底账 S9）
+#
+# 设计取向：
+#   · 只装运行时必需的东西（ca-certificates + tzdata），不带 shell 工具链 ——
+#     镜像越小、攻击面越小；排障请 exec 进容器或看日志。
+#   · **以非 root 用户运行**：面板本身不需要 root（实例与穿透由节点守护进程负责），
+#     这是最简单也最有效的一层隔离。
+#   · 数据全部走卷（配置 / 数据库 / 证书 / 实例目录），容器本身无状态，删了重建不丢数据。
+#
+# 构建（在**解压后的面板包目录**里执行）：
+#   docker build -f deploy/docker/Dockerfile.panel -t atl-mcpanel-panel:0.12 .
+FROM debian:bookworm-slim
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates tzdata; \
+    rm -rf /var/lib/apt/lists/*; \
+    groupadd -r panel -g 10001; \
+    useradd -r -g panel -u 10001 -d /app -s /usr/sbin/nologin panel
+
+ENV TZ=Asia/Shanghai
+
+WORKDIR /app
+
+# 二进制与前端产物都来自发布包
+COPY --chown=panel:panel bin/atl-panel /app/bin/atl-panel
+COPY --chown=panel:panel web/dist /app/web/dist
+
+# 运行期写入的目录（建议挂卷）
+RUN mkdir -p /app/data /app/certs && chown -R panel:panel /app
+
+USER panel
+
+# 面板 HTTP 端口。**别用 8080 之类的标准端口**（扫描器与运营商重点关注区），
+# 这里取一个高位端口；实际对外端口由 compose 的端口映射决定。
+EXPOSE 25080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["/app/bin/atl-panel", "-version"]
+
+ENTRYPOINT ["/app/bin/atl-panel"]
+CMD ["-config", "/app/config.yaml"]

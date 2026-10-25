@@ -1,7 +1,7 @@
 [Unit]
 Description=ATL-MCPanel Daemon (节点守护进程)
 Documentation=https://github.com/ATLCNND/ATL-MCPanel
-After=network-online.target
+After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
@@ -12,12 +12,32 @@ Restart=on-failure
 RestartSec=5
 
 # ⚠️ 必须是 process（而非默认的 control-group）。
-# KillMode=control-group 会在 Daemon 重启/停止时连同 Minecraft 子进程一起杀死，
+# KillMode=control-group 会在 Daemon 重启/停止时连**Minecraft 子进程**一起杀掉，
 # 导致玩家掉线、存档可能损坏。设为 process 后仅 Daemon 自身被重启，
 # 实例进程得以保留并由新 Daemon 重新接管。
 KillMode=process
 
 LimitNOFILE=65535
+
+# ---- 安全加固（底账 S9）----
+#
+# 这里的加固**刻意比 panel 宽松**：daemon 要 exec docker、要给实例建系统用户、
+# 要 chown 实例目录，所以它必须能写 /etc/passwd 一类的账号文件，也不能禁止命名空间。
+# 每条的取舍都写在下面。
+NoNewPrivileges=true
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelLogs=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+
+# ⚠️ 以下**故意不开启**，以及原因：
+#   ProtectSystem / ReadWritePaths —— daemon 需要写 /etc/passwd 等账号文件来建实例用户，
+#     锁死根文件系统会直接让建实例失败。
+#   PrivateTmp —— 用户写的启动脚本可能引用宿主 /tmp，隔离会造成意外失败。
+#   RestrictNamespaces —— docker 与实例隔离依赖命名空间。
+#   PrivateDevices —— 实例可能需要 /dev/shm 等设备节点。
 
 [Install]
 WantedBy=multi-user.target

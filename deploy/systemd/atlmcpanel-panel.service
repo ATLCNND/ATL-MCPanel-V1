@@ -16,10 +16,46 @@ RestartSec=5
 # 这是期望行为（重启后面板会自动恢复隧道）。若希望 frpc 独立存活，可改为 process。
 KillMode=control-group
 
-# 资源与安全限制
 LimitNOFILE=65535
-NoNewPrivileges=false
-ProtectSystem=false
+
+# ---- 安全加固（底账 S9）----
+#
+# 这些开关不改变面板做什么，只缩小「它被打穿之后能做什么」。
+# 逐条都有明确理由，删任何一条之前先想清楚：
+#
+# NoNewPrivileges：禁止通过 setuid 等方式提权。panel 以 root 运行时这条尤其重要 ——
+#   它是「即使拿到一个 RCE，也拿不到比当前更多的权限」的最小成本防线。
+NoNewPrivileges=true
+# ProtectSystem=strict：整个文件系统只读，**只有 ReadWritePaths 里的目录可写**。
+#   面板真正需要写的只有它自己的安装目录（数据库、证书、实例目录、日志）。
+ProtectSystem=strict
+ReadWritePaths=__INSTALL_DIR__
+# ProtectHome：/home 与 /root 不可见。面板没有任何理由去读用户家目录。
+ProtectHome=true
+# PrivateTmp/PrivateDevices：独立的 /tmp 与 /dev，避免与宿主其它进程共享。
+PrivateTmp=true
+PrivateDevices=true
+# ProtectKernel* / ProtectControlGroups：不允许改内核参数与 cgroup 树。
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+# ProtectClock：不允许改系统时间。
+ProtectClock=true
+# ProtectHostname：不允许改主机名。
+ProtectHostname=true
+# RestrictAddressFamilies：只留面板真正用到的协议族。
+#   AF_INET/AF_INET6（HTTP/gRPC）、AF_UNIX（systemd socket 与本地通信）。
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# RestrictSUIDSGID / LockPersonality / RestrictNamespaces：
+#   禁止创建 setuid 文件、禁止改执行域与命名空间。
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictNamespaces=true
+# RestrictRealtime：不允许使用实时调度（防止抢占整机 CPU）。
+RestrictRealtime=true
+# SystemCallArchitectures：只允许本机架构的系统调用。
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target
