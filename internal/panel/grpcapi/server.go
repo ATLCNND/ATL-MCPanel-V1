@@ -112,7 +112,23 @@ func (s *Server) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.Reg
 
 	// 更新或插入 nodes 表（保存 daemon IP）
 	var existingID int64
-	err := s.db.QueryRow(`SELECT id FROM nodes WHERE name = ?`, req.NodeId).Scan(&existingID)
+	// 先按 node_uid 找：它是**稳定身份**，优先级高于显示名（name）。
+	//
+	// 为什么必须先查它（真机踩到）：v32 给 node_uid 建了唯一索引，而一台机器可能
+	// 因为多次接入/改名在库里留下**另一行**同名 uid 的记录。此前只按 name 查重，
+	// 于是 INSERT 撞唯一索引 → 注册失败 → Daemon 直接退出（节点整个掉线）。
+	var uidID int64
+	if uid := strings.TrimSpace(req.NodeUid); uid != "" {
+		if e := s.db.QueryRow(`SELECT id FROM nodes WHERE node_uid = ?`, uid).Scan(&uidID); e == nil {
+			existingID = uidID
+			// 顺带把显示名改成它现在自报的，避免库里留一个再也对不上的旧名字
+			_, _ = s.db.Exec(`UPDATE nodes SET name = ? WHERE id = ?`, req.NodeId, uidID)
+		}
+	}
+	err := error(nil)
+	if existingID == 0 {
+		err = s.db.QueryRow(`SELECT id FROM nodes WHERE name = ?`, req.NodeId).Scan(&existingID)
+	}
 	if err != nil {
 		// 不存在则插入
 		_, err2 := s.db.Exec(

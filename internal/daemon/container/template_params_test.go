@@ -50,3 +50,30 @@ func TestArgvIncludesTemplateParams(t *testing.T) {
 		}
 	}
 }
+
+// 同一个宿主端口不能被发布两次：容器模板给了 ExtraPorts 时，spec.Port 必须让位。
+//
+// 真机现象：面板给实例填了 port=29175，用户又写了 "127.0.0.1:29175:80"，
+// docker run 里就有两条 --publish 抢同一端口，直接报 port is already allocated。
+func TestArgvNoDoublePortPublish(t *testing.T) {
+	rt := NewWithBin("docker", "img:test")
+	argv, err := rt.Argv(Spec{
+		InstanceID:        "p1",
+		Dir:               "/srv/i",
+		UID:               1000,
+		GID:               1000,
+		Port:              29175,
+		ExtraPorts:        []string{"127.0.0.1:29175:80"},
+		AllowEmptyCommand: true,
+	})
+	if err != nil {
+		t.Fatalf("构造 argv 失败: %v", err)
+	}
+	joined := strings.Join(argv, " ")
+	if n := strings.Count(joined, "29175"); n != 1 {
+		t.Errorf("端口 29175 应只出现一次，实际 %d 次: %s", n, joined)
+	}
+	if !strings.Contains(joined, "--publish 127.0.0.1:29175:80") {
+		t.Errorf("用户的映射没进 argv: %s", joined)
+	}
+}

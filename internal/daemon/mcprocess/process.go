@@ -610,6 +610,15 @@ func (i *Instance) Start() error {
 		// 自定义命令：用 sh -c 执行，支持占位符替换和任意脚本
 		command := i.renderCommandLocked(i.StartCommand)
 		cmd = exec.Command("sh", "-c", command)
+	} else if i.InstanceTemplate == "docker" {
+		// 通用 Docker 模板（F9）：**不需要 jar、也不需要 java** —— 跑镜像自身的入口。
+		//
+		// 注意：这段曾经因为「批量正则删除辅助函数」被连带删掉过，于是 docker 实例
+		// 一路落进下面的 java 分支报「jar 不存在」。改这里时别再用大范围正则。
+		i.startMode = "image"
+		// 用占位命令：containerArgv 会读 native.Args 推导容器内命令，nil 会直接解引用崩溃；
+		// 真正的命令由 "image" 分支留空、走镜像入口（见 containerArgv）。
+		cmd = exec.Command("true")
 	} else {
 		i.startMode = "default"
 		// 默认 java -jar 模板
@@ -832,11 +841,21 @@ func (i *Instance) containerArgv(native *exec.Cmd, identity *runas.Identity) ([]
 		return nil, fmt.Errorf("准备容器网络失败：%w", err)
 	}
 
-	// JDK：容器内要执行的 java、以及要只读挂入的 JDK 根目录
-	javaBin, javaHome := i.containerJava()
+	// JDK：容器内要执行的 java、以及要只读挂入的 JDK 根目录。
+	//
+	// docker 模板不需要 java：它跑的是镜像自己的入口。而且 containerJava() 在容器实例上
+	// 有已知的自死锁（启动路径持锁时再去拿同一把锁），跳过它既更快也避开那个坑。
+	var javaBin, javaHome string
+	if i.startMode != "image" {
+		javaBin, javaHome = i.containerJava()
+	}
 
 	var inner []string
 	switch i.startMode {
+	case "image":
+		// 通用 Docker 模板：不给容器指定命令，用镜像自带的 ENTRYPOINT / CMD。
+		// 这里刻意留空 —— 用户只提供了镜像名，不该被迫再写一份启动命令。
+		inner = nil
 	case "start.sh":
 		inner = []string{"bash", container.MountPoint + "/start.sh"}
 	case "custom":
@@ -856,23 +875,24 @@ func (i *Instance) containerArgv(native *exec.Cmd, identity *runas.Identity) ([]
 		}
 	}
 
-	ports, volumes, extraEnv := i.containerParams()
+	ports, volumes, extraEnv := i.containerParamsLocked()
 	spec := container.Spec{
-		InstanceID:   i.ID,
-		Dir:          i.Dir,
-		UID:          identity.UID,
-		GID:          identity.GID,
-		MemoryBytes:  i.MemLimitBytes,
-		CPUPercent:   i.CPUQuotaPercent,
-		Port:         i.Port,
-		PublishHost:  i.containerPublishHost(),
-		JavaHome:     javaHome,
-		ResourcesDir: i.ContainerResourcesDir,
-		Command:      inner,
-		Image:        i.Image(),
-		ExtraPorts:   ports,
-		ExtraVolumes: volumes,
-		ExtraEnv:     append([]string{}, extraEnv...),
+		InstanceID:        i.ID,
+		Dir:               i.Dir,
+		UID:               identity.UID,
+		GID:               identity.GID,
+		MemoryBytes:       i.MemLimitBytes,
+		CPUPercent:        i.CPUQuotaPercent,
+		Port:              i.Port,
+		PublishHost:       i.containerPublishHost(),
+		JavaHome:          javaHome,
+		ResourcesDir:      i.ContainerResourcesDir,
+		Command:           inner,
+		AllowEmptyCommand: i.startMode == "image",
+		Image:             i.imageLocked(),
+		ExtraPorts:        ports,
+		ExtraVolumes:      volumes,
+		ExtraEnv:          append([]string{}, extraEnv...),
 	}
 	return i.Container.Argv(spec)
 }
@@ -2036,10 +2056,8 @@ func (i *Instance) SetInstanceImage(img string) {
 	i.mu.Unlock()
 }
 
-// Image 返回该实例应使用的容器镜像（读锁保护；空串表示用节点默认）。
-func (i *Instance) Image() string {
-	i.mu.Lock()
-	defer i.mu.Unlock()
+// imageLocked 返回该实例应使用的容器镜像（空串 = 用节点默认）。**要求调用方已持 i.mu**。
+func (i *Instance) imageLocked() string {
 	return i.InstanceImage
 }
 
@@ -2050,10 +2068,11 @@ func (i *Instance) SetInstanceContainerParams(ports, volumes, env []string) {
 	i.mu.Unlock()
 }
 
-// containerParams 读取容器模板参数（读锁保护）。
-func (i *Instance) containerParams() (ports, volumes, env []string) {
-	i.mu.Lock()
-	defer i.mu.Unlock()
+// containerParamsLocked 读取容器模板参数。**要求调用方已持有 i.mu**。
+//
+// 名字带 Locked 是这个文件的惯例（见 renderCommandLocked 等）。之前这里加了锁，
+// 而调用它的 containerArgv 是在 Start() 持锁期间跑的 —— 于是自死锁，表现为
+// docker 模板一点启动就卡 30 秒直到 gRPC 超时（真机逐段打点定位到的）。
+func (i *Instance) containerParamsLocked() (ports, volumes, env []string) {
 	return i.InstancePorts, i.InstanceVolumes, i.InstanceEnv
 }
-

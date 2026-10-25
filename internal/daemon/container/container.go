@@ -389,14 +389,18 @@ type Spec struct {
 	Command []string
 	// ExtraEnv 额外环境变量（KEY=VALUE）。
 	ExtraEnv []string
-	// Image 覆盖默认镜像（一般不用）。
-	// ExtraPorts 额外端口发布（形如 "8080:80"，宿主:容器）。dockstd 模板用。
+	// Image 覆盖默认镜像。通用 Docker 模板（F9）用它指定用户要跑的镜像；
+	// 空则用节点运行时镜像。
+	Image string
+	// ExtraPorts 额外端口发布（形如 "8080:80"，宿主:容器）。容器模板用。
 	ExtraPorts []string
 	// ExtraVolumes 额外卷挂载（形如 "/srv/x:/data:ro"）。容器模板用。
 	//
 	// 与 Dir 那个主挂载并存：Dir 是实例自己的可写目录（/data），这里是用户另外声明的。
 	ExtraVolumes []string
-	Image string
+	// AllowEmptyCommand 允许 Command 为空：此时不覆盖镜像入口，直接用镜像自带的
+	// ENTRYPOINT / CMD。通用 Docker 模板靠它 —— 用户只给镜像，不该被迫再写启动命令。
+	AllowEmptyCommand bool
 }
 
 // Argv 生成完整的 docker 命令行（第一个元素是 docker 可执行文件）。
@@ -404,7 +408,7 @@ func (r *Runtime) Argv(spec Spec) ([]string, error) {
 	if spec.InstanceID == "" || spec.Dir == "" {
 		return nil, errors.New("容器启动参数缺少实例 ID 或实例目录")
 	}
-	if len(spec.Command) == 0 {
+	if len(spec.Command) == 0 && !spec.AllowEmptyCommand {
 		return nil, errors.New("容器启动参数缺少要执行的命令")
 	}
 	// 挂载路径必须是绝对路径。相对路径 docker 会当成"命名卷"，
@@ -495,7 +499,10 @@ func (r *Runtime) Argv(spec Spec) ([]string, error) {
 	//     而容器看不到宿主的回环服务，所以只能这么发；
 	//   · 公网直出：发布到 0.0.0.0，玩家直接连节点公网 IP:端口。
 	// PublishHost 为空时按回环处理（老行为），老实例不受影响。
-	if spec.Port > 0 {
+	// ExtraPorts 非空时不再单独发布 spec.Port：容器模板里用户已经显式写了映射，
+	// 而面板同时会填 spec.Port（实例端口概念），两者常常是同一个宿主端口 ——
+	// docker 会因为重复绑定同一端口直接失败（真机报 “port is already allocated”）。
+	if spec.Port > 0 && len(spec.ExtraPorts) == 0 {
 		host := spec.PublishHost
 		if host == "" {
 			host = "127.0.0.1"
