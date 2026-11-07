@@ -256,18 +256,6 @@ export async function listInstances(): Promise<Instance[]> {
 }
 
 export interface CreateInstancePayload {
-	/** 实例模板（F9）：minecraft（默认）/ docker / console */
-	template?: 'minecraft' | 'docker' | 'console'
-	/** docker 模板：容器镜像 */
-	image?: string
-	/** docker 模板：端口映射，形如 "8080:80" */
-	ports?: string[]
-	/** docker 模板：卷挂载，形如 "/srv/www:/data:ro" */
-	volumes?: string[]
-	/** docker 模板：环境变量，形如 "K=V" */
-	env?: string[]
-	/** docker 模板：需要可写的路径（挂 tmpfs，只读根的例外） */
-	tmpfs?: string[]
   node_id: number
   instance_id: string
   name: string

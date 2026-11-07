@@ -51,23 +51,6 @@ type Meta struct {
 	// 它决定实例进程能不能看见宿主，若能由租户改写，就等于给了
 	// "关掉自己的隔离"这个开关 —— 那正是 T0 修复要堵的口子。
 	Container bool `json:"container,omitempty"`
-
-	// ---- 实例模板（F9）----
-	//
-	// Template 决定这个实例怎么跑：minecraft（默认，java -jar）/ docker（跑镜像）/
-	// console（不启动进程，只提供 stdin/stdout 界面）。
-	//
-	// 与 Container 字段的差别要注意：这些描述的是「实例要做什么」，属于实例自身配置；
-	// Container 描述的是「要不要隔离」，那属于平台状态，不能由租户改写。
-	Template string `json:"template,omitempty"`
-	// Image 容器镜像（仅 docker 模板）。留空则用节点的运行时镜像。
-	Image string `json:"image,omitempty"`
-	// Ports / Volumes / Env 容器映射，形如 "8080:80"、"/srv/x:/data"、"K=V"。
-	Ports   []string `json:"ports,omitempty"`
-	Volumes []string `json:"volumes,omitempty"`
-	Env     []string `json:"env,omitempty"`
-	// Tmpfs 需要可写的路径（容器里挂 tmpfs；只读根下的例外，不放宽其它隔离）
-	Tmpfs []string `json:"tmpfs,omitempty"`
 }
 
 // Registry 实例注册表。
@@ -136,9 +119,6 @@ func (r *Registry) ContainerRuntime() *container.Runtime {
 // 比直接起不来更危险。所以这里只记录问题、由启动路径拒绝启动（见 Instance.Start
 // 的容器可用性检查）。
 func (r *Registry) bindContainer(inst *mcprocess.Instance, m Meta) {
-	inst.SetInstanceTemplate(m.Template)
-	inst.SetInstanceImage(m.Image)
-	inst.SetInstanceContainerParams(m.Ports, m.Volumes, m.Env, m.Tmpfs)
 	inst.SetContainer(r.container, r.resourcesDir, m.Container)
 }
 
@@ -172,7 +152,6 @@ func (r *Registry) registerContainerInstance(m Meta, dir, sdir string) *mcproces
 		inst.BackupDir = m.BackupDir
 		inst.MemLimitBytes = mcprocess.ParseMemBytes(m.MemLimit)
 		inst.Port = int(m.Port)
-		r.applyMeta(inst, m)
 		r.bindContainer(inst, m)
 		r.bindRunAs(inst)
 	}
@@ -349,7 +328,6 @@ func (r *Registry) Create(m Meta) (*mcprocess.Instance, error) {
 	inst.BackupDir = m.BackupDir
 	inst.MemLimitBytes = mcprocess.ParseMemBytes(m.MemLimit)
 	inst.Port = int(m.Port) // 启动前要按它校准 server.properties
-	r.applyMeta(inst, m)
 	r.bindContainer(inst, m)
 	r.bindRunAs(inst)
 	r.instances[m.ID] = inst
@@ -449,7 +427,6 @@ func (r *Registry) Load() (loaded int, adopted int) {
 			inst.BackupDir = m.BackupDir
 			inst.MemLimitBytes = mcprocess.ParseMemBytes(m.MemLimit)
 			inst.Port = int(m.Port)
-			r.applyMeta(inst, m)
 			r.bindContainer(inst, m)
 			r.bindRunAs(inst)
 			r.instances[m.ID] = inst
@@ -723,16 +700,4 @@ func (r *Registry) Runtime(id string) (startCount, stopCount int, lastStartAt in
 		return 0, 0, 0
 	}
 	return m.StartCount, m.StopCount, m.LastStartAt
-}
-
-// applyMeta 把实例元数据里「属于实例自身」的部分灌进内存实例。
-//
-// 为什么要有这一层：原先这些只在 bindContainer 里设置，而 bindContainer 只在
-// **容器化**时才被调用。于是「模板是 docker 但当前没容器化」这种情况，实例根本不知道
-// 自己是什么模板，启动时落到 java 分支去要 jar（真机验收踩到过，报「jar 不存在」）。
-// 模板/镜像描述的是「实例要做什么」，与「有没有容器可用」无关，必须无条件带上。
-func (r *Registry) applyMeta(inst *mcprocess.Instance, m Meta) {
-	inst.SetInstanceTemplate(m.Template)
-	inst.SetInstanceImage(m.Image)
-	inst.SetInstanceContainerParams(m.Ports, m.Volumes, m.Env, m.Tmpfs)
 }

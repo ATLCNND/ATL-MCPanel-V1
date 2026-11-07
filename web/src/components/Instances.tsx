@@ -64,17 +64,6 @@ export default function Instances({ onOpen }: {
   const [portLines, setPortLines] = useState<MyPortLine[]>([])
   const [portWant, setPortWant] = useState<Record<number, number>>({})
   const [form, setForm] = useState({
-    // 实例模板（F9）：决定这个实例「是什么」，界面据此只显示相关字段。
-    //   minecraft 跑 MC 服务端（现有行为）
-    //   docker    跑任意镜像（通用容器）
-    //   console   跑用户给的命令，把 stdin/stdout 接到控制台
-    template: 'minecraft' as 'minecraft' | 'docker' | 'console',
-    // docker 模板专用
-    image: '',
-    ports_text: '',
-    volumes_text: '',
-    env_text: '',
-    tmpfs_text: '',
     node_id: '',
     instance_id: '',
     name: '',
@@ -229,13 +218,6 @@ export default function Instances({ onOpen }: {
         node_id: Number(form.node_id),
         instance_id: form.instance_id.trim(),
         name: form.name.trim() || form.instance_id.trim(),
-        // 模板与容器参数（F9）：非 docker 模板时 image/ports/volumes/env 由后端忽略
-        template: form.template,
-        image: form.image.trim(),
-        ports: splitLines(form.ports_text),
-        volumes: splitLines(form.volumes_text),
-        env: splitLines(form.env_text),
-        tmpfs: splitLines(form.tmpfs_text),
         core_type: form.core_type,
         java_version: form.java_version,
         port: portNum,
@@ -271,10 +253,8 @@ export default function Instances({ onOpen }: {
     }
   }
 
-  // textarea 也算进来：模板表单里有端口/卷/环境变量三个多行输入框。
-  const set = (k: string) =>
-    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
-      setForm({ ...form, [k]: e.target.value })
+  const set = (k: string) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
+    setForm({ ...form, [k]: e.target.value })
 
   const doDelete = async () => {
     if (!deleteTarget) return
@@ -402,51 +382,6 @@ export default function Instances({ onOpen }: {
                 </select>
               </Field>
 
-
-              {/* 实例模板（F9）：三选一决定后面显示哪些字段。
-                  放在「服务端核心」之前，因为它是更上位的选择 ——
-                  选 docker/console 时核心类型与 jar 都没有意义。 */}
-              <Field
-                label="实例类型"
-                required
-                hint={<>决定这个实例「是什么」：跑 MC 服务端、跑任意容器镜像，还是跑自己的脚本。</>}
-              >
-                <select value={form.template}
-                  onChange={(e) => setForm({ ...form, template: e.target.value as any })}>
-                  <option value="minecraft">Minecraft 服务端</option>
-                  <option value="docker">通用 Docker（跑镜像）</option>
-                  <option value="console">通用控制台（跑命令）</option>
-                </select>
-              </Field>
-
-              {form.template === 'docker' && (
-                <>
-                  <Field label="镜像" required
-                    hint={<>例如 <span className="mono">nginx:alpine</span>。节点需能拉到或已导入该镜像。</>}>
-                    <input value={form.image} onChange={set('image')} placeholder="nginx:alpine" />
-                  </Field>
-                  <Field label="端口映射" hint={<>每行一条，形如 <span className="mono">8080:80</span>（宿主:容器）。</>}>
-                    <textarea rows={2} value={form.ports_text} onChange={set('ports_text')} placeholder="8080:80" />
-                  </Field>
-                  <Field label="卷挂载" hint={<>每行一条，形如 <span className="mono">/srv/www:/data:ro</span>。</>}>
-                    <textarea rows={2} value={form.volumes_text} onChange={set('volumes_text')} placeholder="/srv/www:/data" />
-                  </Field>
-                  <Field label="环境变量" hint={<>每行一条，形如 <span className="mono">TZ=Asia/Shanghai</span>。</>}>
-                    <textarea rows={2} value={form.env_text} onChange={set('env_text')} placeholder="TZ=Asia/Shanghai" />
-                  </Field>
-                  <Field label="需要可写的路径" hint={<>每行一条。容器根文件系统是<b>只读</b>的，而有些镜像启动时要往固定路径写缓存（如 nginx 的 <span className="mono">/var/cache/nginx</span>）。填在这里会为其挂一块内存盘（每条 64MB，重启即清空）。</>}>
-                    <textarea rows={2} value={form.tmpfs_text} onChange={set('tmpfs_text')} placeholder="/var/cache/nginx" />
-                  </Field>
-                </>
-              )}
-
-              {form.template === 'console' && (
-                <Field label="启动命令" required
-                  hint={<>该命令的输出会出现在控制台，控制台里输入的内容会送进它的 stdin。</>}>
-                  <textarea rows={2} value={form.start_command} onChange={set('start_command')}
-                    placeholder="./run.sh 或 python3 app.py" />
-                </Field>
-              )}
               <Field
                 label="服务端核心"
                 hint={<>只是<b>分类标签</b>，用于区分与筛选 —— 真正决定跑什么的是下面的 jar 与启动命令。</>}
@@ -469,7 +404,6 @@ export default function Instances({ onOpen }: {
           <div className="cf-section">
             <div className="cf-section-title">网络与资源</div>
             <div className="cf-grid">
-              {form.template === 'minecraft' && (<>
               <Field
                 label="游戏端口"
                 required
@@ -495,7 +429,6 @@ export default function Instances({ onOpen }: {
               >
                 <input value={form.min_mem} onChange={set('min_mem')} placeholder="1G" />
               </Field>
-              </>)}
 
               <Field
                 label="CPU 核数"
@@ -570,8 +503,7 @@ export default function Instances({ onOpen }: {
             </div>
           </div>
 
-          {/* ---------------- 启动配置（仅 Minecraft：Java 版本 / 核心 jar / 启动命令）---------------- */}
-          {form.template === 'minecraft' && (
+          {/* ---------------- 启动配置 ---------------- */}
           <div className="cf-section">
             <div className="cf-section-title">启动配置</div>
             <div className="cf-grid">
@@ -639,7 +571,6 @@ export default function Instances({ onOpen }: {
               </Field>
             </div>
           </div>
-          )}
 
           {/* ---------------- 公网端口 ---------------- */}
           {portLines.length > 0 && (
@@ -789,8 +720,4 @@ export default function Instances({ onOpen }: {
       )}
     </div>
   )
-}
-// splitLines 把多行文本拆成去空白的数组（端口/卷/环境变量三处共用）。
-function splitLines(s: string): string[] {
-  return s.split('\n').map((x) => x.trim()).filter(Boolean)
 }

@@ -115,13 +115,6 @@ func (s *Server) CreateInstance(ctx context.Context, req *pb.CreateInstanceReque
 		BackupDir:    req.BackupDir,
 		MemLimit:     req.MemLimit,
 		Container:    req.Container,
-		// 实例模板（F9）
-		Template: req.Template,
-		Image:    req.Image,
-		Ports:    req.Ports,
-		Volumes:  req.Volumes,
-		Env:      req.Env,
-		Tmpfs:    req.Tmpfs,
 	})
 	if err != nil {
 		return &pb.OperationResponse{Success: false, Error: err.Error()}, nil

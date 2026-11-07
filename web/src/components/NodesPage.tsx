@@ -220,8 +220,6 @@ export default function NodesPage() {
   /** ③ 节点发起：把节点上 enroll --init 打印的那一行贴进来 */
   const [importText, setImportText] = useState<string>('')
   const [showImport, setShowImport] = useState(false)
-  // 登记节点：先选方式，再走对应流程（原来四个入口并列，容易让人不知道选哪个）
-  const [regOpen, setRegOpen] = useState(false)
   const doImport = async () => {
     if (!importText.trim()) return
     setBusy(true); setError(''); setMsg('')
@@ -315,30 +313,18 @@ export default function NodesPage() {
     <div className="nodes-page">
       <div className="page-toolbar">
         <button onClick={load} disabled={busy}>刷新</button>
-        {/* 登记方式收进一个入口：点开后再选（底账 B3）。原来四个按钮并列，用户不知道该用哪个。 */}
-        <button className="primary" onClick={() => setRegOpen(true)}>+ 登记节点</button>
+        <button className="primary" onClick={() => setShowAdd(!showAdd)}>+ 登记节点</button>
+        {/* 凭证交换：面板签 token，节点上跑一条命令换证书（面板不存任何凭据） */}
+        <button onClick={startCredExchange} disabled={busy}
+          title="生成一次性 token，在节点上执行一条命令即可接入（面板不保存 SSH 凭据）">
+          凭证交换接入
+        </button>
+        <button onClick={() => setShowImport(true)} title="③ 节点发起：把节点上 enroll --init 打印的那一行贴进来">粘贴导入</button>
       </div>
 
       <div className="nodes-body">
         {error && <div className="error-banner">{error}</div>}
         {msg && <div className="success-banner">{msg}</div>}
-
-        {regOpen && (
-          <div className="pki-banner">
-            <span className="status status-running">选择登记方式</span>
-            <span className="muted">
-              远端节点推荐 ② / ③：面板不保存任何 SSH 凭据。同机可用 ④ / ⑤。
-            </span>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', width: '100%' }}>
-              <button className="small" onClick={() => { setRegOpen(false); setShowAdd(true) }}>① 一键部署远端节点（SSH）</button>
-              <button className="small" onClick={() => { setRegOpen(false); void startCredExchange() }}>② 凭证交换 · 面板发起</button>
-              <button className="small" onClick={() => { setRegOpen(false); setShowImport(true) }}>③ 凭证交换 · 节点发起</button>
-              <button className="small" onClick={() => { setRegOpen(false); void adoptLocal() }}>④ 本机探测接入</button>
-              <button className="small" onClick={() => { setRegOpen(false); void installLocal() }}>⑤ 本机一键部署</button>
-              <button className="small" onClick={() => setRegOpen(false)}>取消</button>
-            </div>
-          </div>
-        )}
 
         {pki && (
           <div className="pki-banner">
@@ -386,10 +372,20 @@ export default function NodesPage() {
                 ? `检测到 Daemon 端口 ${localNode.daemon_port} 已在监听 —— 直接填 127.0.0.1 登记即可，不需要 SSH。`
                 : '在同一台机器上跑实例时，可以直接登记为 127.0.0.1 节点（无需 SSH 凭据）。'}
             </span>
-            {/* 入口已收进「+ 登记节点」：这里只说明可用哪种方式，不再并列按钮（底账 B3）。 */}
-            <span className="muted">
-              用「+ 登记节点」→ {localNode.listening ? '④ 本机探测接入' : '⑤ 本机一键部署'}
-            </span>
+            {/* 两条路：本机已有 daemon → 直接接入；本机只有面板 → 面板自己装。
+                都不需要 SSH 凭据 —— 面板本来就有这台机器的权限。 */}
+            {localNode.listening ? (
+              <button className="small primary" onClick={adoptLocal} disabled={busy}>接入本机 Daemon</button>
+            ) : (
+              <button className="small primary" onClick={installLocal} disabled={busy}
+                title="在这台机器上安装并启动 Daemon（不走 SSH，需要 root）">
+                一键部署本机节点
+              </button>
+            )}
+            <button className="small" onClick={() => {
+              setShowAdd(true)
+              setForm({ ...form, name: localNode.hostname || 'local', ip: '127.0.0.1', ssh_auth: '' })
+            }}>手动填写</button>
             {localNode.message && <span className="err-text">{localNode.message}</span>}
           </div>
         )}
@@ -504,9 +500,6 @@ export default function NodesPage() {
                 <div className="node-head">
                   <span className="node-name">{n.name}</span>
                   <span className={`status status-${n.status === 'online' ? 'running' : 'error'}`}>{n.status}</span>
-                  {enrollModeLabel(n.enroll_mode) && (
-                    <span className="muted" title="这条节点是怎么接进来的">{enrollModeLabel(n.enroll_mode)}</span>
-                  )}
                   <span className="mono muted">{n.ip}</span>
                   {n.public_ip && <span className="mono muted">公网 {n.public_ip}</span>}
                   <div className="spacer" />
@@ -658,16 +651,4 @@ export default function NodesPage() {
       )}
     </div>
   )
-}
-
-// enrollModeLabel 把接入方式转成给人看的短标签（节点卡片上显示）。
-function enrollModeLabel(m?: string): string {
-  switch (m) {
-    case "ssh": return "一键部署"
-    case "panel": return "凭证交换·面板发起"
-    case "node": return "凭证交换·节点发起"
-    case "local-probe": return "本机探测"
-    case "local-install": return "本机一键部署"
-    default: return ""
-  }
 }
