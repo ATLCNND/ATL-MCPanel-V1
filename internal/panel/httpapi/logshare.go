@@ -721,6 +721,24 @@ type logShareRecord struct {
 	// Analysis 已经拿到的 AI 结论（Markdown）。有值时前端直接展示，
 	// 不必再向对方请求一次（省钱省时间，也少一次隐私暴露）。
 	Analysis string `json:"analysis"`
+	// HelpText 上传那一刻生成的**求助文本快照**（底账 §十二 第 1 条）。
+	//
+	// 为什么要存：这段文字由"管理员可改的模板 + 当时的实例环境 + 当时的现象"拼成，
+	// 用户是照着它去社区提问的。事后按当前环境重建会得到另一段话 ——
+	// 模板改过一次就再也对不上"我当时到底说了什么"。
+	HelpText string `json:"help_text"`
+	// HelpReconstructed 为 true 表示这条记录早于快照功能，HelpText 是**按当前环境重建**的，
+	// 与当时可能有出入。界面必须标注，不能假装它就是原件。
+	HelpReconstructed bool `json:"help_reconstructed"`
+	// ProviderKind 这条记录是**哪家**分析出来的（logshare / mclogs / openai…）。
+	//
+	// 以前没返回过：界面上每条历史都拿不到提供方，标签那一栏一直是空的
+	//（`KIND_LABEL[h.provider_kind]` 永远是 undefined）。排查"这条到底传给了谁"时
+	// 只能去翻数据库。顺手补上 —— 它与求助文本是同一句问话的两半：
+	// "当时传给了谁、我又贴了什么去社区"。
+	ProviderKind string `json:"provider_kind"`
+	Errors       int    `json:"errors"`
+	RawURL       string `json:"raw_url"`
 }
 
 func (s *Server) logShareHistory(instanceID string) []logShareRecord {
@@ -729,7 +747,8 @@ func (s *Server) logShareHistory(instanceID string) []logShareRecord {
 		       u.filtered_lines, u.truncated,
 		       COALESCE(u.created_at,''), COALESCE(u.expires_at,''),
 		       u.deleted_at IS NOT NULL,
-		       COALESCE(a.content,'')
+		       COALESCE(a.content,''), COALESCE(u.help_text,''),
+		       u.provider_kind, COALESCE(u.raw_url,''), u.errors
 		FROM logshare_uploads u
 		LEFT JOIN logshare_analyses a
 		  ON a.instance_id = u.instance_id AND a.logshare_id = u.logshare_id
@@ -739,17 +758,39 @@ func (s *Server) logShareHistory(instanceID string) []logShareRecord {
 		return []logShareRecord{}
 	}
 	defer rows.Close()
+
 	out := []logShareRecord{}
+	// 旧记录的求助文本重建是"尽力而为"：需要一次 daemon 查询拿实例环境，
+	// 所以只在真的遇到空快照时才取（正常情况一条都不会漏到重建分支）。
+	var brief map[string]string
+	briefLoaded := false
 	for rows.Next() {
 		var it logShareRecord
-		var created, expires string
+		var created, expires, providerKind, rawURL string
+		var errors int
 		if err := rows.Scan(&it.ID, &it.LogShareID, &it.URL, &it.SourcePath, &it.Size,
 			&it.Lines, &it.FilteredLines, &it.Truncated, &created, &expires,
-			&it.Deleted, &it.Analysis); err != nil {
+			&it.Deleted, &it.Analysis, &it.HelpText, &providerKind, &rawURL, &errors); err != nil {
 			continue
 		}
 		it.CreatedAt = created
 		it.ExpiresAt = expires
+		it.ProviderKind = providerKind
+		it.Errors = errors
+		it.RawURL = rawURL
+
+		// 只有 mclo.gs 上传会带求助文本（AI 类提供方没有"去社区求助"这一步）
+		if providerKind == "mclogs" {
+			if strings.TrimSpace(it.HelpText) == "" {
+				if !briefLoaded {
+					brief = s.instanceBrief(cliFor(s, instanceID), instanceID)
+					briefLoaded = true
+				}
+				// 现象没存（当时没有这个需求），重建时留空 —— 少一行比编一句强
+				it.HelpText = s.helpTextFor(brief, "", it.URL, rawURL, errors)
+				it.HelpReconstructed = true
+			}
+		}
 		out = append(out, it)
 	}
 	return out
@@ -845,7 +886,7 @@ func stripPlayerChat(content string) (string, int) {
 // "过滤 0 行"，没有任何症状。这条默认值是隐私承诺的一部分，不能只是"看起来实现了"。
 // 现在把 `]:`（可选空白）也接受；`[Not Secure]` 那种变体继续支持。
 // `(?m)` 让 `^` 对**每一行**生效：没有时间戳的裸 `<名字> 内容` 可能出现在日志中间
-//（前面的行被轮转截断时就是这种形态），只在文本开头匹配会漏掉它们。
+// （前面的行被轮转截断时就是这种形态），只在文本开头匹配会漏掉它们。
 var chatLineRe = regexp.MustCompile(`(?m)(?:^|\]:\s*|\]\s*)(?:\[Not Secure\]\s*)?<[^<>\n]{1,32}>\s`)
 
 func isChatLine(line string) bool {

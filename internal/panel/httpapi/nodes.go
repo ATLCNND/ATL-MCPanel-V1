@@ -17,6 +17,9 @@ import (
 
 // nodeRequest 节点登记/更新请求。
 type nodeRequest struct {
+	// BackupRoot 该节点的备份根目录（管理员可配，落冷存储/NFS）。
+	// 用指针区分「没传」与「传了空串 = 清空」，否则想清掉填错的路径都做不到。
+	BackupRoot *string `json:"backup_root"`
 	Name    string `json:"name"`
 	IP      string `json:"ip"`
 	SSHUser string `json:"ssh_user"`
@@ -80,6 +83,8 @@ type nodeView struct {
 	EnrollMode string `json:"enroll_mode"`
 	// NodeUID 节点的稳定身份（迁移 v32，Daemon 首次启动生成）。老节点为空。
 	NodeUID string `json:"node_uid"`
+	// BackupRoot 该节点的备份根目录（迁移 v34；空 = 实例目录下的 backups/）
+	BackupRoot string `json:"backup_root"`
 	Status  string `json:"status"`
 	// Online 界面该用的"在线/离线"：按心跳新鲜度算出来的（见 nodestatus.go）。
 	// status 只是数据库里的原始列——Daemon 失联时它**不会**自己变成 offline，
@@ -100,7 +105,7 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.db.Query(`SELECT id, name, ip, COALESCE(public_ip,''), ssh_user, ssh_port, ssh_auth,
 		COALESCE(ssh_auth_type,''), COALESCE(panel_grpc_port,0), COALESCE(grpc_port,0),
-		COALESCE(enroll_mode,''), COALESCE(node_uid,''), status, cpu, mem, last_seen FROM nodes ORDER BY id`)
+		COALESCE(enroll_mode,''), COALESCE(node_uid,''), COALESCE(backup_root,''), status, cpu, mem, last_seen FROM nodes ORDER BY id`)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -116,7 +121,7 @@ func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 		// 也就没法回答"这个节点到底断了多久"。
 		var lastSeen *time.Time
 		if err := rows.Scan(&v.ID, &v.Name, &v.IP, &v.PublicIP, &v.SSHUser, &v.SSHPort, &auth,
-			&v.AuthType, &v.PanelGRPCPort, &v.DaemonGRPCPort, &v.EnrollMode, &v.NodeUID,
+			&v.AuthType, &v.PanelGRPCPort, &v.DaemonGRPCPort, &v.EnrollMode, &v.NodeUID, &v.BackupRoot,
 			&v.Status, &v.CPU, &v.Mem, &lastSeen); err != nil {
 			continue
 		}
@@ -263,6 +268,16 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 	if req.DaemonGRPCPort != 0 {
 		sets = append(sets, "grpc_port = ?")
 		args = append(args, req.DaemonGRPCPort)
+	}
+	// 备份根目录：允许显式清空（传空串 = 回到实例目录下的 backups/）
+	if req.BackupRoot != nil {
+		v := strings.TrimSpace(*req.BackupRoot)
+		if v != "" && !filepath.IsAbs(v) {
+			writeErr(w, http.StatusBadRequest, "备份根目录必须是绝对路径（例如 /mnt/cold-backup）")
+			return
+		}
+		sets = append(sets, "backup_root = ?")
+		args = append(args, v)
 	}
 	if len(sets) == 0 {
 		writeErr(w, http.StatusBadRequest, "没有需要更新的字段")
@@ -904,4 +919,14 @@ func (s *Server) nodeUIDOf(id int64) string {
 	var uid string
 	_ = s.db.QueryRow(`SELECT COALESCE(node_uid,'') FROM nodes WHERE id = ?`, id).Scan(&uid)
 	return uid
+}
+
+// nodeBackupRoot 返回该实例所属节点配置的备份根目录（空 = 用实例目录下的 backups/）。
+//
+// 每台节点一份：备份要落到冷存储时，通常是「这台机器接的盘」，而不是全局统一路径。
+func (s *Server) nodeBackupRoot(instanceID string) string {
+	var root string
+	_ = s.db.QueryRow(`SELECT COALESCE(n.backup_root,'') FROM nodes n
+		JOIN instances i ON i.node_id = n.id WHERE i.instance_id = ?`, instanceID).Scan(&root)
+	return root
 }

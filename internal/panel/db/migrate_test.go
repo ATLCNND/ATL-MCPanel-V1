@@ -73,18 +73,51 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	}
 }
 
+// 迁移版本必须"连续递增"，但**允许有明确记录在案的跳号**。
+//
+// 为什么不能死守"必须一个一个接"：0.12.x（已撤回）的 `instance_template` 占了 34，
+// 而这个产品的库可能经历过 0.12.x —— 34 已经被写进 `schema_migrations`，
+// 再用 34 写新迁移会被**静默跳过**（表现为"列没建出来"）。所以只能跳号用 35、36。
+//
+// 这条用例的价值正是"发现意外的跳号"：真正的冲突（两个迁移抢同一个号）会表现为
+// "某个号重复两次"或"跳了一个没人报备的号"，两种都必须红。
+// 想新增跳号 → 先在 `skippedVersions` 里写清理由，别偷偷跳。
+var skippedVersions = map[int]string{
+	34: "被已撤回的 0.12.x 的 instance_template 占用；任何经历过 0.12.x 的库 34 都已存在，复用会被静默跳过",
+}
+
 func TestMigrationVersionsAreSequential(t *testing.T) {
 	list := AllMigrations()
 	if len(list) == 0 {
 		t.Fatal("迁移列表不应为空")
 	}
-	for i, m := range list {
-		want := i + 1
-		if m.Version != want {
-			t.Errorf("迁移版本必须从 1 连续递增：第 %d 项版本为 %d，期望 %d", i, m.Version, want)
-		}
+	seen := map[int]bool{}
+	next := 1
+	for _, m := range list {
 		if m.Name == "" {
 			t.Errorf("迁移 %d 缺少名称", m.Version)
+		}
+		if seen[m.Version] {
+			t.Errorf("迁移版本 %d 出现了两次（这才是真正的冲突）", m.Version)
+			continue
+		}
+		seen[m.Version] = true
+		// 允许跳过"报备过的号"
+		for next < m.Version {
+			if _, ok := skippedVersions[next]; !ok {
+				t.Errorf("迁移版本出现未报备的跳号：%d 缺失（若确实要跳，请写进 skippedVersions 并说明理由）", next)
+			}
+			next++
+		}
+		if m.Version != next {
+			t.Errorf("迁移版本乱序或重复：得到 %d，期望 %d", m.Version, next)
+		}
+		next++
+	}
+	// 报备表里的号不应该后来又被用上
+	for v := range skippedVersions {
+		if seen[v] {
+			t.Errorf("迁移版本 %d 在 skippedVersions 里标为跳号，却真的存在一条迁移", v)
 		}
 	}
 }

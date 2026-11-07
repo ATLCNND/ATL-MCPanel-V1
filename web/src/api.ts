@@ -1,4 +1,4 @@
-export interface Instance {
+﻿export interface Instance {
   id: number
   instance_id: string
   node_id: number
@@ -180,8 +180,14 @@ export interface ApiOptions extends RequestInit {
  * 否则在启用安全入口时全站接口 404。
  */
 export function basePath(): string {
+  // ① window.__ATL_BASE__：老注入方式（面板下发 CSP 是 script-src 'self'，
+  //    内联脚本执行不了，所以现在改用 <meta name="atl-base">，见 httpapi/static.go）。
   const b = (window as any).__ATL_BASE__
-  return typeof b === 'string' ? b : ''
+  if (typeof b === 'string' && b) return b
+  // ② meta 标签：不受 CSP 限制，是当前生效的那条路
+  const m = document.querySelector('meta[name="atl-base"]')
+  const v = m ? m.getAttribute('content') : ''
+  return v || ''
 }
 
 export async function apiFetch(path: string, options: ApiOptions = {}): Promise<any> {
@@ -761,6 +767,10 @@ export interface BackupItem {
   name: string
   size: number
   created_at: number
+  // kind/base_id：自动备份是增量的（一条链 = 1 份基线 + 若干增量）。
+  // 老备份没有清单，两个字段为空 → 按独立备份显示。
+  kind?: 'base' | 'inc' | ''
+  base_id?: string
 }
 
 export async function listBackups(instanceId: string): Promise<BackupItem[]> {
@@ -1073,6 +1083,8 @@ export interface NodeInfo {
    * 界面据此决定哪些操作与提示才有意义。
    */
   enroll_mode: string
+  /** 该节点的备份根目录（管理员可配；空 = 实例目录下的 backups/） */
+  backup_root?: string
   /** 与 daemon_grpc_port 同值（后端历史字段名） */
   grpc_port: number
   ssh_user: string
@@ -1536,6 +1548,10 @@ export interface AnalysisRecord {
   provider_id: number
   analysis: string
   cache_key: string
+  /** 上传那一刻的**求助文本快照**（只有 mclo.gs 上传才有） */
+  help_text?: string
+  /** true = 这条记录早于快照功能，help_text 是按当前环境重建的，与当时可能有出入 */
+  help_reconstructed?: boolean
 }
 
 export async function listAnalysisHistory(

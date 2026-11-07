@@ -208,9 +208,9 @@ func (s *Server) handleInstanceAnalyse(w http.ResponseWriter, r *http.Request) {
 		//（老客户端、脚本、手工 curl）都会被当成"用户主动要求不过滤"，
 		// 带着 <玩家名> 的聊天行就跟着日志一起上传了。
 		// 只有**显式**的 false 才算关闭。
-		FilterChat *bool  `json:"filter_chat"`
-		Agree      bool   `json:"agree"`
-		ProviderID int64  `json:"provider_id"`
+		FilterChat *bool `json:"filter_chat"`
+		Agree      bool  `json:"agree"`
+		ProviderID int64 `json:"provider_id"`
 		// ProviderKind 按**类型**指定内置提供方（logshare / mclogs）。
 		//
 		// 为什么需要它：内置的 LogShare 与 mclo.gs 都没有数据库行、id 都是 0 ——
@@ -460,19 +460,24 @@ func (s *Server) attemptMclogs(r *http.Request, instanceID string,
 	if res.Expires > 0 {
 		expires = time.Unix(res.Expires, 0)
 	}
+	// 求助文本：把"社区看不到、但很可能是原因"的环境信息一起拼好。
+	// 措辞来自**管理员配置的模板**（analysis_help_template），面板只负责填占位符。
+	//
+	// ⚠️ 必须在**落库之前**算出来：这段文字要作为**快照**存进这条记录（help_text）。
+	// 不存的话，事后只能按"当前"的模板与环境重建 —— 模板改过一次、实例换过核心，
+	// 用户回看历史时看到的就不再是他当时贴到社区的那段话（底账 §十二 第 1 条）。
+	info := s.instanceBrief(cliFor(s, instanceID), instanceID)
+	help := s.helpTextFor(info, phenomenon, res.URL, res.Raw, res.Errors)
+
 	recordID := s.insertUploadRecord(uploadRecord{
 		InstanceID: instanceID, RemoteID: res.ID, Token: res.Token, URL: res.URL,
 		RawURL: res.Raw, SourcePath: prep.Path, Size: prep.Size, Lines: res.Lines,
 		Errors: res.Errors, Filtered: prep.Filtered, Truncated: prep.Truncated + cut,
 		UserID: currentUserID(r), Expires: expires, ProviderKind: analysis.KindMclogs, ProviderID: p.ID,
+		HelpText: help,
 	})
 	s.audit(r, "analysis_upload", instanceID,
 		fmt.Sprintf("%s → %s（分享链接，mclo.gs，ERROR %d 行）", prep.Path, res.URL, res.Errors))
-
-	// 求助文本：把"社区看不到、但很可能是原因"的环境信息一起拼好。
-	// 措辞来自**管理员配置的模板**（analysis_help_template），面板只负责填占位符。
-	info := s.instanceBrief(cliFor(s, instanceID), instanceID)
-	help := s.helpTextFor(info, phenomenon, res.URL, res.Raw, res.Errors)
 
 	return map[string]interface{}{
 		"id":            res.ID,
@@ -539,6 +544,9 @@ type uploadRecord struct {
 	Expires      time.Time
 	ProviderKind string
 	ProviderID   int64
+	// HelpText 上传那一刻生成的**求助文本快照**（底账 §十二 第 1 条）。
+	// 空串 = 这条记录不需要求助文本（AI 类提供方），或早于快照功能。
+	HelpText string
 }
 
 // mclo.gs 的硬上限（实测 GET /1/limits：storageTime=90 天 / maxLength=10MiB / maxLines=25000）。
@@ -581,10 +589,10 @@ func (s *Server) insertUploadRecord(u uploadRecord) int64 {
 	res, err := s.db.Exec(`
 		INSERT INTO logshare_uploads
 			(instance_id, logshare_id, token, url, raw_url, source_path, size, lines, errors,
-			 filtered_lines, truncated, uploaded_by, expires_at, provider_kind, provider_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 filtered_lines, truncated, uploaded_by, expires_at, provider_kind, provider_id, help_text)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.InstanceID, u.RemoteID, u.Token, u.URL, u.RawURL, u.SourcePath, u.Size, u.Lines, u.Errors,
-		u.Filtered, boolInt(u.Truncated > 0), u.UserID, exp, u.ProviderKind, u.ProviderID)
+		u.Filtered, boolInt(u.Truncated > 0), u.UserID, exp, u.ProviderKind, u.ProviderID, u.HelpText)
 	if err != nil {
 		// 落库失败不该让用户白等一次分析（日志已经传出去了），但**必须留痕** ——
 		// 否则"这份日志去哪了、结论存哪"事后完全查不出来（LogShare 那条链路踩过这个坑）。
@@ -764,6 +772,15 @@ type analysisRecord struct {
 	ProviderID   int64  `json:"provider_id"`
 	Analysis     string `json:"analysis"`
 	CacheKey     string `json:"cache_key"`
+	// HelpText 上传那一刻生成的**求助文本快照**（只有 mclo.gs 上传才有）。
+	//
+	// 为什么存快照：这段文字是「管理员可改的模板 + 当时的实例环境 + 当时填的现象」拼出来的，
+	// 用户照着它去社区提问。事后按当前环境重建会得到另一段话 —— 模板改过一次，
+	// 就再也对不上"我当时到底说了什么"（底账 §十二 第 1 条）。
+	HelpText string `json:"help_text"`
+	// HelpReconstructed 为 true 表示这条记录早于快照功能：HelpText 是**按当前环境重建**的，
+	// 与当时可能有出入。界面必须标注，不能假装它是原件。
+	HelpReconstructed bool `json:"help_reconstructed"`
 }
 
 func (s *Server) analysisRecordByID(id int64) (*analysisRecord, error) {
@@ -797,24 +814,41 @@ func (s *Server) handleInstanceAnalysisHistory(w http.ResponseWriter, r *http.Re
 	if !s.requireInstanceLevel(w, r, instanceID, LevelViewer) {
 		return
 	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"history": s.analysisHistoryRecords(instanceID),
+		"limits": map[string]interface{}{
+			"per_min": s.analysisSettings().RatePerMin,
+			"per_day": s.analysisSettings().RatePerDay,
+		},
+	})
+}
+
+// analysisHistoryRecords 实例的分析记录（界面「分析记录」那一栏的数据源）。
+//
+// 抽成函数是为了能直接测：这个 handler 需要登录态与实例权限，而"求助文本快照"
+// 的正确性与权限无关 —— 它只跟"存了没有、旧记录怎么重建"有关。
+func (s *Server) analysisHistoryRecords(instanceID string) []analysisRecord {
 	rows, err := s.db.Query(`
 		SELECT id, instance_id, logshare_id, url, COALESCE(raw_url,''), source_path, size, lines,
 		       COALESCE(errors,0), filtered_lines, truncated,
 		       COALESCE(created_at,''), COALESCE(expires_at,''), deleted_at IS NOT NULL,
-		       COALESCE(provider_kind,'logshare'), COALESCE(provider_id,0)
+		       COALESCE(provider_kind,'logshare'), COALESCE(provider_id,0),
+		       COALESCE(help_text,'')
 		FROM logshare_uploads WHERE instance_id = ? ORDER BY id DESC LIMIT 20`, instanceID)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
+		return []analysisRecord{}
 	}
 	defer rows.Close()
 	out := []analysisRecord{}
+	// 旧记录的求助文本重建要查一次实例环境，只在真遇到空快照时取
+	var brief map[string]string
+	briefLoaded := false
 	for rows.Next() {
 		var rec analysisRecord
 		var created, expires string
 		if err := rows.Scan(&rec.ID, &rec.InstanceID, &rec.LogShareID, &rec.URL, &rec.RawURL,
 			&rec.SourcePath, &rec.Size, &rec.Lines, &rec.Errors, &rec.Filtered, &rec.Truncated,
-			&created, &expires, &rec.Deleted, &rec.ProviderKind, &rec.ProviderID); err != nil {
+			&created, &expires, &rec.Deleted, &rec.ProviderKind, &rec.ProviderID, &rec.HelpText); err != nil {
 			continue
 		}
 		rec.CreatedAt, rec.ExpiresAt = created, expires
@@ -824,15 +858,20 @@ func (s *Server) handleInstanceAnalysisHistory(w http.ResponseWriter, r *http.Re
 			rec.CacheKey = rec.LogShareID
 		}
 		rec.Analysis = s.cachedAnalysis(rec.InstanceID, rec.CacheKey)
+
+		// 只有 mclo.gs 上传会带求助文本（AI 类提供方没有"去社区求助"这一步）
+		if rec.ProviderKind == analysis.KindMclogs && strings.TrimSpace(rec.HelpText) == "" {
+			if !briefLoaded {
+				brief = s.instanceBrief(cliFor(s, instanceID), instanceID)
+				briefLoaded = true
+			}
+			// 现象没存（当时没有这个需求），重建时留空 —— 少一行比编一句强
+			rec.HelpText = s.helpTextFor(brief, "", rec.URL, rec.RawURL, rec.Errors)
+			rec.HelpReconstructed = true
+		}
 		out = append(out, rec)
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"history": out,
-		"limits": map[string]interface{}{
-			"per_min": s.analysisSettings().RatePerMin,
-			"per_day": s.analysisSettings().RatePerDay,
-		},
-	})
+	return out
 }
 
 // handleDeleteAnalysisRecord DELETE /api/analysis/{record_id}

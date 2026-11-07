@@ -1,4 +1,4 @@
-// Package httpapi 是 Panel 的 HTTP API 层。
+﻿// Package httpapi 是 Panel 的 HTTP API 层。
 package httpapi
 
 import (
@@ -628,7 +628,8 @@ func securityHeaders(next http.Handler) http.Handler {
 				"font-src 'self' data:; "+
 				"connect-src 'self' ws: wss:; "+
 				"object-src 'none'; "+
-				"base-uri 'none'; "+
+				// base-uri 必须允许同源：启用安全入口时 index.html 会注入 <base href="/入口/">，`base-uri 'none'` 会把这条标签也挡掉（控制台报 CSP 违规，静态资源改为按文档 URL 解析）。
+				"base-uri 'self'; "+
 				"frame-ancestors 'none'")
 		if r.TLS != nil {
 			h.Set("Strict-Transport-Security", "max-age=31536000")

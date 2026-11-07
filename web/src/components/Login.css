@@ -1,4 +1,4 @@
-.login-wrap {
+﻿.login-wrap {
   min-height: 100vh;
   display: flex;
   align-items: center;
@@ -73,4 +73,60 @@
   text-align: center;
   margin: 2px 0 0;
   opacity: 0.75;
+}
+
+/* 安全入口提示：只在 server.security_entry 非空时渲染。
+ * 低调但对"过几天再打开面板发现 404"的人是救命的 —— 那个 404 不带面板特征，
+ * 看不出是入口写错还是服务没起。 */
+.login-entry {
+  margin-top: 4px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-md, 8px);
+  background: var(--bg-subtle);
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.login-entry-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--text-1);
+}
+
+.login-entry-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.login-entry-url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  user-select: all;
+}
+
+.login-entry-copy {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.login-entry-hint {
+  margin-top: 8px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+.login-entry-hint code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-2);
 }

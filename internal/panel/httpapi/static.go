@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"html"
 	"net/http"
 	"os"
 	"path"
@@ -67,9 +68,17 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 
 	// 配了安全入口时，index.html 要注入两样东西：
-	//   ① <base href>：让 Vue/静态资源按前缀解析（配合 vite 的 base: './'）
-	//   ② window.__ATL_BASE__：让 fetch / WebSocket 自己拼上前缀
-	// 不能靠改 nginx 之类的外部手段 —— 面板是自家进程，直接处理最省事。
+	//   ① <base href>：让静态资源按前缀解析（配合 vite 的 base: './'）
+	//   ② <meta name="atl-base">：让前端知道接口前缀，fetch / WebSocket 自己拼上
+	//
+	// ⚠️ 这里**不能**用内联 <script> 注入 window.__ATL_BASE__，尽管那样最直接：
+	// 面板自己下发的 CSP 是 `script-src 'self'`（这是挡 XSS 外带的关键一条），
+	// 内联脚本会被浏览器直接拒绝执行 —— 而"拒绝"只体现为控制台一条 CSP 警告，
+	// 页面照常渲染，于是表现成"启用安全入口后全站接口 404、登录页版本号显示未知"。
+	// 2026-11-07 真机撞到：0.11.0 的验收只核对了 HTML 里**有没有**那段字符串，
+	// 没核对它**有没有执行**，于是这个 bug 一直躺着。改用 <meta> 后不需要放宽 CSP。
+	//
+	// 同理，<base> 需要 CSP 里 base-uri 允许同源（原来是 'none'，会把 <base> 也挡掉）。
 	if s.securityEntry != "" {
 		raw, err := os.ReadFile(index)
 		if err != nil {
@@ -78,7 +87,7 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 		}
 		prefix := "/" + s.securityEntry
 		inject := "<base href=\"" + prefix + "/\">" +
-			"<script>window.__ATL_BASE__=" + jsonQuote(prefix) + ";</script>"
+			"<meta name=\"atl-base\" content=\"" + htmlEscape(prefix) + "\">"
 		out := strings.Replace(string(raw), "<head>", "<head>\n    "+inject, 1)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(out))
@@ -87,9 +96,14 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, index)
 }
 
-// jsonQuote 把字符串安全地嵌进 <script> 里的 JS 字面量。
+// jsonQuote 把字符串安全地嵌进 JS 字面量（保留给可能的外部消费者）。
 // 入口字符集已限定为字母数字与 - _. ，这里仍做一次转义以防将来放宽。
 func jsonQuote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+// htmlEscape 用属性值安全的形式转义（入口字符集本来就安全，这里是第二道）。
+func htmlEscape(s string) string {
+	return html.EscapeString(s)
 }

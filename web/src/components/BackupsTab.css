@@ -1,4 +1,4 @@
-.backups-tab {
+﻿.backups-tab {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -55,3 +55,66 @@
   padding: 4px 10px;
   font-size: 12px;
 }
+
+/* ---- 自动备份链（一行一条链，展开看每一环）----
+ * 平铺显示会让人以为"这些都是一份完整备份"，于是删掉中间一环 —— 而它后面的
+ * 增量全都会变成恢复不回去的东西。链头行必须一眼看出"这是一组、共几环"。 */
+.chain-row td {
+  background: var(--bg-subtle);
+  font-weight: 500;
+}
+
+.chain-toggle {
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  padding: 0 6px 0 0;
+  font-size: 13px;
+}
+
+.chain-title {
+  margin-right: 8px;
+}
+
+.chain-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  margin-right: 8px;
+  border-radius: 10px;
+  background: var(--accent-bg, rgba(90, 140, 255, 0.14));
+  color: var(--accent, #4a7cf5);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.chain-badge.soft {
+  margin-left: 8px;
+  background: var(--bg-subtle);
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+.chain-sub {
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.chain-member-row td:first-child {
+  padding-left: 36px;
+}
+
+.chain-member-name {
+  display: inline-block;
+  min-width: 130px;
+  margin-right: 12px;
+  color: var(--text-2);
+}
+
+.chain-member-id {
+  color: var(--text-3);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+

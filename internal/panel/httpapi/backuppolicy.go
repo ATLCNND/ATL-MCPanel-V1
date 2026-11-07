@@ -251,32 +251,47 @@ func boolInt(b bool) int {
 // 早先的 bug 正是这里被破坏：前端"名称可选"留空 → Daemon 填成 auto →
 // 用户的手动备份在保留策略眼里成了自动备份，被梯度滚动淘汰（且日历里显示为「自动」）。
 func (s *Server) pruneByPolicy(ctx context.Context, cli pb.DaemonServiceClient, instanceID string, policy retention.Policy) {
-	list, err := cli.ListBackups(ctx, &pb.ListBackupsRequest{InstanceId: instanceID})
+	// backup_root：与备份写入同一口径，否则这里看到的是一批**过期的**旧备份
+	//（节点配了冷存储之后会是这样），淘汰动作全打在错的地方。
+	root := s.nodeBackupRoot(instanceID)
+	list, err := cli.ListBackups(ctx, &pb.ListBackupsRequest{InstanceId: instanceID, BackupRoot: root})
 	if err != nil || !list.Success {
 		return
 	}
 	entries := make([]retention.Entry, 0, len(list.Backups))
 	for _, b := range list.Backups {
-		entries = append(entries, retention.Entry{
+		e := retention.Entry{
 			ID:        b.BackupId,
 			CreatedAt: time.Unix(b.CreatedAt, 0),
 			Manual:    !isAutoBackupName(b.Name),
-		})
+		}
+		// 自动备份带上链标识 → 淘汰时整条一起走；手动备份 / 老备份留空 = 独立一份。
+		if !e.Manual && b.BaseId != "" {
+			e.ChainID = b.BaseId
+		}
+		entries = append(entries, e)
 	}
 	if len(entries) == 0 {
 		return
 	}
 
-	expired := retention.SelectExpired(entries, policy, time.Now())
+	// 用**按链**的口径：一条 base + inc* 是一个整体，禁止「删 base 留 inc」
+	//（删 base 之后剩下的 inc 全是恢复不回去的垃圾，比不删更糟）。
+	expired := retention.SelectExpiredChains(entries, policy, time.Now())
 	if len(expired) == 0 {
 		return
 	}
 	sort.Slice(expired, func(i, j int) bool { return expired[i].CreatedAt.Before(expired[j].CreatedAt) })
 
 	for _, e := range expired {
-		if _, err := cli.DeleteBackup(ctx, &pb.DeleteBackupRequest{InstanceId: instanceID, BackupId: e.ID}); err == nil {
+		if _, err := cli.DeleteBackup(ctx, &pb.DeleteBackupRequest{
+			InstanceId: instanceID,
+			BackupId:   e.ID,
+			BackupRoot: root,
+		}); err == nil {
 			s.logger.Info("按保留策略淘汰备份",
 				"instance", instanceID, "backup", e.ID, "manual", e.Manual,
+				"chain", e.ChainID,
 				"age_hours", int(time.Since(e.CreatedAt).Hours()))
 		}
 	}

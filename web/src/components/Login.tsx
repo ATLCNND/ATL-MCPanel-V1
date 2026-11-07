@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { login, setToken, setCurrentUser } from '../api'
+import { login, setToken, setCurrentUser, basePath } from '../api'
+import { copyText } from '../clipboard'
 import Brand from './Brand'
 import './Login.css'
 
@@ -19,6 +20,23 @@ export default function Login({ onLogin, notice }: { onLogin: () => void; notice
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [copied, setCopied] = useState('')
+
+  /**
+   * 启用自定义安全入口（`server.security_entry`）时，面板**只在** `/<入口>/` 下提供服务。
+   *
+   * 为什么要在这里显示完整地址：入口是安装时随机生成的 12 位，用户手上只有
+   * 安装脚本打印的那一行。等他关掉终端、过几天再打开面板，只会看到 404
+   * （而且那个 404 是**不带面板特征**的，看不出是"入口写错了"还是"服务没起"）。
+   * 登录页是他唯一一定会看到的页面，把地址摆在这里最省事。
+   */
+  const entry = basePath()
+  const fullURL = entry ? `${window.location.origin}${entry}/` : ''
+
+  const copyEntry = async () => {
+    setCopied(await copyText(fullURL) ? '已复制' : '复制失败，请手动选中')
+    setTimeout(() => setCopied(''), 2500)
+  }
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -66,6 +84,23 @@ export default function Login({ onLogin, notice }: { onLogin: () => void; notice
         <button className="primary" type="submit" disabled={loading}>
           {loading ? '登录中...' : '登录'}
         </button>
+
+        {/* 安全入口提示：只在启用时出现（普通部署看不到这一块） */}
+        {entry && (
+          <div className="login-entry">
+            <div className="login-entry-title">本站启用了自定义安全入口</div>
+            <div className="login-entry-row">
+              <code className="login-entry-url">{fullURL}</code>
+              <button type="button" className="login-entry-copy" onClick={copyEntry}>
+                {copied || '复制'}
+              </button>
+            </div>
+            <div className="login-entry-hint">
+              只有这个地址（含 <code>{entry}/</code>）能打开面板，其它路径一律 404。
+              建议加入书签；忘记入口可在节点上查看面板配置的 <code>server.security_entry</code>。
+            </div>
+          </div>
+        )}
       </form>
     </div>
   )

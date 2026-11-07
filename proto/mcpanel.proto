@@ -517,6 +517,13 @@ message BackupRequest {
   string instance_id = 1;
   string name = 2;           // 备份名称（可选，自动生成）
   bool include_config = 3;   // 是否含配置文件
+
+  // backup_root 本次备份的落盘根目录（面板下发的节点级覆盖值；留空则用节点配置）。
+  //
+  // 为什么由面板下发：管理员在界面上改备份位置应当立即生效，
+  // 而不是「改完还要去节点上改 config.yaml 并重启 daemon」。
+  // daemon 侧仍会校验它是绝对路径并按实例分目录 —— 面板传来的值不享受任何特权。
+  string backup_root = 4;
 }
 
 message BackupResponse {
@@ -528,6 +535,14 @@ message BackupResponse {
 message RestoreRequest {
   string instance_id = 1;
   string backup_id = 2;
+
+  // backup_root 备份所在的根目录（面板下发的节点级覆盖值；留空则用节点配置）。
+  //
+  // 与 BackupRequest.backup_root 同义，而且**必须一致**：备份写到哪，就得从哪读回来。
+  // 2026-11-07 的教训：只有 Backup 透传了它，于是节点上配了冷存储之后，
+  // 备份写进 /mnt/cold-backup，而列表/回滚/删除还在看实例目录下的 backups/ ——
+  // 用户点「回滚」会拿到一份旧备份，或者干脆「备份不存在」。
+  string backup_root = 3;
 }
 
 message BackupInfo {
@@ -536,10 +551,20 @@ message BackupInfo {
   int64 size = 3;         // 字节
   int64 created_at = 4;   // unix 秒
   bool include_config = 5;
+
+  // kind 清单里的类型：base（完整快照）| inc（只含自上一环以来变化的文件）。
+  // 老备份没有清单时为空字符串（视同 base）。
+  string kind = 6;
+  // base_id 增量链的基线包名：base 时等于它自己，inc 时指向链上的基线。
+  // 面板据此把一条链当成**一个整体**来淘汰（禁止「删 base 留 inc」）。
+  string base_id = 7;
 }
 
 message ListBackupsRequest {
   string instance_id = 1;
+
+  // backup_root 见 RestoreRequest.backup_root（三处同义）。
+  string backup_root = 2;
 }
 
 message ListBackupsResponse {
@@ -551,6 +576,9 @@ message ListBackupsResponse {
 message DeleteBackupRequest {
   string instance_id = 1;
   string backup_id = 2;
+
+  // backup_root 见 RestoreRequest.backup_root（三处同义）。
+  string backup_root = 3;
 }
 
 // ============================================================

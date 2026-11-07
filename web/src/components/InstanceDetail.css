@@ -915,3 +915,47 @@
 /* 到期面板已搬到实例的「任务」标签页（见 ExpiryPanel.css）：
    语义上它和定时开关机、定时备份是一类，而且右栏放不下一整行。
    权限判断仍留在 InstanceDetail（canManageExpiry），只是不再在这里渲染。 */
+/* ============================================================================
+   2026-11-07：改成「只有中间栏滚动」（底账 交互改版 / 目标文档 §11.4-7）
+
+   现象：长内容页向下滚动时，左栏与右栏跟着一起滚走。
+   根因：左右栏都是 `position: sticky` + `align-self: stretch` ——
+   stretch 把它们的网格盒子拉成**整行高度**，而 sticky 的可粘区间 =
+   自身高度与包含块高度之差，于是可粘区间变成 0，sticky 实际失效。
+
+   改法（不再依赖 sticky，改成真正的三栏独立滚动）：
+     · .shell-bare 不再整体滚动（overflow: hidden）；
+     · 三栏各自 `overflow-y: auto`，高度锁在视口内；
+     · 左右栏不再 stretch，也去掉 sticky —— 它们自己滚，永远不跟随中栏。
+   这样无论中间内容多长，两侧的纵向位置都不会动。
+   ========================================================================== */
+
+.shell-bare {
+  overflow: hidden;
+}
+
+.detail-shell {
+  /* 视口高度减去 .shell-bare 的上下内边距（20px × 2） */
+  height: calc(100vh - 40px);
+  align-items: stretch;
+}
+
+.detail-nav,
+.detail-side {
+  position: static;
+  align-self: stretch;
+  max-height: 100%;
+  overflow-y: auto;
+  /* 细滚动条，与全局风格一致 */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+/* 中栏：页头固定在顶部，只有下方内容滚动 */
+.detail-center {
+  min-width: 0;
+  height: 100%;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}

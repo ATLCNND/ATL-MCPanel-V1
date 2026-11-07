@@ -2380,6 +2380,12 @@ type BackupRequest struct {
 	InstanceId    string                 `protobuf:"bytes,1,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
 	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`                                         // 备份名称（可选，自动生成）
 	IncludeConfig bool                   `protobuf:"varint,3,opt,name=include_config,json=includeConfig,proto3" json:"include_config,omitempty"` // 是否含配置文件
+	// backup_root 本次备份的落盘根目录（面板下发的节点级覆盖值；留空则用节点配置）。
+	//
+	// 为什么由面板下发：管理员在界面上改备份位置应当立即生效，
+	// 而不是「改完还要去节点上改 config.yaml 并重启 daemon」。
+	// daemon 侧仍会校验它是绝对路径并按实例分目录 —— 面板传来的值不享受任何特权。
+	BackupRoot    string `protobuf:"bytes,4,opt,name=backup_root,json=backupRoot,proto3" json:"backup_root,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2433,6 +2439,13 @@ func (x *BackupRequest) GetIncludeConfig() bool {
 		return x.IncludeConfig
 	}
 	return false
+}
+
+func (x *BackupRequest) GetBackupRoot() string {
+	if x != nil {
+		return x.BackupRoot
+	}
+	return ""
 }
 
 type BackupResponse struct {
@@ -2496,9 +2509,16 @@ func (x *BackupResponse) GetMessage() string {
 }
 
 type RestoreRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	InstanceId    string                 `protobuf:"bytes,1,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
-	BackupId      string                 `protobuf:"bytes,2,opt,name=backup_id,json=backupId,proto3" json:"backup_id,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	InstanceId string                 `protobuf:"bytes,1,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	BackupId   string                 `protobuf:"bytes,2,opt,name=backup_id,json=backupId,proto3" json:"backup_id,omitempty"`
+	// backup_root 备份所在的根目录（面板下发的节点级覆盖值；留空则用节点配置）。
+	//
+	// 与 BackupRequest.backup_root 同义，而且**必须一致**：备份写到哪，就得从哪读回来。
+	// 2026-11-07 的教训：只有 Backup 透传了它，于是节点上配了冷存储之后，
+	// 备份写进 /mnt/cold-backup，而列表/回滚/删除还在看实例目录下的 backups/ ——
+	// 用户点「回滚」会拿到一份旧备份，或者干脆「备份不存在」。
+	BackupRoot    string `protobuf:"bytes,3,opt,name=backup_root,json=backupRoot,proto3" json:"backup_root,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2547,6 +2567,13 @@ func (x *RestoreRequest) GetBackupId() string {
 	return ""
 }
 
+func (x *RestoreRequest) GetBackupRoot() string {
+	if x != nil {
+		return x.BackupRoot
+	}
+	return ""
+}
+
 type BackupInfo struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	BackupId      string                 `protobuf:"bytes,1,opt,name=backup_id,json=backupId,proto3" json:"backup_id,omitempty"`
@@ -2554,6 +2581,12 @@ type BackupInfo struct {
 	Size          int64                  `protobuf:"varint,3,opt,name=size,proto3" json:"size,omitempty"`                            // 字节
 	CreatedAt     int64                  `protobuf:"varint,4,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"` // unix 秒
 	IncludeConfig bool                   `protobuf:"varint,5,opt,name=include_config,json=includeConfig,proto3" json:"include_config,omitempty"`
+	// kind 清单里的类型：base（完整快照）| inc（只含自上一环以来变化的文件）。
+	// 老备份没有清单时为空字符串（视同 base）。
+	Kind string `protobuf:"bytes,6,opt,name=kind,proto3" json:"kind,omitempty"`
+	// base_id 增量链的基线包名：base 时等于它自己，inc 时指向链上的基线。
+	// 面板据此把一条链当成**一个整体**来淘汰（禁止「删 base 留 inc」）。
+	BaseId        string `protobuf:"bytes,7,opt,name=base_id,json=baseId,proto3" json:"base_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2623,9 +2656,25 @@ func (x *BackupInfo) GetIncludeConfig() bool {
 	return false
 }
 
+func (x *BackupInfo) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *BackupInfo) GetBaseId() string {
+	if x != nil {
+		return x.BaseId
+	}
+	return ""
+}
+
 type ListBackupsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	InstanceId    string                 `protobuf:"bytes,1,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	InstanceId string                 `protobuf:"bytes,1,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	// backup_root 见 RestoreRequest.backup_root（三处同义）。
+	BackupRoot    string `protobuf:"bytes,2,opt,name=backup_root,json=backupRoot,proto3" json:"backup_root,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2663,6 +2712,13 @@ func (*ListBackupsRequest) Descriptor() ([]byte, []int) {
 func (x *ListBackupsRequest) GetInstanceId() string {
 	if x != nil {
 		return x.InstanceId
+	}
+	return ""
+}
+
+func (x *ListBackupsRequest) GetBackupRoot() string {
+	if x != nil {
+		return x.BackupRoot
 	}
 	return ""
 }
@@ -2728,9 +2784,11 @@ func (x *ListBackupsResponse) GetBackups() []*BackupInfo {
 }
 
 type DeleteBackupRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	InstanceId    string                 `protobuf:"bytes,1,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
-	BackupId      string                 `protobuf:"bytes,2,opt,name=backup_id,json=backupId,proto3" json:"backup_id,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	InstanceId string                 `protobuf:"bytes,1,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	BackupId   string                 `protobuf:"bytes,2,opt,name=backup_id,json=backupId,proto3" json:"backup_id,omitempty"`
+	// backup_root 见 RestoreRequest.backup_root（三处同义）。
+	BackupRoot    string `protobuf:"bytes,3,opt,name=backup_root,json=backupRoot,proto3" json:"backup_root,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2775,6 +2833,13 @@ func (x *DeleteBackupRequest) GetInstanceId() string {
 func (x *DeleteBackupRequest) GetBackupId() string {
 	if x != nil {
 		return x.BackupId
+	}
+	return ""
+}
+
+func (x *DeleteBackupRequest) GetBackupRoot() string {
+	if x != nil {
+		return x.BackupRoot
 	}
 	return ""
 }
@@ -5651,20 +5716,24 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\x05error\x18\x02 \x01(\tR\x05error\x12$\n" +
 	"\x04jars\x18\x03 \x03(\v2\x10.mcpanel.JarInfoR\x04jars\x12\x1d\n" +
 	"\n" +
-	"active_jar\x18\x04 \x01(\tR\tactiveJar\"k\n" +
+	"active_jar\x18\x04 \x01(\tR\tactiveJar\"\x8c\x01\n" +
 	"\rBackupRequest\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12%\n" +
-	"\x0einclude_config\x18\x03 \x01(\bR\rincludeConfig\"a\n" +
+	"\x0einclude_config\x18\x03 \x01(\bR\rincludeConfig\x12\x1f\n" +
+	"\vbackup_root\x18\x04 \x01(\tR\n" +
+	"backupRoot\"a\n" +
 	"\x0eBackupResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x1b\n" +
 	"\tbackup_id\x18\x02 \x01(\tR\bbackupId\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage\"N\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"o\n" +
 	"\x0eRestoreRequest\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x1b\n" +
-	"\tbackup_id\x18\x02 \x01(\tR\bbackupId\"\x97\x01\n" +
+	"\tbackup_id\x18\x02 \x01(\tR\bbackupId\x12\x1f\n" +
+	"\vbackup_root\x18\x03 \x01(\tR\n" +
+	"backupRoot\"\xc4\x01\n" +
 	"\n" +
 	"BackupInfo\x12\x1b\n" +
 	"\tbackup_id\x18\x01 \x01(\tR\bbackupId\x12\x12\n" +
@@ -5672,18 +5741,24 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\x04size\x18\x03 \x01(\x03R\x04size\x12\x1d\n" +
 	"\n" +
 	"created_at\x18\x04 \x01(\x03R\tcreatedAt\x12%\n" +
-	"\x0einclude_config\x18\x05 \x01(\bR\rincludeConfig\"5\n" +
+	"\x0einclude_config\x18\x05 \x01(\bR\rincludeConfig\x12\x12\n" +
+	"\x04kind\x18\x06 \x01(\tR\x04kind\x12\x17\n" +
+	"\abase_id\x18\a \x01(\tR\x06baseId\"V\n" +
 	"\x12ListBackupsRequest\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
-	"instanceId\"t\n" +
+	"instanceId\x12\x1f\n" +
+	"\vbackup_root\x18\x02 \x01(\tR\n" +
+	"backupRoot\"t\n" +
 	"\x13ListBackupsResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\x12-\n" +
-	"\abackups\x18\x03 \x03(\v2\x13.mcpanel.BackupInfoR\abackups\"S\n" +
+	"\abackups\x18\x03 \x03(\v2\x13.mcpanel.BackupInfoR\abackups\"t\n" +
 	"\x13DeleteBackupRequest\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x1b\n" +
-	"\tbackup_id\x18\x02 \x01(\tR\bbackupId\"\xf4\x05\n" +
+	"\tbackup_id\x18\x02 \x01(\tR\bbackupId\x12\x1f\n" +
+	"\vbackup_root\x18\x03 \x01(\tR\n" +
+	"backupRoot\"\xf4\x05\n" +
 	"\rTunnelRequest\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x1b\n" +

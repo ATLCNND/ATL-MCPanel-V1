@@ -48,7 +48,7 @@ export default function NodesPage() {
   /** 本机节点现状：面板和节点常在同一台机器上，能一键接进来就不该让用户填 SSH */
   const [localNode, setLocalNode] = useState<{ listening: boolean; registered: boolean; node_name?: string; hostname: string; can_auto_deploy: boolean; message?: string; daemon_port: number } | null>(null)
 
-  const [editing, setEditing] = useState<{ id: number; name: string; ip: string; public_ip: string; ssh_user: string; ssh_port: string; ssh_auth: string; auth_type: 'password' | 'key'; panel_grpc_port: string; daemon_grpc_port: string } | null>(null)
+  const [editing, setEditing] = useState<{ id: number; name: string; ip: string; public_ip: string; ssh_user: string; ssh_port: string; ssh_auth: string; auth_type: 'password' | 'key'; panel_grpc_port: string; daemon_grpc_port: string; backup_root: string } | null>(null)
 
   // 节点共享资源（一次只展开一个节点）
   const [resNode, setResNode] = useState<number | null>(null)
@@ -300,6 +300,8 @@ export default function NodesPage() {
       ssh_port: Number(editing.ssh_port) || 22,
       panel_grpc_port: Number(editing.panel_grpc_port) || 0,
       daemon_grpc_port: Number(editing.daemon_grpc_port) || 0,
+      // 备份根目录：空串表示清空（回到实例目录下的 backups/）
+      backup_root: editing.backup_root.trim(),
     }
     if (editing.ssh_auth.trim()) {
       payload.ssh_auth = editing.ssh_auth.trim()
@@ -470,6 +472,10 @@ export default function NodesPage() {
                 onChange={(e) => setEditing({ ...editing, panel_grpc_port: e.target.value })} />
               <input placeholder="Daemon 端口（0=默认 9091）" value={editing.daemon_grpc_port}
                 onChange={(e) => setEditing({ ...editing, daemon_grpc_port: e.target.value })} />
+              {/* 备份根目录：留空 = 用实例目录下的 backups/。落冷存储时填绝对路径 */}
+              <input placeholder="备份根目录（留空=实例目录内，如 /mnt/cold-backup）"
+                value={editing.backup_root}
+                onChange={(e) => setEditing({ ...editing, backup_root: e.target.value })} />
               <label className="node-auth-type" style={{ gridColumn: 'span 4' }}>
                 <span className="muted">新凭据类型（留空则不修改凭据）</span>
                 <label><input type="radio" name="edit_auth_type" checked={editing.auth_type === 'password'}
@@ -513,6 +519,7 @@ export default function NodesPage() {
                     auth_type: (n.auth_type === 'key' ? 'key' : 'password') as 'password' | 'key',
                     panel_grpc_port: String(n.panel_grpc_port || 0),
                     daemon_grpc_port: String(n.daemon_grpc_port || 0),
+                    backup_root: n.backup_root || '',
                   })}>编辑</button>
                   <span className="muted">实例 {n.instances} 个</span>
                   <span className="muted">最后心跳 {fmtTime(n.last_seen)}</span>

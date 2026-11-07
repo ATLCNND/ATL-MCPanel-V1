@@ -22,6 +22,13 @@ func (s *Server) StartScheduler() {
 		DB:     s.db,
 		Logger: s.logger,
 		Backup: s.scheduledBackup,
+		// 面板 HTTPS 证书路径：调度器每轮 tick 拿它做「证书快到期」告警（checkTLSCert）。
+		// 这一行曾经漏了 —— 检查函数、三档阈值、单测（scheduler/tlscert_test.go）全都在，
+		// 但选项为空时 checkTLSCert 直接 return，于是**一次都没跑过**：
+		// 面板某天突然打不开，唯一的「告警」就是用户访问不了（底账 F7 / 验收 B-65）。
+		// 空字符串表示面板跑纯 HTTP，此时不做检查（不强迫上 HTTPS）。
+		// s.tlsCert 是启动时从 config 取的值；换证书要改 config 并重启，快照口径与之一致。
+		TLSCertPath: s.tlsCert,
 		// 指标采样：供「统计」页积累历史趋势
 		MetricsSampler: func(instanceID string) (int64, int64, int, float64, int64, bool) {
 			cli, _, err := s.getDaemonClient(instanceID)
@@ -130,11 +137,7 @@ func (s *Server) scheduledBackup(instanceID string, includeConfig bool, policy r
 	// 保留策略据此把手动备份排除在梯度淘汰之外（见 pruneByPolicy）。
 	// 显式传而不是靠 Daemon 的空名默认值 —— 默认值是隐式契约，
 	// 将来任何一处改动都可能让自动备份变成"手动"，从而不再被清理。
-	resp, err := cli.Backup(ctx, &pb.BackupRequest{
-		InstanceId:    instanceID,
-		Name:          autoBackupName,
-		IncludeConfig: includeConfig,
-	})
+	resp, err := cli.Backup(ctx, s.autoBackupRequest(instanceID, includeConfig))
 	if err != nil {
 		return fmt.Errorf("备份失败: %w", err)
 	}
@@ -144,6 +147,23 @@ func (s *Server) scheduledBackup(instanceID string, includeConfig bool, policy r
 
 	s.pruneByPolicy(ctx, cli, instanceID, policy)
 	return nil
+}
+
+// autoBackupRequest 组装一次定时备份的请求。
+//
+// 为什么单独抽出来：**这里的字段漏过**。`Name`/`IncludeConfig` 当时传了，
+// 但 `BackupRoot`（管理员在节点上配的冷存储根目录）只写在了手动路径
+// `handleCreateBackup` 里 —— 于是「配了备份根目录」这件事只对手动备份生效，
+// 自动备份（真正频繁的那一类）照样写进实例目录所在的盘。界面上看不出差别：
+// 备份照样成功、列表里有、清单也对，只有去看落盘位置才发现。
+// 抽成函数 + 一条用例（TestAutoBackupRequestKeepsNodeBackupRoot）钉住这条口径。
+func (s *Server) autoBackupRequest(instanceID string, includeConfig bool) *pb.BackupRequest {
+	return &pb.BackupRequest{
+		InstanceId:    instanceID,
+		Name:          autoBackupName,
+		IncludeConfig: includeConfig,
+		BackupRoot:    s.nodeBackupRoot(instanceID),
+	}
 }
 
 // ---- 定时备份计划 API ----

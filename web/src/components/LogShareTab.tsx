@@ -172,6 +172,8 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
     lines?: number
     expiresAt?: string
     helpText?: string
+    /** 求助文本是按当前环境重建的（旧记录没有快照），界面上要标注出来 */
+    helpReconstructed?: boolean
     notice?: string
     fallbackNote?: string
     fallbacks?: { provider: string; error: string }[]
@@ -372,6 +374,11 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
       providerName: KIND_LABEL[rec.provider_kind] || rec.provider_kind,
       url: rec.url, rawUrl: rec.raw_url, errors: rec.errors, lines: rec.lines,
       expiresAt: rec.expires_at,
+      // 历史记录必须展示**上传当时**的求助文本（快照）。以前这里没有这个字段，
+      // 于是从「分析记录」点开 mclo.gs 那条时，求助文本是空的 —— 用户当时贴到社区的
+      // 那段话事后完全找不回来（底账 §十二 第 1 条）。
+      helpText: rec.help_text,
+      helpReconstructed: rec.help_reconstructed,
     })
     setThinking(''); setStreamErr('')
     if (rec.provider_kind === 'mclogs') {
@@ -611,6 +618,14 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
                   建议一起带上下面这段（已替你填好环境信息 —— 社区看不到你的容器与内存设置，
                   而它们经常正是崩溃原因）：
                 </p>
+                {/* 快照重建的标注：旧记录没有存当时的文本，只能按当前环境重建，
+                    与当时可能有出入（模板可能被改过、实例可能换过核心）。 */}
+                {result.helpReconstructed && (
+                  <p className="ls-warn">
+                    这条记录早于「求助文本快照」功能：下面这段是<b>按当前环境重新生成</b>的，
+                    与当时贴出去的那段可能有出入（模板或实例配置后来改过）。
+                  </p>
+                )}
                 <pre className="ls-help-text">{result.helpText}</pre>
                 <button className="primary" onClick={() => copy(result.helpText || '', '求助文本')}>
                   ⧉ 复制求助文本

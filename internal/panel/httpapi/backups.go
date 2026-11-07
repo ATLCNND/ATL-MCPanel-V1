@@ -21,7 +21,12 @@ func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "实例不存在")
 		return
 	}
-	resp, err := cli.ListBackups(context.Background(), &pb.ListBackupsRequest{InstanceId: instanceID})
+	// backup_root：与 Backup 同一口径。备份写到冷存储之后，列表也必须从冷存储读，
+	// 否则界面上看不见任何一份**实际**的备份（2026-11-07 真机撞到的就是这个）。
+	resp, err := cli.ListBackups(context.Background(), &pb.ListBackupsRequest{
+		InstanceId: instanceID,
+		BackupRoot: s.nodeBackupRoot(instanceID),
+	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -35,10 +40,21 @@ func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 		Name      string `json:"name"`
 		Size      int64  `json:"size"`
 		CreatedAt int64  `json:"created_at"`
+		// Kind / BaseID 给界面「按链显示」用：自动备份是增量的，一条链 = 一份基线 + 若干增量。
+		// 老备份（没有清单）两个字段为空 → 界面按独立备份显示，行为不变。
+		Kind   string `json:"kind,omitempty"`
+		BaseID string `json:"base_id,omitempty"`
 	}
 	list := []item{}
 	for _, b := range resp.Backups {
-		list = append(list, item{BackupID: b.BackupId, Name: b.Name, Size: b.Size, CreatedAt: b.CreatedAt})
+		list = append(list, item{
+			BackupID:  b.BackupId,
+			Name:      b.Name,
+			Size:      b.Size,
+			CreatedAt: b.CreatedAt,
+			Kind:      b.Kind,
+			BaseID:    b.BaseId,
+		})
 	}
 	writeJSON(w, http.StatusOK, list)
 }
@@ -102,10 +118,19 @@ func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "实例不存在")
 		return
 	}
+	// **手动备份 = 完整快照**（用户明确定义）：强制带上配置与插件等全部业务文件，
+	// 不再由请求方决定。理由：手动备份的用途就是「出事了能整份恢复」，
+	// 一份缺了 server.properties / 权限配置的备份，恢复完还得靠记忆补齐 —— 那不叫完整。
+	//
+	// 仍然排除的可重建目录（logs / cache / libraries / versions / backups）见 daemon 侧 skipDirs，
+	// 它们要么体积大、要么能重新生成，放进快照只会让备份变慢变大。
+	_ = req.IncludeConfig // 保留字段以兼容老调用方，但不再生效
 	resp, err := cli.Backup(context.Background(), &pb.BackupRequest{
 		InstanceId:    instanceID,
 		Name:          name,
-		IncludeConfig: req.IncludeConfig,
+		IncludeConfig: true,
+		// 节点级备份根目录（管理员可配）：改完立即对后续备份生效
+		BackupRoot: s.nodeBackupRoot(instanceID),
 	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -131,7 +156,11 @@ func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "实例不存在")
 		return
 	}
-	resp, err := cli.DeleteBackup(context.Background(), &pb.DeleteBackupRequest{InstanceId: instanceID, BackupId: backupID})
+	resp, err := cli.DeleteBackup(context.Background(), &pb.DeleteBackupRequest{
+		InstanceId: instanceID,
+		BackupId:   backupID,
+		BackupRoot: s.nodeBackupRoot(instanceID),
+	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -162,7 +191,11 @@ func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "实例不存在")
 		return
 	}
-	resp, err := cli.Restore(context.Background(), &pb.RestoreRequest{InstanceId: instanceID, BackupId: req.BackupID})
+	resp, err := cli.Restore(context.Background(), &pb.RestoreRequest{
+		InstanceId: instanceID,
+		BackupId:   req.BackupID,
+		BackupRoot: s.nodeBackupRoot(instanceID),
+	})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

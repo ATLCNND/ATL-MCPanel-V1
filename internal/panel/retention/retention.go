@@ -71,11 +71,19 @@ type Entry struct {
 	ID        string
 	CreatedAt time.Time
 	Manual    bool
+	// ChainID 增量链的标识（= 链上基线的备份 ID）。
+	//
+	// 为空表示「独立的一份」：手动备份、以及增量功能之前的老备份都是这样。
+	// 非空表示它是一条链（base + inc*）的成员，淘汰时必须**整条**一起走
+	//（DESIGN-INCREMENTAL-BACKUP.md §4：允许删整链，禁止删 base 留 inc）。
+	ChainID string
 }
 
-// SelectExpired 返回应当删除的备份。
+// SelectExpired 返回应当删除的备份（**按份**判定，不看链）。
 //
 // now 用于计算各备份的"年龄"；调用方应传入同一时刻以保证判定一致。
+//
+// ⚠️ 有增量链的场景要用 SelectExpiredChains：按份判定会把一条链拆成几半。
 func SelectExpired(entries []Entry, p Policy, now time.Time) []Entry {
 	p = p.Normalize()
 
@@ -89,11 +97,8 @@ func SelectExpired(entries []Entry, p Policy, now time.Time) []Entry {
 			autos = append(autos, e)
 		}
 	}
-	byNewest := func(s []Entry) {
-		sort.Slice(s, func(i, j int) bool { return s[i].CreatedAt.After(s[j].CreatedAt) })
-	}
-	byNewest(manual)
-	byNewest(autos)
+	sortNewestFirst(manual)
+	sortNewestFirst(autos)
 
 	expired := make([]Entry, 0)
 
@@ -102,15 +107,94 @@ func SelectExpired(entries []Entry, p Policy, now time.Time) []Entry {
 		expired = append(expired, manual[p.ManualKeep:]...)
 	}
 
-	// 2. 自动备份：按梯度区间逐段保留
+	// 2/3. 自动备份：按梯度区间逐段保留 + 超出最后一档的全删
+	expired = append(expired, selectExpiredByTier(autos, p.Tiers, now)...)
+
+	return expired
+}
+
+// SelectExpiredChains 返回应当删除的备份，但**以链为单位**判定。
+//
+// 为什么必须有这一版：增量备份是一条 base → inc* 的链，单独删掉基线的后果不是
+// "少一份备份"，而是剩下的 inc 全部变成**恢复不回去的垃圾**。所以：
+//
+//   - 自动备份按 ChainID 分组成链，**链的代表 = 链里最新的一份**
+//     （它的年龄就是这条链最后一次真正捕获数据的时间点）；
+//   - 梯度规则作用在"代表"上 —— 否则一条 6 环的链会把「24 小时留 4 份」的额度
+//     全吃掉，用户反而一份新备份都没有；
+//   - 代表被选中 → 把这**整条链的所有成员**都返回；
+//   - 手动备份与没有链的老备份（ChainID 为空）自成一组，按份处理，行为与以前一致。
+func SelectExpiredChains(entries []Entry, p Policy, now time.Time) []Entry {
+	p = p.Normalize()
+
+	manual := make([]Entry, 0, len(entries))
+	byChain := make(map[string][]Entry, len(entries))
+	order := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.Manual {
+			manual = append(manual, e)
+			continue
+		}
+		k := chainKey(e)
+		if _, seen := byChain[k]; !seen {
+			order = append(order, k)
+		}
+		byChain[k] = append(byChain[k], e)
+	}
+
+	expired := make([]Entry, 0)
+
+	// 1. 手动备份：按份（与以前一致 —— 手动备份不在链上，各删各的）
+	sortNewestFirst(manual)
+	if p.ManualKeep >= 0 && len(manual) > p.ManualKeep {
+		expired = append(expired, manual[p.ManualKeep:]...)
+	}
+
 	if len(p.Tiers) == 0 {
 		return expired // 未配置梯度 → 自动备份不参与淘汰
 	}
 
+	// 2. 自动备份：每条链只用一个"代表"（最新那份）参选
+	reps := make([]Entry, 0, len(order))
+	for _, k := range order {
+		members := byChain[k]
+		sortNewestFirst(members)
+		reps = append(reps, members[0])
+	}
+	// 梯度判定要求入参**已按新到旧排序**（它用 inTier[Keep:] 丢掉的正是最老的那些），
+	// 而 reps 的顺序来自 map 遍历 → 这里必须再排一次。
+	sortNewestFirst(reps)
+	expiredReps := selectExpiredByTier(reps, p.Tiers, now)
+
+	// 3. 代表被选中 → 整条链一起淘汰
+	for _, rep := range expiredReps {
+		expired = append(expired, byChain[chainKey(rep)]...)
+	}
+	return expired
+}
+
+// chainKey 一条链的分组键：有 ChainID 按链，没有就自成一组。
+func chainKey(e Entry) string {
+	if e.ChainID != "" {
+		return "chain:" + e.ChainID
+	}
+	return "single:" + e.ID
+}
+
+func sortNewestFirst(s []Entry) {
+	sort.Slice(s, func(i, j int) bool { return s[i].CreatedAt.After(s[j].CreatedAt) })
+}
+
+// selectExpiredByTier 梯度规则本体：入参**必须已按新到旧排序**。
+func selectExpiredByTier(autos []Entry, tiers []Tier, now time.Time) []Entry {
+	expired := make([]Entry, 0)
+	if len(tiers) == 0 {
+		return expired
+	}
 	// 首档下界取 -1 而非 0：区间为 (lo, hi]，若 lo 取 0 则"年龄恰好为 0"的备份
 	// （刚创建就触发清理的场景）会掉在所有档位之外，从而永远不会被淘汰。
 	lowerBound := -1.0
-	for _, tier := range p.Tiers {
+	for _, tier := range tiers {
 		upper := float64(tier.WithinHours)
 		// 收集落在 (lowerBound, upper] 区间的自动备份（已按新到旧排序）
 		inTier := make([]Entry, 0)
@@ -126,13 +210,12 @@ func SelectExpired(entries []Entry, p Policy, now time.Time) []Entry {
 		lowerBound = upper
 	}
 
-	// 3. 超出最后一档的历史自动备份全部删除
+	// 超出最后一档的历史自动备份全部删除
 	for _, e := range autos {
 		if now.Sub(e.CreatedAt).Hours() > lowerBound {
 			expired = append(expired, e)
 		}
 	}
-
 	return expired
 }
 

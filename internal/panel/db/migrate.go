@@ -797,6 +797,38 @@ var migrations = []migration{
 			`CREATE INDEX IF NOT EXISTS idx_enrollments_uid ON node_enrollments(node_uid)`,
 		},
 	},
+	{
+		// 注意：**不能用 34** —— 0.12.x（已撤回）的 instance_template 迁移占用了 34，
+		// 而这个库可能经历过 0.12.x。版本号冲突的后果是迁移被跳过、列没建出来，
+		// 表现为「保存备份目录」报错。宁可跳号，也要保证它一定会被执行。
+		Version: 35,
+		Name:    "node_backup_root",
+		Statements: []string{
+			// 该节点的**备份根目录**（管理员在界面上配置，面板随备份请求下发给 daemon）。
+			//
+			// 用途：把备份集中到另一块盘（机械盘 / NFS / 冷存储），既降低每 GB 成本，
+			// 又避免备份挤占实例所在 SSD 的空间。空串 = 用实例目录下的 backups/。
+			//
+			// 为什么放在面板而不是只放节点配置：管理员改完应当立即生效，
+			// 而不是「改完还要去节点上改 config.yaml 并重启 daemon」。
+			`ALTER TABLE nodes ADD COLUMN backup_root TEXT NOT NULL DEFAULT ''`,
+		},
+	},
+	{
+		// 版本号接着 35 用 36（34 被已撤回的 0.12.x 占用，见上一条注释）。
+		Version: 36,
+		Name:    "logshare_help_text_snapshot",
+		Statements: []string{
+			// 上传那一刻**生成的求助文本快照**（底账 §十二 第 1 条）。
+			//
+			// 为什么必须存快照：求助文本是由管理员可改的模板 + 当时的实例环境（核心 / Java / 内存 /
+			// 运行方式）+ 当时的"现象"拼出来的。事后按当前环境重建会得到另一段文字 ——
+			// 而用户当时是照着那段话去社区提问的，回看历史时"我到底说了什么"必须能复现。
+			//
+			// 空串表示这条记录早于本迁移：界面会按当前环境重建并标注，不会假装那就是原件。
+			`ALTER TABLE logshare_uploads ADD COLUMN help_text TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 // migrate 应用尚未执行的迁移。

@@ -3,6 +3,7 @@ import {
   AnalysisProvider, AnalysisProvidersResp, AnalysisSettings,
   listAnalysisProviders, createAnalysisProvider, updateAnalysisProvider,
   deleteAnalysisProvider, testAnalysisProvider, getAnalysisSettings, setAnalysisSettings,
+  getLogShareSettings, setLogShareEnabled, LogShareSettings,
   roleLabel,
 } from '../api'
 import './AnalysisProviders.css'
@@ -64,6 +65,9 @@ function emptyForm() {
 
 export default function AnalysisProviders({ role }: { role?: string }) {
   const [data, setData] = useState<AnalysisProvidersResp | null>(null)
+  // 第三方日志分析的**全局开关**（管理员）。后端早就支持 GET/PUT /api/logshare/settings，
+  // 但此前没有任何组件调用它 —— 界面上那句「可在日志分析页一键关闭」指向的是个不存在的入口。
+  const [ls, setLs] = useState<LogShareSettings | null>(null)
   const [settings, setSettings] = useState<AnalysisSettings | null>(null)
   const [form, setForm] = useState(emptyForm())
   const [showForm, setShowForm] = useState(false)
@@ -80,9 +84,13 @@ export default function AnalysisProviders({ role }: { role?: string }) {
 
   const load = async () => {
     try {
-      const [p, s] = await Promise.all([listAnalysisProviders(), getAnalysisSettings()])
+      const [p, s, l] = await Promise.all([
+        listAnalysisProviders(), getAnalysisSettings(),
+        getLogShareSettings().catch(() => null),
+      ])
       setData(p)
       setSettings(s)
+      setLs(l)
       setRateForm({ per_min: s.rate_per_min, per_day: s.rate_per_day, allow_private: s.allow_private })
       setTemplateForm(s.help_template || s.help_template_default || '')
       setError('')
@@ -92,6 +100,21 @@ export default function AnalysisProviders({ role }: { role?: string }) {
   }
 
   useEffect(() => { load() }, [])
+
+  // 一键开关：关掉的是面板上的上传入口（已上传的云端副本仍可在实例页删除）。
+  const toggleLogShare = async () => {
+    const cur = ls?.enabled ?? false
+    setBusy(true); setError(''); setMsg('')
+    try {
+      const r = await setLogShareEnabled(!cur)
+      setMsg(r.message)
+      await load()
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -231,9 +254,21 @@ export default function AnalysisProviders({ role }: { role?: string }) {
               </div>
               {p.kind === 'logshare' && (
                 <div className="ap-item-note">
-                  {p.enabled
-                    ? '当前已启用（总管理员可在「日志分析」页一键关闭）'
-                    : '当前已关闭（可在「日志分析」页由总管理员开启）'}
+                  {data?.can_manage ? (
+                    <>
+                      <span>
+                        {ls?.enabled ?? p.enabled
+                          ? '当前已启用。关闭后面板上的上传入口立即不可用；已上传的云端副本仍可在实例页删除。'
+                          : '当前已关闭。开启后用户可在实例的「日志分析」页上传日志并获取 AI 分析。'}
+                      </span>
+                      <button className={(ls?.enabled ?? p.enabled) ? 'small danger' : 'small primary'}
+                        disabled={busy} onClick={toggleLogShare}>
+                        {(ls?.enabled ?? p.enabled) ? '关闭第三方日志分析' : '开启第三方日志分析'}
+                      </button>
+                    </>
+                  ) : (
+                    <span>{(ls?.enabled ?? p.enabled) ? '当前已启用' : '当前已关闭'}（仅总管理员可修改）</span>
+                  )}
                 </div>
               )}
             </div>
