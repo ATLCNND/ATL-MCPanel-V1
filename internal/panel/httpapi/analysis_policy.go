@@ -210,16 +210,39 @@ func (s *Server) mustListProviders(userID int64) []analysis.Provider {
 	return ps
 }
 
+// canViewInstanceAnalysisPolicy 判断能否看见这台实例的平台状态。
+//
+// 三拨人都要能看：
+//   - 实例参与者（viewer 及以上）：他们要看"我的日志到底会不会被外发"；
+//   - 管着这台实例所在节点的节点用户、以及总管理员：他们**能改**，
+//     若看不到这块卡片，界面上就没有可改的地方。
+//
+// 写权限单独由 canManageInstance 判（见 handleSetInstanceAnalysisPolicy）。
+func (s *Server) canViewInstanceAnalysisPolicy(userID int64, role, instanceID string) bool {
+	if s.canManageInstance(userID, role, instanceID) {
+		return true
+	}
+	level, ok := s.instanceLevel(userID, role, instanceID)
+	return ok && levelAtLeast(level, LevelViewer)
+}
+
 // handleGetInstanceAnalysisPolicy GET /api/instances/{id}/analysis-policy
+//
+// 读：实例的参与者、以及能改它的管理员/节点用户都能看。
+// 响应里的 `can_edit` 决定界面上那三个下拉能不能动 ——
+// 与写接口的判断走同一个函数，避免"界面给点、点了 403"。
 func (s *Server) handleGetInstanceAnalysisPolicy(w http.ResponseWriter, r *http.Request) {
 	instanceID := r.PathValue("id")
-	if !s.requireInstanceLevel(w, r, instanceID, LevelViewer) {
+	uid, role := currentUserID(r), roleOf(r)
+	if !s.canViewInstanceAnalysisPolicy(uid, role, instanceID) {
+		writeErr(w, http.StatusForbidden, "无权访问该实例")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"instance_id": instanceID,
 		"policy":      s.instanceAnalysisPolicy(instanceID),
-		"platforms":   s.instancePlatformStatus(instanceID, currentUserID(r)),
+		"platforms":   s.instancePlatformStatus(instanceID, uid),
+		"can_edit":    s.canManageInstance(uid, role, instanceID),
 	})
 }
 
@@ -227,9 +250,19 @@ func (s *Server) handleGetInstanceAnalysisPolicy(w http.ResponseWriter, r *http.
 //
 // body: {"policy": {"logshare": "off", "mclogs": "on", "openai:3": "off"}}
 // 传空对象 = 清除所有例外（全部跟随全局）。
+//
+// 权限：**总管理员，或管着这台实例所在节点的节点用户**（`canManageInstance`）。
+//
+// 为什么不给实例 owner（这里原先判的是 `LevelOwner`，2026-11-09 用户要求收紧）：
+// 这几个开关决定「这台实例的日志会不会被上传到第三方平台、要不要出 AI 结论」。
+// 谁能关掉它，谁就能让别人的日志分析静默失效 —— 而面板上显示的还是"一切正常，
+// 只是没分析出东西"。与容器化开关、每实例专用用户同级：属于平台侧设置，
+// 由被影响方之外的人控制。
 func (s *Server) handleSetInstanceAnalysisPolicy(w http.ResponseWriter, r *http.Request) {
 	instanceID := r.PathValue("id")
-	if !s.requireInstanceLevel(w, r, instanceID, LevelOwner) {
+	if !s.canManageInstance(currentUserID(r), roleOf(r), instanceID) {
+		writeErr(w, http.StatusForbidden,
+			"只有总管理员，或管着这台实例所在节点的节点用户能改这些开关")
 		return
 	}
 	var req struct {

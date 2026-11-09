@@ -1878,6 +1878,13 @@ export async function getInstanceAnalysisPolicy(instanceId: string): Promise<{
   instance_id: string
   policy: Record<string, string>
   platforms: InstancePlatformStatus[]
+  /**
+   * 当前用户能不能改这三个开关（服务端算好的同一份判据）。
+   *
+   * 只有总管理员、或管着这台实例所在节点的节点用户能改 —— 实例 owner 只能看。
+   * 界面据此禁用下拉，省得点了才收到 403。
+   */
+  can_edit?: boolean
 }> {
   return apiFetch(`/api/instances/${encodeURIComponent(instanceId)}/analysis-policy`)
 }

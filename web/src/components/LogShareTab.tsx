@@ -157,6 +157,11 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
   const [platforms, setPlatforms] = useState<InstancePlatformStatus[]>([])
   const [platBusy, setPlatBusy] = useState('')
   const [platMsg, setPlatMsg] = useState('')
+  // 能不能改这台实例的平台开关：**服务端说了算**（`can_edit`）。
+  // 规则是"总管理员，或管着这台实例所在节点的节点用户"，实例 owner 只能看 ——
+  // 与 canWrite（owner 就能上传日志）不是一回事，所以单独一个状态。
+  // 老服务端不返回 can_edit 时退回 canWrite，行为与升级前一致。
+  const [canEditPolicy, setCanEditPolicy] = useState(canWrite)
 
   // 上传确认弹窗
   const [confirmOpen, setConfirmOpen] = useState(false)
@@ -231,6 +236,7 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
     try {
       const r = await getInstanceAnalysisPolicy(instanceId)
       setPlatforms(Array.isArray(r.platforms) ? r.platforms : [])
+      if (typeof r.can_edit === 'boolean') setCanEditPolicy(r.can_edit)
     } catch {
       // 老服务端没有这个接口：整块平台开关不显示，功能照旧（全部跟随全局）
       setPlatforms([])
@@ -492,8 +498,8 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
             </div>
             <select
               value={p.override || ''}
-              disabled={!canWrite || platBusy === p.key}
-              title={canWrite ? '' : '需要 owner 及以上权限'}
+              disabled={!canEditPolicy || platBusy === p.key}
+              title={canEditPolicy ? '' : '需要总管理员或节点用户权限'}
               onChange={(e) => { void setOverride(p.key, e.target.value as '' | 'on' | 'off') }}
             >
               <option value="">跟随面板全局（当前{p.global ? '开' : '关'}）</option>
@@ -504,7 +510,9 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
         ))}
       </div>
       {platMsg && <div className="ls-plat-msg">{platMsg}</div>}
-      {!canWrite && <div className="ls-plat-msg muted">改这些需要 owner 及以上权限。</div>}
+      {!canEditPolicy && (
+        <div className="ls-plat-msg muted">改这些需要总管理员或节点用户权限；实例所有者只能查看。</div>
+      )}
     </div>
   ) : null
 

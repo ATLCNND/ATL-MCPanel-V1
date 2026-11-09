@@ -1006,6 +1006,16 @@ func (i *Instance) containerPublishHost() string {
 	return "127.0.0.1"
 }
 
+// PublishPublic 报告容器端口是否对外发布（公网直出线路为 true）。
+//
+// 面板上那句"端口只发布到本机回环"的提示要靠它区分：直连线路下端口确实
+// 对外开了，说成"只发回环"会让管理员误判暴露面。
+func (i *Instance) PublishPublic() bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.publishPublic
+}
+
 // SetPublishPublic 由 Daemon 在启动前调用（见字段说明）。
 func (i *Instance) SetPublishPublic(v bool) {
 	i.mu.Lock()

@@ -293,7 +293,16 @@ func (s *Server) containerNote(inst *mcprocess.Instance) string {
 	if !inst.Containerized() {
 		return ""
 	}
-	return "该实例运行在容器 " + container.NameOf(inst.ID) + " 内（独立网络与只读根，端口只发布到本机回环）"
+	// 端口发布范围要照实说：公网直出（直连线路）的实例是把端口发到 0.0.0.0 的，
+	// 一句"只发布到本机回环"会让管理员以为对外没开、看错暴露面。
+	//
+	// 2026-11-09 生产机开容器化时真踩到：面板提示写着"只发布到本机回环"，
+	// 实际 `docker ps` 是 `0.0.0.0:25565->25565/tcp`（那台机器有直连隧道）。
+	base := "该实例运行在容器 " + container.NameOf(inst.ID) + " 内（独立网络与只读根）"
+	if inst.PublishPublic() {
+		return base + "；端口按公网直出线路对外发布"
+	}
+	return base + "；端口只发布到本机回环"
 }
 
 // KillInstance 强制关闭实例（SIGKILL 整个进程组）。
