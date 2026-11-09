@@ -4,6 +4,33 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.11.4] - 2026-11-09
+
+> 只修 deploy/install.sh 的两处问题 —— 它们都会让「全新安装」看起来成功、实际不对。
+> 装过 0.11.3 且面板正常运行的机器不需要因此重装。
+
+### 修复
+
+- **安装时随机生成的安全入口没写进配置**：全新安装时 `deploy/install.sh` 会打印
+  「安全入口: /atlxxxxxxxx（随机生成，访问地址要带上它）」，但配置是从
+  `config.example.yaml` 复制的（其中 `security_entry: ""`），脚本从未把这个值写回配置。
+  结果：面板实际上**没有**入口保护，`http://主机:端口/api/health` 直接 200，而用户把打印
+  出来的那段路径当成了唯一入口。现在面板分支生成配置后会把值真正写入 `security_entry`；
+  对**已有**配置（升级/重跑安装）则不再随机生成并打印，改为明确提示「未启用 + 怎么开」，
+  避免老安装升级后突然多出一段路径、访问 `/` 全 404 被误判成面板坏了。
+  （0.11.3 的包里带的是旧脚本：如果安装时看到了随机入口，请把它手工填进
+  `config.yaml` 的 `server.security_entry` 并重启面板，或者直接把该行置空按无入口使用。）
+- **`deploy/install.sh --no-service` 装完没有数据库**：这条路径跳过了 systemd 那一节，
+  而「把 `data/ certs/ logs/` 交给面板用户」的 chown 也写在那一节里 —— 于是紧接着
+  「以面板用户身份创建首个管理员」因为没写权限而静默失败，安装显示成功、`data/` 里
+  却是空的，面板起来后一个账号都没有。现在 chown 抽成 `set_panel_ownership()`，
+  装不装服务都执行。（0.11.3 的包里带的是旧脚本，用 `--no-service` 装完需要手动
+  补一次 `runuser -u atlpanel -- ./bin/atl-panel -config config.yaml user create -username admin`，
+  或者升级到含本修复的版本。）
+- **`--no-service` 装出来的节点/面板没有 systemd 单元属正常**，但此前脚本末尾仍打印
+  「`journalctl -u atlmcpanel-<mode>`」这类提示，容易让人以为服务没起来。现在这条提示
+  在 `--no-service` 下会说明「未安装服务，请自行以 command 方式启动」。
+
 ## [0.11.3] - 2026-11-09
 
 > 这一版做了两件事：把「实例只等于 Minecraft」这个假设拆掉（实例现在有**类型**：

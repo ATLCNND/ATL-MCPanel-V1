@@ -215,6 +215,13 @@ if [ "$MODE" = "panel" ]; then
   elif [ -n "$EXISTING_ENTRY" ]; then
     PANEL_ENTRY="$EXISTING_ENTRY"
     echo "==> 安全入口: /$PANEL_ENTRY（沿用已有配置）"
+  elif [ -f "$INSTALL_DIR/config.yaml" ]; then
+    # 配置已存在但入口为空：**不要**自动写进去。
+    # 老安装升级时突然多出一段路径，用户会以为自己面板坏了（访问 / 全 404），
+    # 而真正该做的是让他自己决定要不要开。所以这里只提示，不改配置。
+    PANEL_ENTRY=""
+    echo "==> 安全入口: 未启用（已有 config.yaml 里 security_entry 为空，保持不动）"
+    echo "    建议在暴露公网前手动设一个：把 security_entry 改成 12 位随机串（字母数字与 - _ .），重启面板生效"
   else
     PANEL_ENTRY=$(pick_panel_entry)
     echo "==> 安全入口: /$PANEL_ENTRY（随机生成，访问地址要带上它）"
@@ -592,6 +599,13 @@ elif [ -f "$SRC_DIR/config.example.yaml" ]; then
       # 示例文件里 external_url 也是 127.0.0.1:8080，一起换掉否则两个值不一致。
       sed -i "s|^\(  listen:\).*|\1 \":$PANEL_PORT\"|" "$CFG" 2>/dev/null || true
       sed -i "s|^\(  external_url:\).*|\1 \"http://127.0.0.1:$PANEL_PORT\"|" "$CFG" 2>/dev/null || true
+      # 安全入口：示例文件里是空串，这里把本次生成/指定的值**真的写进配置**。
+      # 不写的话会出现「脚本打印了入口、配置里却是空」——面板实际上没有入口保护，
+      # 用户却把打印出来的那段路径当成唯一入口（实测踩到：打印 /atl26060216，
+      # 配置里 security_entry: ""，访问 /api/health 直接 200）。
+      if [ -n "$PANEL_ENTRY" ]; then
+        sed -i "s|^\([[:space:]]*security_entry:\).*|\1 \"$PANEL_ENTRY\"|" "$CFG" 2>/dev/null || true
+      fi
     else
       # 节点：只保留 daemon 段。
       #
@@ -779,10 +793,41 @@ if [ "$MODE" = "daemon" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 6b. 面板用户的文件所有权
+#
+# 必须在**所有文件都写完**之后做（证书、配置、数据库都在前面几步生成；
+# 早做会被后来的 root 写入覆盖掉）。
+#
+#   data/  —— 整个目录交给面板用户（SQLite 要建库、要写 -wal/-shm）
+#   certs/ —— 同上：「面板设置 → 域名与证书」会往这里写证书
+#   config.yaml —— 面板只读，属主仍是 root、给面板用户组读（0600→0640）
+#
+# 不做 chown -R 到整个安装目录：bin/ 与 web/ 只读即可，
+# 让面板用户拥有二进制等于允许它改写自己的程序。
+#
+# 这一段与「装不装 systemd」无关：--no-service 也必须做，否则第 8 节
+# 「以面板用户身份创建首个管理员」会因没有写权限而失败 —— 症状是安装显示
+# 成功、data/ 里却没有数据库，面板起来后一个账号都没有（2026-11-09 踩到）。
+# ---------------------------------------------------------------------------
+set_panel_ownership() {
+  [ "$MODE" = "panel" ] || return 0
+  [ "$PANEL_USER" != "root" ] || return 0
+  chown -R "$PANEL_USER:$PANEL_USER" "$INSTALL_DIR/data" 2>/dev/null || true
+  chown -R "$PANEL_USER:$PANEL_USER" "$INSTALL_DIR/certs" 2>/dev/null || true
+  chown -R "$PANEL_USER:$PANEL_USER" "$INSTALL_DIR/logs" 2>/dev/null || true
+  if [ -f "$CFG" ]; then
+    chown root:"$PANEL_USER" "$CFG" 2>/dev/null || true
+    chmod 640 "$CFG" 2>/dev/null || true
+  fi
+  echo "    已把 data/ certs/ logs/ 交给 $PANEL_USER，config.yaml 只给它读"
+}
+
+# ---------------------------------------------------------------------------
 # 7. systemd
 # ---------------------------------------------------------------------------
 if [ -n "$NO_SERVICE" ]; then
   echo "==> 已指定 --no-service，跳过 systemd 安装（文件已就绪）"
+  set_panel_ownership
 else
   UNIT_SRC="$SRC_DIR/deploy/systemd/${UNIT}.service"
   UNIT_DST="/etc/systemd/system/${UNIT}.service"
@@ -792,25 +837,7 @@ else
       "$UNIT_SRC" > "$UNIT_DST"
     chmod 644 "$UNIT_DST"
 
-    # 面板用户的文件所有权：必须在**所有文件都写完**之后做
-    # （证书、配置、数据库都在前面几步生成；早做会被后来的 root 写入覆盖掉）。
-    #
-    #   data/  —— 整个目录交给面板用户（SQLite 要建库、要写 -wal/-shm）
-    #   certs/ —— 同上：「面板设置 → 域名与证书」会往这里写证书
-    #   config.yaml —— 面板只读，属主仍是 root、给面板用户组读（0600→0640）
-    #
-    # 不做 chown -R 到整个安装目录：bin/ 与 web/ 只读即可，
-    # 让面板用户拥有二进制等于允许它改写自己的程序。
-    if [ "$MODE" = "panel" ] && [ "$PANEL_USER" != "root" ]; then
-      chown -R "$PANEL_USER:$PANEL_USER" "$INSTALL_DIR/data" 2>/dev/null || true
-      chown -R "$PANEL_USER:$PANEL_USER" "$INSTALL_DIR/certs" 2>/dev/null || true
-      chown -R "$PANEL_USER:$PANEL_USER" "$INSTALL_DIR/logs" 2>/dev/null || true
-      if [ -f "$CFG" ]; then
-        chown root:"$PANEL_USER" "$CFG" 2>/dev/null || true
-        chmod 640 "$CFG" 2>/dev/null || true
-      fi
-      echo "    已把 data/ certs/ logs/ 交给 $PANEL_USER，config.yaml 只给它读"
-    fi
+    set_panel_ownership
 
     systemctl daemon-reload
     systemctl enable "$UNIT" >/dev/null 2>&1 || true
@@ -954,5 +981,11 @@ else
   echo
   echo " 提示: 若通过面板「节点管理 → 一键部署」安装，则上述配置会自动完成。"
 fi
-echo " 查看日志:   journalctl -u $UNIT -f"
+if [ -n "$NO_SERVICE" ]; then
+  # --no-service 没有 systemd 单元，打印 journalctl 只会让人以为服务没起来
+  echo " 查看日志:   未安装服务（--no-service），请自行启动并前台看输出："
+  echo "             cd $INSTALL_DIR && sudo ./bin/atl-$MODE -config $CFG"
+else
+  echo " 查看日志:   journalctl -u $UNIT -f"
+fi
 echo "==============================================="
