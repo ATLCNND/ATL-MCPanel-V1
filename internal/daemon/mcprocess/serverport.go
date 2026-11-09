@@ -48,8 +48,12 @@ const (
 //     （用户可能调过 motd / 难度 / 白名单，整体覆盖是不可接受的）
 //   - 值已经一致时**不写文件**（避免每次启动都动 mtime，也让"文件被谁改了"可追溯）
 //
-// customStart 为 true 且文件不存在时不创建：自定义启动命令的实例可能根本不是
-// Minecraft 服务端（脚本、代理、机器人），凭空塞一个 server.properties 没有意义。
+// 「是不是 Minecraft」只由实例类型（instancekind.Kind）判断，调用方负责把关：
+// 本函数不再看「有没有自定义启动命令」。此前用 customStart 当第二判据，结果是
+// **kind=minecraft + 自定义启动命令**的实例（换 jar、加 JVM 参数，最常见的一种
+// 建法）文件不存在时被跳过创建 → 服务端按默认 25565 监听、隧道按 instances.port
+// 下发，公网地址连不上而面板一切正常。2026-11-09 真机复现：mcreg1 设 port 26100，
+// 服起在 25565。类型是用户在建实例时就声明过的事，比"命令长什么样"可靠。
 //
 // 读与写都用 O_NOFOLLOW（见 safepath.OpenNoFollow）。server.properties 在实例
 // 目录里、租户随手可改，而这里是以 **root** 的身份去读它、改写它：一个
@@ -57,7 +61,7 @@ const (
 // 实例时建出/改写节点上的任意文件（写进 ld.so.preload 会让所有动态链接的程序
 // 都起不来，等于把整台节点打停）。所以目标是软链接时**跳过校准**并记一条警告：
 // 端口对不上只是隧道连不上，写穿软链接是节点级事故。
-func syncServerPort(dir string, port int, customStart bool) (bool, int, error) {
+func syncServerPort(dir string, port int) (bool, int, error) {
 	if port <= 0 || port > 65535 {
 		return false, 0, nil // 端口没配置/不合法：不猜，保持原样
 	}
@@ -70,12 +74,9 @@ func syncServerPort(dir string, port int, customStart bool) (bool, int, error) {
 			slog.Warn("server.properties 是软链接，已跳过端口校准", "dir", dir)
 			return false, 0, nil
 		case os.IsNotExist(err):
-			if customStart {
-				return false, 0, nil
-			}
-			// 还没有 server.properties：默认 java 启动的实例一定是 MC 服务端，
-			// 先写一行把端口定下来，服务端首次启动会把其余默认项补齐
-			// （缺项会取默认值并在启动时写回完整文件）。
+			// 还没有 server.properties：kind=minecraft 就一定是 MC 服务端
+			// （自定义启动命令也一样），先写一行把端口定下来，服务端首次启动
+			// 会把其余默认项补齐（缺项会取默认值并在启动时写回完整文件）。
 			//
 			// **悬空**软链接也在上面那一支被 ELOOP 挡住（O_NOFOLLOW 只看最后
 			// 一段是不是软链接，与目标存不存在无关），这里仍用 O_NOFOLLOW 是为了
@@ -180,8 +181,12 @@ func replacePortValue(line string, port int) string {
 }
 
 // syncServerPortLogged 执行校准并把结果写进日志（Daemon 日志里能看到"端口被改了"）。
+//
+// 调用方已按实例类型把关（只有 kind=minecraft 才会进来），所以这里不再传
+// "可能是自定义命令" 的旗标 —— 那样会把「kind=minecraft + 自定义启动命令」的
+// 实例漏掉创建，服务端就按默认 25565 起来了（见 syncServerPort 的说明）。
 func (i *Instance) syncServerPortLogged() {
-	changed, old, err := syncServerPort(i.Dir, i.Port, i.StartCommand != "")
+	changed, old, err := syncServerPort(i.Dir, i.Port)
 	if err != nil {
 		slog.Warn("校准服务端监听端口失败", "instance", i.ID, "port", i.Port, "error", err)
 		return

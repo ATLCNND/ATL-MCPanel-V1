@@ -36,7 +36,7 @@ func TestSyncServerPortRefusesSymlinkedProps(t *testing.T) {
 	if err := os.Symlink(dangling, filepath.Join(dir, serverPropsFile)); err != nil {
 		t.Fatal(err)
 	}
-	changed, _, err := syncServerPort(dir, 25567, false)
+	changed, _, err := syncServerPort(dir, 25567)
 	if err != nil {
 		t.Fatalf("目标是软链接时应安静跳过（端口校准不是启动前置条件），实际报错：%v", err)
 	}
@@ -60,7 +60,7 @@ func TestSyncServerPortRefusesSymlinkedProps(t *testing.T) {
 	if err := os.Symlink(victim, filepath.Join(dir2, serverPropsFile)); err != nil {
 		t.Fatal(err)
 	}
-	changed, _, err = syncServerPort(dir2, 25567, false)
+	changed, _, err = syncServerPort(dir2, 25567)
 	if err != nil {
 		t.Fatalf("目标是软链接时应安静跳过，实际报错：%v", err)
 	}
@@ -77,7 +77,7 @@ func TestSyncServerPortRefusesSymlinkedProps(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeProps(t, dir3, "server-port=25565\n")
-	changed, old, err := syncServerPort(dir3, 25567, false)
+	changed, old, err := syncServerPort(dir3, 25567)
 	if err != nil || !changed || old != 25565 {
 		t.Fatalf("普通文件应照旧校准，changed=%v old=%d err=%v", changed, old, err)
 	}

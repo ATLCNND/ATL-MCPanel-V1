@@ -244,6 +244,53 @@ export function basePath(): string {
   return v || ''
 }
 
+/**
+ * 安全入口前缀的兜底网：给 fetch 与 XHR 自动补 `/api/` 前缀。
+ *
+ * 为什么需要：配了 security_entry 后整站挂在 `/<entry>/` 下，漏一次前缀的表现
+ * 不是"404 找不到接口"这么直白 —— 面板会回纯文本 `404 page not found\n`，
+ * 前端 `res.json()` 把开头的 `404` 当成合法 JSON 数字，于是报
+ * `Unexpected non-whitespace character after JSON at position 4 (line 1 column 5)`，
+ * 界面上只留下"共 0 条记录"。2026-11-09 在生产机上，
+ * 「审计日志」页 + 文件上传/下载 + 核心上传 + 头像/实例图标共 9 处都是这样漏的，
+ * 而每一处都得靠人肉去发现。
+ *
+ * 所以这里除了各调用点显式写 `basePath()`（清晰、可读），再加一层：
+ * 任何以 `/api/` 开头的相对路径，只要当前有入口前缀且还没带，就自动补上。
+ * 幂等 —— 已经带前缀的不会被补第二次。
+ */
+function installBasePathGuard() {
+  const flag = '__atlBasePathGuard'
+  const w = window as any
+  if (w[flag]) return
+  w[flag] = true
+
+  const fix = (url: string): string => {
+    const bp = basePath()
+    if (!bp) return url
+    if (!url.startsWith('/api/')) return url
+    if (url.startsWith(bp + '/')) return url
+    return bp + url
+  }
+
+  const rawFetch = window.fetch.bind(window)
+  window.fetch = ((input: any, init?: any) => {
+    // 只处理字符串形式的相对路径；Request/URL 对象已经是绝对地址，不再改写
+    if (typeof input === 'string') return rawFetch(fix(input), init)
+    return rawFetch(input, init)
+  }) as typeof window.fetch
+
+  const rawOpen = XMLHttpRequest.prototype.open
+  XMLHttpRequest.prototype.open = function (this: XMLHttpRequest, method: string, url: any, ...rest: any[]) {
+    const fixed = typeof url === 'string' ? fix(url) : url
+    // @ts-expect-error 透传 open 的可变参数（参数个数随调用方而定）
+    return rawOpen.call(this, method, fixed, ...rest)
+  } as typeof XMLHttpRequest.prototype.open
+}
+
+installBasePathGuard()
+
+
 export async function apiFetch(path: string, options: ApiOptions = {}): Promise<any> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -440,7 +487,7 @@ export async function uploadNodeResource(nodeId: number, file: File, overwrite =
   fd.append('file', file)
   if (overwrite) fd.append('overwrite', '1')
   const token = getToken()
-  const res = await fetch(`/api/nodes/${nodeId}/resources`, {
+  const res = await fetch(`${basePath()}/api/nodes/${nodeId}/resources`, {
     method: 'POST',
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     body: fd,
@@ -1646,7 +1693,7 @@ export async function streamAnalysisAI(
   const headers: Record<string, string> = { Accept: 'text/event-stream' }
   const token = getToken()
   if (token) headers['Authorization'] = `Bearer ${token}`
-  const resp = await fetch(`/api/analysis/ai/${recordId}`, { headers, signal })
+  const resp = await fetch(`${basePath()}/api/analysis/ai/${recordId}`, { headers, signal })
   if (!resp.ok) {
     const data = await resp.json().catch(() => ({} as any))
     throw new Error(data.error || `HTTP ${resp.status}`)
@@ -1804,7 +1851,7 @@ export async function streamLogShareAI(
   const headers: Record<string, string> = { Accept: 'text/event-stream' }
   const token = getToken()
   if (token) headers['Authorization'] = `Bearer ${token}`
-  const resp = await fetch(`/api/instances/${instanceId}/logshare/ai/${encodeURIComponent(logshareId)}`, { headers, signal })
+  const resp = await fetch(`${basePath()}/api/instances/${instanceId}/logshare/ai/${encodeURIComponent(logshareId)}`, { headers, signal })
   if (!resp.ok) {
     const data = await resp.json().catch(() => ({} as any))
     throw new Error(data.error || `HTTP ${resp.status}`)
@@ -1852,7 +1899,7 @@ export async function uploadJar(instanceId: string, file: File): Promise<any> {
   fd.append('file', file)
   // 不要设置 Content-Type，浏览器会自动带 boundary
   const token = getToken()
-  const res = await fetch(`/api/instances/${instanceId}/jars`, {
+  const res = await fetch(`${basePath()}/api/instances/${instanceId}/jars`, {
     method: 'POST',
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     body: fd,
@@ -2217,7 +2264,10 @@ export function uploadFile(
     const q = new URLSearchParams({ path })
     if (overwrite) q.set('overwrite', '1')
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', `/api/instances/${instanceId}/upload?${q.toString()}`)
+    // 必须带 basePath()：配了「自定义安全入口」时整站挂在 /<entry> 下，
+    // 少了前缀会打到根路径拿到纯文本 "404 page not found"，上传直接失败。
+    // （这条是 XHR，绕开了 apiFetch，prefix 只能自己加。）
+    xhr.open('POST', `${basePath()}/api/instances/${instanceId}/upload?${q.toString()}`)
     const token = getToken()
     if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
     xhr.setRequestHeader('Content-Type', 'application/octet-stream')
@@ -2302,7 +2352,9 @@ export async function searchFiles(
  */
 export function downloadUrl(instanceId: string, path: string): string {
   const q = new URLSearchParams({ path, token: getToken() || '' })
-  return `/api/instances/${instanceId}/download?${q.toString()}`
+  // 带 basePath()：配了安全入口时下载地址也必须挂在 /<entry> 下，
+  // 否则点击下载得到的是 "404 page not found" 的文本文件。
+  return `${basePath()}/api/instances/${instanceId}/download?${q.toString()}`
 }
 
 /**
@@ -2322,7 +2374,7 @@ export async function fetchFileBlob(instanceId: string, path: string): Promise<B
   const token = getToken()
   if (token) headers['Authorization'] = `Bearer ${token}`
   const q = new URLSearchParams({ path })
-  const resp = await fetch(`/api/instances/${instanceId}/download?${q.toString()}`, { headers })
+  const resp = await fetch(`${basePath()}/api/instances/${instanceId}/download?${q.toString()}`, { headers })
   if (!resp.ok) {
     // 错误响应是 JSON（{error: "..."}），解析出来给人看
     const data = await resp.json().catch(() => ({} as any))
@@ -2632,7 +2684,7 @@ export async function uploadAvatar(file: File): Promise<any> {
   const fd = new FormData()
   fd.append('avatar', file)
   const token = getToken()
-  const res = await fetch('/api/my/avatar', {
+  const res = await fetch(`${basePath()}/api/my/avatar`, {
     method: 'POST',
     headers: token ? { Authorization: `Bearer ${token}` } : {},
     body: fd,
@@ -2672,7 +2724,7 @@ export async function listAvatars(status = 'pending'): Promise<AvatarReviewItem[
  *（另一个是实例文件下载）。
  */
 export function avatarRawUrl(userId: number): string {
-  return `/api/admin/avatars/${userId}/raw?token=${encodeURIComponent(getToken() || '')}`
+  return `${basePath()}/api/admin/avatars/${userId}/raw?token=${encodeURIComponent(getToken() || '')}`
 }
 
 export async function reviewAvatar(userID: number, approve: boolean, note = ''): Promise<any> {  return apiFetch(`/api/admin/avatars/${userID}/review`, {
@@ -2696,7 +2748,8 @@ export function instanceIconUrl(inst: { instance_id: string; icon_mtime?: number
     v: String(inst.icon_mtime),
     token: getToken() || '',
   })
-  return `/api/instances/${inst.instance_id}/icon?${q.toString()}`
+  // 带 basePath()：图标是 <img src> 直接发的请求，不走 apiFetch。
+  return `${basePath()}/api/instances/${inst.instance_id}/icon?${q.toString()}`
 }
 
 // ---- 指标历史（统计页） ----

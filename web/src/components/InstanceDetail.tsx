@@ -248,8 +248,13 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
   const tabs = TABS.filter((t) => !t.cap || caps.has(t.cap))
   // 能力清单是异步到的（实例信息要先拉回来）：默认页签可能恰好是这台实例
   // 没有的那一页。落到一个不存在的页签上会是一片空白，不如退回控制台。
+  //
+  // 注意：`TABS_EXTRA`（统计与配额、任务）**不**按能力过滤，但它们同样是合法页签。
+  // 只查 `tabs` 会把这两页当成"不存在的页签" —— 一点就立刻弹回控制台
+  // （2026-11-09 生产机由用户报出：「统计与配额」和「任务」打不开）。
   useEffect(() => {
-    if (inst && !tabs.some((t) => t.key === tab)) setTab('console')
+    const allowed = tabs.some((t) => t.key === tab) || TABS_EXTRA.some((t) => t.key === tab)
+    if (inst && !allowed) setTab('console')
   }, [inst, tab, tabs])
   const [metrics, setMetrics] = useState<Metrics | null>(null)
   const [backups, setBackups] = useState<BackupItem[]>([])

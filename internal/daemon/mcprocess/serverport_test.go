@@ -32,7 +32,7 @@ func TestSyncServerPortRewritesMismatch(t *testing.T) {
 	dir := t.TempDir()
 	writeProps(t, dir, "motd=我的服\nserver-port=25565\nmax-players=20\n")
 
-	changed, old, err := syncServerPort(dir, 25567, false)
+	changed, old, err := syncServerPort(dir, 25567)
 	if err != nil {
 		t.Fatalf("校准失败: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestSyncServerPortNoopWhenSame(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	changed, old, err := syncServerPort(dir, 25567, false)
+	changed, old, err := syncServerPort(dir, 25567)
 	if err != nil {
 		t.Fatalf("校准失败: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestSyncServerPortAppendsMissingKey(t *testing.T) {
 	dir := t.TempDir()
 	writeProps(t, dir, "motd=hi\n")
 
-	changed, old, err := syncServerPort(dir, 25570, false)
+	changed, old, err := syncServerPort(dir, 25570)
 	if err != nil {
 		t.Fatalf("校准失败: %v", err)
 	}
@@ -102,11 +102,15 @@ func TestSyncServerPortAppendsMissingKey(t *testing.T) {
 	}
 }
 
-// 文件还不存在：默认 java 启动的实例一定是 MC 服务端，先写一行把端口定下来
+// 文件还不存在：只要调用方判定是 Minecraft 实例，就先写一行把端口定下来
 // （否则首次启动会监听 25565，与隧道错配）。
-func TestSyncServerPortCreatesForDefaultStart(t *testing.T) {
+//
+// 这条用例同时是 "kind=minecraft + 自定义启动命令" 的回归：2026-11-09 真机
+// （mcreg1，port=26100、`start_command: java … -jar server.jar`）曾因为这里
+// 多一个 customStart 判据而跳过创建，服务端按默认 25565 起来、隧道连不上。
+func TestSyncServerPortCreatesWhenMissing(t *testing.T) {
 	dir := t.TempDir()
-	changed, _, err := syncServerPort(dir, 25567, false)
+	changed, _, err := syncServerPort(dir, 25567)
 	if err != nil {
 		t.Fatalf("校准失败: %v", err)
 	}
@@ -118,41 +122,12 @@ func TestSyncServerPortCreatesForDefaultStart(t *testing.T) {
 	}
 }
 
-// 自定义启动命令 + 没有 server.properties → **不要**凭空塞一个：
-// 那类实例可能根本不是 MC 服务端（脚本、代理、机器人）。
-func TestSyncServerPortSkipsCreateForCustomStart(t *testing.T) {
-	dir := t.TempDir()
-	changed, _, err := syncServerPort(dir, 25567, true)
-	if err != nil {
-		t.Fatalf("校准失败: %v", err)
-	}
-	if changed {
-		t.Error("自定义启动命令且文件不存在时不应创建 server.properties")
-	}
-	if _, err := os.Stat(filepath.Join(dir, serverPropsFile)); !os.IsNotExist(err) {
-		t.Error("不应创建 server.properties")
-	}
-}
-
-// 但自定义启动命令 + **已有** server.properties → 仍要校准：
-// 那说明它确实是 MC 实例（用户只是自己写了启动脚本）。
-func TestSyncServerPortSyncsExistingEvenForCustomStart(t *testing.T) {
-	dir := t.TempDir()
-	writeProps(t, dir, "server-port=25565\n")
-	if changed, _, err := syncServerPort(dir, 25567, true); err != nil || !changed {
-		t.Fatalf("已有文件时应校准，changed=%v err=%v", changed, err)
-	}
-	if got := readProps(t, dir); !strings.Contains(got, "server-port=25567") {
-		t.Errorf("应改写为 25567，实际 %q", got)
-	}
-}
-
 // 非法/未配置的端口不猜、不写（宁可保持原样，也不要把服务端改到奇怪端口）。
 func TestSyncServerPortIgnoresInvalidPort(t *testing.T) {
 	for _, port := range []int{0, -1, 70000} {
 		dir := t.TempDir()
 		writeProps(t, dir, "server-port=25565\n")
-		changed, _, err := syncServerPort(dir, port, false)
+		changed, _, err := syncServerPort(dir, port)
 		if err != nil {
 			t.Fatalf("port=%d 不应报错: %v", port, err)
 		}
@@ -167,7 +142,7 @@ func TestSyncServerPortIgnoresCommentedLine(t *testing.T) {
 	dir := t.TempDir()
 	writeProps(t, dir, "#server-port=25565\nmotd=x\n")
 
-	changed, old, err := syncServerPort(dir, 25567, false)
+	changed, old, err := syncServerPort(dir, 25567)
 	if err != nil || !changed {
 		t.Fatalf("应追加真实配置项，changed=%v err=%v", changed, err)
 	}
@@ -188,7 +163,7 @@ func TestSyncServerPortPreservesCRLF(t *testing.T) {
 	dir := t.TempDir()
 	writeProps(t, dir, "motd=x\r\nserver-port=25565\r\n")
 
-	if _, _, err := syncServerPort(dir, 25567, false); err != nil {
+	if _, _, err := syncServerPort(dir, 25567); err != nil {
 		t.Fatalf("校准失败: %v", err)
 	}
 	got := readProps(t, dir)

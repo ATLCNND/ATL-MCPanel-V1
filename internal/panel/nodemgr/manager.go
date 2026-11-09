@@ -84,7 +84,12 @@ func nodeErrorSummary(c codes.Code) string {
 	case codes.Internal, codes.Unknown:
 		return "节点内部错误（详情见面板日志）"
 	case codes.Unavailable:
-		return "节点不可达（Daemon 可能未运行或网络不通）"
+		// 真机上最常见的是「节点 config 里 grpc_listen 不是面板记的那个端口」：
+		// 心跳是节点主动连面板（走得通），控制流是面板连节点（连不上），于是
+		// 面板里节点显示 online、一操作实例就报这句。提示一句核对口径，
+		// 比让用户去猜"Daemon 是不是没起"有用得多。
+		return "节点不可达（Daemon 可能未运行、端口不通或被防火墙拦截；" +
+			"请核对节点页里的 IP 与 gRPC 端口和节点 config.yaml 的 daemon.grpc_listen 是否一致）"
 	case codes.Canceled:
 		return "操作已取消"
 	default:

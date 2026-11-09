@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -377,7 +378,7 @@ func writeInstanceTar(tw *tar.Writer, root string, includeConfig bool, include f
 		if !info.IsDir() && include != nil && !include(rel) {
 			// 不进包，但仍要记进清单（见上面的说明）
 			if info.Mode().IsRegular() {
-				entries = append(entries, manifestFile{Path: rel, Size: info.Size(), Mtime: info.ModTime().Unix()})
+				entries = append(entries, manifestEntry(rel, info))
 			}
 			return nil
 		}
@@ -405,12 +406,8 @@ func writeInstanceTar(tw *tar.Writer, root string, includeConfig bool, include f
 		if _, err = io.Copy(tw, src); err != nil {
 			return err
 		}
-		// 记进清单：只记 path/size/mtime（第 1 步不算每文件哈希，理由见清单结构注释）
-		entries = append(entries, manifestFile{
-			Path:  rel,
-			Size:  info.Size(),
-			Mtime: info.ModTime().Unix(),
-		})
+		// 记进清单：path/size/mtime（秒 + 纳秒，判据用纳秒；理由见清单结构注释）
+		entries = append(entries, manifestEntry(rel, info))
 		return nil
 	})
 	return entries, err
@@ -1096,10 +1093,27 @@ type backupManifest struct {
 }
 
 type manifestFile struct {
-	Path   string `json:"path"`
-	Size   int64  `json:"size"`
-	Mtime  int64  `json:"mtime"`
-	SHA256 string `json:"sha256,omitempty"` // 第 2 步起对变化文件填充
+	Path      string `json:"path"`
+	Size      int64  `json:"size"`
+	Mtime     int64  `json:"mtime"`                // 秒级，给人看；判据见下面的 MtimeNano
+	MtimeNano int64  `json:"mtime_nano,omitempty"` // 纳秒级，判据用；老清单没有这一项
+	SHA256    string `json:"sha256,omitempty"`     // 第 2 步起对变化文件填充
+}
+
+// manifestEntry 把一次 stat 的结果变成清单条目。
+//
+// 同时记秒与纳秒：秒级好读、也让老清单跟新清单能放在一起看；判据（changedSince）
+// 用纳秒 —— 只比秒的话，**同一秒内同尺寸**的改动会被判成"没变"而永久漏进后续增量
+// （脚本批量改配置、编辑器"保存"、`sed -i` 都容易落在一秒内）。纳秒是 struct stat
+// 自带的（ext4/xfs/btrfs 都有），不额外读盘、不加 IO。
+func manifestEntry(rel string, info fs.FileInfo) manifestFile {
+	mt := info.ModTime()
+	return manifestFile{
+		Path:      rel,
+		Size:      info.Size(),
+		Mtime:     mt.Unix(),
+		MtimeNano: mt.UnixNano(),
+	}
 }
 
 // writeManifest 在备份包旁边写一份清单（同名 .json）。
@@ -1174,15 +1188,20 @@ func uniqueBackupFileName(bdir string, ts int64, name string) (string, error) {
 //   - size 与 mtime 都相同 → 跳过（**不重算哈希**，否则每次都要全量读盘，增量就没收益）
 //   - 上一环有、本轮没有 → 记墓碑
 //
+// mtime 优先按**纳秒**比（manifestFile.MtimeNano）：只比秒的话，同一秒内同尺寸的改动
+// 会被判成"没变"而永久漏掉（脚本批量改、编辑器保存、`sed -i` 都容易落在一秒内），
+// 这是 P3 那条已知取舍的修复。老清单没有 mtime_nano（=0），此时退回秒级比较 ——
+// 升级瞬间不会把整条老链判成"全都变了"。
+//
 // prev 为 nil 表示没有可用的上一环：此时所有文件都算「新」，等同一个完整基线。
 func changedSince(prev *backupManifest, current []manifestFile) (changed []manifestFile, deleted []string) {
 	if prev == nil {
 		return current, nil
 	}
-	type sig struct{ size, mtime int64 }
+	type sig struct{ size, mtime, mtimeNano int64 }
 	prevSig := make(map[string]sig, len(prev.Files))
 	for _, f := range prev.Files {
-		prevSig[f.Path] = sig{f.Size, f.Mtime}
+		prevSig[f.Path] = sig{f.Size, f.Mtime, f.MtimeNano}
 	}
 	seen := make(map[string]bool, len(current))
 	for _, f := range current {
@@ -1192,7 +1211,7 @@ func changedSince(prev *backupManifest, current []manifestFile) (changed []manif
 			changed = append(changed, f) // 新增
 			continue
 		}
-		if p.size != f.Size || p.mtime != f.Mtime {
+		if p.size != f.Size || !sameMtime(p.mtime, p.mtimeNano, f.Mtime, f.MtimeNano) {
 			changed = append(changed, f) // 改过
 		}
 	}
@@ -1203,6 +1222,16 @@ func changedSince(prev *backupManifest, current []manifestFile) (changed []manif
 	}
 	sort.Strings(deleted)
 	return changed, deleted
+}
+
+// sameMtime 比较修改时间：两边都有纳秒（新清单）就按纳秒比，否则退回秒级
+// （老清单没有 mtime_nano）。退回秒级与之前的判据完全一致，不会让老链在升级后
+// 突然"全都变了"。
+func sameMtime(prevSec, prevNano, curSec, curNano int64) bool {
+	if prevNano != 0 && curNano != 0 {
+		return prevNano == curNano
+	}
+	return prevSec == curSec
 }
 
 // latestChainManifest 在备份目录里找**链上最新**的一份清单（只认自动备份，手动备份不入链）。
@@ -1385,7 +1414,7 @@ func scanEntries(root string, includeConfig bool) ([]manifestFile, error) {
 			return nil
 		}
 		if info.Mode().IsRegular() {
-			entries = append(entries, manifestFile{Path: rel, Size: info.Size(), Mtime: info.ModTime().Unix()})
+			entries = append(entries, manifestEntry(rel, info))
 		}
 		return nil
 	})

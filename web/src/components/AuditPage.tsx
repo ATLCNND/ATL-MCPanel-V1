@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { listAuditLogs } from '../api'
+import { basePath, listAuditLogs } from '../api'
 import { parseServerTime } from '../time'
 import './AuditPage.css'
 
@@ -68,7 +68,10 @@ export default function AuditPage() {
       qs.set('limit', String(limit))
       if (action.trim()) qs.set('action', action.trim())
       if (username.trim()) qs.set('username', username.trim())
-      const r = await fetch(`/api/audit-logs?${qs}`, {
+      // 必须带 basePath()：配了安全入口时整站挂在 /<entry> 下，
+      // 少这个前缀会打到根路径拿到纯文本 "404 page not found"，
+      // JSON.parse 就报 Unexpected non-whitespace character after JSON at position 4。
+      const r = await fetch(`${basePath()}/api/audit-logs?${qs}`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('atlmcpanel_token') || ''}` },
       }).then((res) => res.json())
       setLogs(Array.isArray(r) ? r : [])
