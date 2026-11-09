@@ -120,6 +120,7 @@ func PickupCert(o EnrollOptions) (certPath, caPath string, err error) {
 	if err := os.WriteFile(caPath, []byte(resp.CA), 0o644); err != nil {
 		return "", "", err
 	}
+	_ = savePanelURL(o.StateDir, o.PanelBase)
 	return certPath, caPath, nil
 }
 

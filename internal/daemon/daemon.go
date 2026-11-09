@@ -4,6 +4,7 @@ package daemon
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -383,6 +384,14 @@ func (d *Daemon) transportCredentials() (credentials.TransportCredentials, error
 	if err != nil {
 		return nil, fmt.Errorf("构造 mTLS 配置失败: %w", err)
 	}
+	// 证书热加载：自动续期会把新证书写回同一个路径，而 mTLS 配置在启动时
+	// 就把证书读进内存了 —— 不换的话续期等于白续（重启 Daemon 才能生效，
+	// 而重启会杀掉全部实例）。这里改成每次握手按 mtime 判断是否要重新加载。
+	pair := newReloadableKeyPair(d.cfg.CertFile, d.cfg.KeyFile, d.log)
+	tlsCfg.Certificates = nil
+	tlsCfg.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+		return pair.get()
+	}
 	d.log.Info("已启用 mTLS 连接 Panel", "ca", d.cfg.CAFile, "cert", d.cfg.CertFile)
 	return credentials.NewTLS(tlsCfg), nil
 }
@@ -474,6 +483,13 @@ func (d *Daemon) Run() error {
 			d.cfg.CAFile, d.cfg.CertFile, d.cfg.KeyFile, pki.PanelGRPCServerName)
 		if err != nil {
 			return fmt.Errorf("构造 Daemon gRPC mTLS 配置失败: %w", err)
+		}
+		// 与客户端侧同一个理由：证书续期后要让**对外这一面**也立刻换成新证书，
+		// 否则面板连节点时校验的还是旧证书（过期后就成了"面板连不上节点"）。
+		srvPair := newReloadableKeyPair(d.cfg.CertFile, d.cfg.KeyFile, d.log)
+		tlsCfg.Certificates = nil
+		tlsCfg.GetCertificate = func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+			return srvPair.get()
 		}
 		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(tlsCfg)))
 	} else if !config.IsLoopbackListen(d.cfg.GRPCListen) && !d.cfg.AllowInsecureGRPC {
@@ -586,6 +602,10 @@ func (d *Daemon) Run() error {
 		return err
 	}
 	d.log.Info("注册成功", "node_id", d.cfg.NodeID, "msg", resp.Message)
+
+	// 2.9 节点证书巡检（到期前自动续期，见 certrenew.go）。
+	// 放在注册成功之后：这时已经证明确实连得上面板，续期请求才有意义。
+	go d.renewCertLoop()
 
 	// 3. 心跳循环（同时上报主机资源，供「节点监控」页与磁盘告警使用）
 	hostCollector := hoststats.New()

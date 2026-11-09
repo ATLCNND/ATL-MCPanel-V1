@@ -140,6 +140,10 @@ func Enroll(o EnrollOptions) (certPath, caPath string, resp enrollResponse, err 
 	if err := os.WriteFile(caPath, []byte(resp.CA), 0o644); err != nil {
 		return "", "", resp, err
 	}
+	// 记下面板 HTTP 地址（state/panel_url）：自动续期要用它，而
+	// daemon.panel_url 这个配置键是后来的版本才加的 —— 老安装升级上来时
+	// 配置文件里没有它。用接入时实际用的地址兜底，节点就不用人工再配一遍。
+	_ = savePanelURL(o.StateDir, o.PanelBase)
 	return certPath, caPath, resp, nil
 }
 

@@ -204,6 +204,28 @@ CRL 要分发、要处理缓存与过期；OCSP 要一个长期在线的响应�
   · 签新证书（同一 node_uid），旧证书记 replaced_by
 ```
 
+**实现（0.11.x，`internal/daemon/certrenew.go`）**：上面这段最初只写进了设计，代码里
+没人消费 `renew_after` —— 证书只有 30 天，所以"部署满一个月节点静默失联"是迟早的事。
+现在 Daemon 启动先查一次、之后每 6 小时查一次（`certRenewCheckInterval`），
+剩余不足 7 天（`certRenewBefore`）就续：
+
+- 拿 `certs/node.key` + `state/node_uid` 造 CSR → `POST <面板 HTTP>/api/enroll/renew`，
+  **私钥不动**（面板按首次登记的公钥指纹认人，换钥匙会被 403）。
+- 新证书与新 CA **原子写回** `node.crt` / `ca.crt`（先写 `.tmp` 再 rename，
+  巡检与握手是并发的）。
+- 面板地址优先取 `daemon.panel_url`，没有则取接入时记下的 `state/panel_url`
+  （老安装升级上来的配置里没有这个键）；两者都没有时明确报错，
+  而不是等一个月后神秘掉线。
+- **写盘不等于生效**：mTLS 配置是进程启动时读进内存的，而重启 Daemon 会杀掉全部实例。
+  所以客户端 `GetClientCertificate`、服务端 `GetCertificate` 都改成每次握手 stat 一次
+  证书文件，变了才重新 LoadX509KeyPair —— 续期后无需重启。
+- 403 有两种来路，都被翻译成可执行动作：节点被撤销（管理面板重新接入）、
+  公钥指纹不一致（本机证书不是面板登记的那把钥匙，重新走一次凭证交换）。
+
+> 2026-11-09 开发机真机踩到过第二种：`certs/node.key` 是早期接入留下的长效证书，
+> 而 `node_enrollments` 里记的是另一次接入的公钥指纹 —— 运行不受影响（mTLS 只校验证书链
+> 与 CN），但续期会 403。这类机器需要重新接入，不是代码问题。
+
 ---
 
 ## 7. 数据模型（迁移）
