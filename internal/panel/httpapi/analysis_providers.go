@@ -144,20 +144,18 @@ func (s *Server) listProviders(userID int64) ([]analysis.Provider, error) {
 // 落成数据库行只会带来"管理员误删之后功能静默消失"这类问题。
 // 顺序配置里可以用类型名（logshare / mclogs）引用它们。
 //
-// mclo.gs 的启用状态**跟着同一个运行时开关走**（原来是写死的 true）：
-// 两者都是"把日志发给外部公开服务"，开关叫「第三方日志分析」就该同时管住它们 ——
-// 写死 true 的后果是管理员关掉之后，链上仍然留着 mclo.gs 这个兜底，
-// 日志（含未打码的 IP）照旧被传到 api.mclo.gs：开关形同虚设。
+// mclo.gs / LogShare 两个内置平台各有**自己的**开关（1.0.0-preview.2 起）：
+// 早先它们共用一个「第三方日志分析」总开关，导致"只想关公开分享、保留 AI 分析"
+// 做不到 —— 真机上管理员把总开关关掉之后 AI 分析与分享一起消失，看起来像 AI 坏了。
 func (s *Server) builtinProviders() []analysis.Provider {
-	thirdPartyOn := s.LogShareEnabled()
 	return []analysis.Provider{
 		{
-			ID: 0, Name: "LogShare", Kind: analysis.KindLogShare, Enabled: thirdPartyOn,
+			ID: 0, Name: "LogShare", Kind: analysis.KindLogShare, Enabled: s.LogShareAIEnabled(),
 			TimeoutSec: s.logShareCfg.TimeoutSeconds,
 			BaseURL:    s.logShareCfg.SiteURL,
 		},
 		{
-			ID: 0, Name: "mclo.gs", Kind: analysis.KindMclogs, Enabled: thirdPartyOn,
+			ID: 0, Name: "mclo.gs", Kind: analysis.KindMclogs, Enabled: s.MclogsEnabled(),
 			BaseURL: "https://api.mclo.gs",
 		},
 	}
@@ -535,10 +533,10 @@ func (s *Server) handleGetAnalysisSettings(w http.ResponseWriter, r *http.Reques
 		"rate_default_min": analysis.DefaultPerMinute,
 		"rate_default_day": analysis.DefaultPerDay,
 
-		"help_template":             s.helpTemplate(),
-		"help_template_default":     analysis.DefaultHelpTemplate,
-		"help_template_is_default":  strings.TrimSpace(st.HelpTemplate) == "",
-		"help_placeholders":         analysis.HelpPlaceholders(),
+		"help_template":            s.helpTemplate(),
+		"help_template_default":    analysis.DefaultHelpTemplate,
+		"help_template_is_default": strings.TrimSpace(st.HelpTemplate) == "",
+		"help_placeholders":        analysis.HelpPlaceholders(),
 	})
 }
 

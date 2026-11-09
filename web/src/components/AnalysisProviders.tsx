@@ -3,7 +3,7 @@ import {
   AnalysisProvider, AnalysisProvidersResp, AnalysisSettings,
   listAnalysisProviders, createAnalysisProvider, updateAnalysisProvider,
   deleteAnalysisProvider, testAnalysisProvider, getAnalysisSettings, setAnalysisSettings,
-  getLogShareSettings, setLogShareEnabled, LogShareSettings,
+  getLogShareSettings, setLogSharePlatform, LogShareSettings, LogSharePlatformSwitch,
   roleLabel,
 } from '../api'
 import './AnalysisProviders.css'
@@ -101,12 +101,13 @@ export default function AnalysisProviders({ role }: { role?: string }) {
 
   useEffect(() => { load() }, [])
 
-  // 一键开关：关掉的是面板上的上传入口（已上传的云端副本仍可在实例页删除）。
-  const toggleLogShare = async () => {
-    const cur = ls?.enabled ?? false
+  // 每个内置平台各自开关（1.0.0-preview.2 起）。此前是一个总开关：
+  // LogShare 的 AI 分析与 mclo.gs 的公开分享被绑在一起，管理员关掉之后
+  // AI 分析看起来就像坏了（用户真实反馈）。旧的 toggleLogShare 已删除。
+  const togglePlatform = async (key: string, next: boolean) => {
     setBusy(true); setError(''); setMsg('')
     try {
-      const r = await setLogShareEnabled(!cur)
+      const r = await setLogSharePlatform(key as 'logshare' | 'mclogs', next)
       setMsg(r.message)
       await load()
     } catch (e: any) {
@@ -115,6 +116,9 @@ export default function AnalysisProviders({ role }: { role?: string }) {
       setBusy(false)
     }
   }
+
+  const platformOf = (kind: string): LogSharePlatformSwitch | undefined =>
+    (ls?.platforms || []).find((x) => x.key === kind)
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -244,7 +248,7 @@ export default function AnalysisProviders({ role }: { role?: string }) {
                 <div className="ap-item-name">
                   {p.name}
                   <span className={`ap-kind kind-${p.kind}`}>{kindBadge(p.kind)}</span>
-                  {!p.enabled && <span className="ap-off">已停用</span>}
+                  {!(platformOf(p.kind)?.enabled ?? p.enabled) && <span className="ap-off">已停用</span>}
                 </div>
                 <div className="ap-item-desc">
                   {p.kind === 'logshare'
@@ -252,25 +256,30 @@ export default function AnalysisProviders({ role }: { role?: string }) {
                     : '保底通道：只生成可分享的日志链接并统计 ERROR 行数，**不会给出 AI 结论**，用于去 MC 社区求助。'}
                 </div>
               </div>
-              {p.kind === 'logshare' && (
-                <div className="ap-item-note">
-                  {data?.can_manage ? (
+              <div className="ap-item-note">
+                {(() => {
+                  const plat = platformOf(p.kind)
+                  const on = plat?.enabled ?? p.enabled
+                  const hint = p.kind === 'logshare'
+                    ? (on
+                      ? '当前已启用。关掉它之后，用户点「一键分析」不会再请求 LogShare 的 AI 结论；mclo.gs 那条分享通道不受影响。'
+                      : '当前已关闭。开启后用户可在实例的「日志分析」页上传日志并获取 AI 分析。')
+                    : (on
+                      ? '当前已启用。关掉它只影响「生成公开分享链接」这条路，AI 分析不受影响。'
+                      : '当前已关闭。开启后用户可以生成 mclo.gs 公开链接（日志会公开可见，用户仍需勾选同意）。')
+                  return data?.can_manage ? (
                     <>
-                      <span>
-                        {ls?.enabled ?? p.enabled
-                          ? '当前已启用。关闭后面板上的上传入口立即不可用；已上传的云端副本仍可在实例页删除。'
-                          : '当前已关闭。开启后用户可在实例的「日志分析」页上传日志并获取 AI 分析。'}
-                      </span>
-                      <button className={(ls?.enabled ?? p.enabled) ? 'small danger' : 'small primary'}
-                        disabled={busy} onClick={toggleLogShare}>
-                        {(ls?.enabled ?? p.enabled) ? '关闭第三方日志分析' : '开启第三方日志分析'}
+                      <span>{hint}</span>
+                      <button className={on ? 'small danger' : 'small primary'}
+                        disabled={busy} onClick={() => togglePlatform(p.kind, !on)}>
+                        {on ? '关闭' : '开启'}
                       </button>
                     </>
                   ) : (
-                    <span>{(ls?.enabled ?? p.enabled) ? '当前已启用' : '当前已关闭'}（仅总管理员可修改）</span>
-                  )}
-                </div>
-              )}
+                    <span>{on ? '当前已启用' : '当前已关闭'}（仅总管理员可修改）</span>
+                  )
+                })()}
+              </div>
             </div>
           ))}
         </div>

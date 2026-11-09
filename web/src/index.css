@@ -111,3 +111,22 @@ select {
 select:focus {
   border-color: var(--accent);
 }
+
+/* textarea 与 input/select 同一套外观。
+   此前全站没有 textarea 规则 —— 用具默认的白底 + 衬线等宽字体，在深色主题里
+   是一块刺眼的白方块（证书粘贴、任务脚本等页面都受影响）。 */
+textarea {
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  color: var(--text-1);
+  padding: 8px 12px;
+  border-radius: var(--r);
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  resize: vertical;
+}
+
+textarea:focus {
+  border-color: var(--accent);
+}

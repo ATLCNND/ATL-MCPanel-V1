@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	pb "github.com/ATLCNND/ATL-MCPanel/internal/proto/mcpanel"
@@ -33,38 +34,99 @@ func (s *Server) handleGetLogShareSettings(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"enabled":        s.LogShareEnabled(),
+		// enabled 保留为"还有任一平台可用"的兼容字段（老前端只认它）；
+		// 新前端按 platforms 逐平台渲染开关。
+		"enabled":        s.AnyThirdPartyEnabled(),
+		"platforms":      s.platformSwitches(),
 		"can_manage":     roleOf(r) == RoleAdmin,
 		"retention_days": days,
 		"site_url":       s.logShareCfg.SiteURL,
 	})
 }
 
+// platformSwitches 两个内置平台的当前开关与说明（界面直接渲染成两行）。
+//
+// 为什么要连"说明"一起下发：这两个平台的数据流向完全不同 ——
+// LogShare 是 AI 分析（要账号/公益额度），mclo.gs 是把日志变成**公开可访问**的链接。
+// 界面上只写"启用/停用"会让人以为关掉的是同一件事。
+func (s *Server) platformSwitches() []map[string]interface{} {
+	return []map[string]interface{}{
+		{
+			"key": platformLogShare, "name": "LogShare（AI 分析）",
+			"enabled": s.LogShareAIEnabled(), "is_ai": true,
+			"note": "把日志上传到 api.logshare.cn 做 AI 分析，返回结论与建议",
+		},
+		{
+			"key": platformMclogs, "name": "mclo.gs（公开分享）",
+			"enabled": s.MclogsEnabled(), "is_ai": false,
+			"note": "只把日志变成可分享的公开链接（不产生 AI 结论），链接无密码即可打开",
+		},
+	}
+}
+
 // PUT /api/logshare/settings  body: {"enabled": true|false}（仅总管理员）
+//
+// 兼容老前端：只有 enabled 字段时，两个平台一起开/关（与拆分前行为一致）。
+// 新前端传 {"platform": "logshare"|"mclogs", "enabled": bool} 只改一个平台。
 func (s *Server) handleSetLogShareSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Enabled bool `json:"enabled"`
+		Enabled  *bool  `json:"enabled"`
+		Platform string `json:"platform"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "无效请求体")
+		return
+	}
+	if req.Enabled == nil {
+		writeErr(w, http.StatusBadRequest, "缺少 enabled 字段")
 		return
 	}
 	if s.logShare == nil {
 		writeErr(w, http.StatusServiceUnavailable, "日志分析客户端未初始化")
 		return
 	}
-	if err := s.settingSet(settingLogShareEnabled, strconv.FormatBool(req.Enabled)); err != nil {
-		writeErr(w, http.StatusInternalServerError, "保存设置失败："+err.Error())
+	on := *req.Enabled
+	affected := []string{}
+	switch strings.TrimSpace(req.Platform) {
+	case platformLogShare:
+		if err := s.settingSet(settingLogShareAI, strconv.FormatBool(on)); err != nil {
+			writeErr(w, http.StatusInternalServerError, "保存设置失败："+err.Error())
+			return
+		}
+		affected = append(affected, "LogShare（AI 分析）")
+	case platformMclogs:
+		if err := s.settingSet(settingMclogsStore, strconv.FormatBool(on)); err != nil {
+			writeErr(w, http.StatusInternalServerError, "保存设置失败："+err.Error())
+			return
+		}
+		affected = append(affected, "mclo.gs（公开分享）")
+	case "":
+		// 老前端：一起改，并且把老的 logshare_enabled 也写一份，
+		// 免得回滚到旧版本时两个平台的状态对不上。
+		for _, k := range []string{settingLogShareAI, settingMclogsStore, settingLogShareEnabled} {
+			if err := s.settingSet(k, strconv.FormatBool(on)); err != nil {
+				writeErr(w, http.StatusInternalServerError, "保存设置失败："+err.Error())
+				return
+			}
+		}
+		affected = append(affected, "LogShare（AI 分析）", "mclo.gs（公开分享）")
+	default:
+		writeErr(w, http.StatusBadRequest, "未知的平台："+req.Platform)
 		return
 	}
 	action := "logshare_disable"
-	msg := "已关闭第三方日志分析：面板上的入口将不可用，已上传的云端副本仍可删除"
-	if req.Enabled {
+	msg := "已关闭" + strings.Join(affected, "、") + "：面板上的对应入口将不可用，已上传的云端副本仍可删除"
+	if on {
 		action = "logshare_enable"
-		msg = "已开启第三方日志分析：用户可在实例的「日志分析」页上传日志并获取 AI 分析"
+		msg = "已开启" + strings.Join(affected, "、")
 	}
-	s.audit(r, action, "", msg)
-	writeJSON(w, http.StatusOK, map[string]interface{}{"message": msg, "enabled": req.Enabled})
+	s.audit(r, action, strings.TrimSpace(req.Platform), msg)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"message":   msg,
+		"enabled":   on,
+		"platform":  strings.TrimSpace(req.Platform),
+		"platforms": s.platformSwitches(),
+	})
 }
 
 // GET /api/nodes/{id}/container

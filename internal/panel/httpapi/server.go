@@ -1,4 +1,4 @@
-﻿// Package httpapi 是 Panel 的 HTTP API 层。
+// Package httpapi 是 Panel 的 HTTP API 层。
 package httpapi
 
 import (
@@ -125,16 +125,30 @@ type Server struct {
 	rateLimiter *analysis.RateLimiter
 }
 
-// LogShareEnabled 日志分析（首选提供方 LogShare）是否启用。
+// 第三方日志分析的**平台级**开关。
 //
-// 取值优先级：**面板设置里的运行时开关 > config.yaml 的默认值**。
+// 历史包袱：一开始只有一个 `logshare_enabled` 总开关，同时管住内置的
+// LogShare（AI 分析）与 mclo.gs（公开分享/存储）两个平台。后果是想"只关公开分享、
+// 保留 AI 分析"（或者反过来）根本做不到 —— 真机上就卡成了这个形态：管理员把总开关
+// 关掉之后，AI 分析没了、mclo.gs 也没了，只剩本地存着日志，看起来像"AI 坠机"。
 //
+// 现在拆成两个键，并**保留老键做兜底**：老部署（库里只有 logshare_enabled）升级上来
+// 之后行为与升级前完全一致，管理员可以再按平台一个个打开。
+const (
+	settingLogShareAI      = "logshare_ai_enabled" // LogShare：AI 分析与上传
+	settingMclogsStore     = "mclogs_enabled"      // mclo.gs：公开分享/长期存储
+	settingLogShareEnabled = "logshare_enabled"    // 兼容老键（总开关兜底）
+)
+
+// platformSwitch 读某个平台的启用状态。
+//
+// 取值优先级：**该平台的运行时开关 > 老的 logshare_enabled > config.yaml 默认值**。
 // 默认**开启**（D3：LogShare 是公益合作的首选提供方）。代价与三道闸见
 // config.LogShareConfig 的注释：每次上传仍需用户手动同意、聊天行默认过滤、
-// 管理员可在界面上立即关闭整个功能。
-func (s *Server) LogShareEnabled() bool {
-	if s.logShare == nil {
-		return false
+// 管理员可在界面上立即关闭。
+func (s *Server) platformSwitch(key string) bool {
+	if v, ok := s.settingGet(key); ok {
+		return v == "true"
 	}
 	if v, ok := s.settingGet(settingLogShareEnabled); ok {
 		return v == "true"
@@ -142,8 +156,31 @@ func (s *Server) LogShareEnabled() bool {
 	return s.logShareCfg.EnabledOr(true)
 }
 
-// settingLogShareEnabled 面板设置里"第三方日志分析"这个键。
-const settingLogShareEnabled = "logshare_enabled"
+// LogShareAIEnabled LogShare 平台（AI 分析）是否启用。
+func (s *Server) LogShareAIEnabled() bool {
+	return s.logShare != nil && s.platformSwitch(settingLogShareAI)
+}
+
+// MclogsEnabled mclo.gs 平台（公开分享/存储）是否启用。
+func (s *Server) MclogsEnabled() bool {
+	return s.platformSwitch(settingMclogsStore)
+}
+
+// AnyThirdPartyEnabled 是否还有**任何一个**第三方平台可用。
+//
+// 用于"总闸"：两个平台都关掉时才禁止任何外发；只关掉其中一个时，
+// 另一个照常工作（这正是本版要解决的问题）。
+func (s *Server) AnyThirdPartyEnabled() bool {
+	return s.LogShareAIEnabled() || s.MclogsEnabled()
+}
+
+// LogShareEnabled 兼容旧调用的总开关语义：任一第三方平台可用即为 true。
+//
+// 注意：判断"能不能往**某个**平台发"必须用 LogShareAIEnabled / MclogsEnabled，
+// 否则又回到了"一个开关管两个平台"的老毛病。
+func (s *Server) LogShareEnabled() bool {
+	return s.AnyThirdPartyEnabled()
+}
 
 // settingGet 读面板设置（不存在时 ok=false，调用方回退到配置默认值）。
 func (s *Server) settingGet(key string) (string, bool) {
@@ -375,6 +412,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/instances/{id}/logshare/analyse", s.requireAuth(s.handleLogShareAnalyse))
 	mux.HandleFunc("GET /api/instances/{id}/logshare/ai/{logshare_id}", s.requireAuth(s.handleLogShareAI))
 	mux.HandleFunc("DELETE /api/instances/{id}/logshare/{logshare_id}", s.requireAuth(s.handleLogShareDelete))
+	// 实例级日志分析开关（每个平台可以在这个实例上单独开/关，见 analysis_policy.go）
+	mux.HandleFunc("GET /api/instances/{id}/analysis-policy", s.requireAuth(s.handleGetInstanceAnalysisPolicy))
+	mux.HandleFunc("PUT /api/instances/{id}/analysis-policy", s.requireAuth(s.handleSetInstanceAnalysisPolicy))
 	mux.HandleFunc("POST /api/instances/{id}/ports", s.requireAuth(s.handleAddInstancePort))
 	mux.HandleFunc("POST /api/instances/{id}/ports/{tunnel_id}", s.requireAuth(s.handleUpdateInstancePort))
 	mux.HandleFunc("DELETE /api/instances/{id}/ports/{tunnel_id}", s.requireAuth(s.handleDeleteInstancePort))
@@ -546,6 +586,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tls/self-signed", s.requireAuth(s.handleGenerateSelfSigned))
 	// 上传正式证书（Nginx 格式），落盘前校验配对、有效期与 SAN
 	mux.HandleFunc("POST /api/tls/upload", s.requireAuth(s.handleUploadCert))
+	// 上传证书压缩包（zip 里放证书+私钥，或单个合并 PEM）：按内容识别，不看文件名
+	mux.HandleFunc("POST /api/tls/upload-archive", s.requireAuth(s.handleUploadCertArchive))
 	mux.HandleFunc("GET /api/tls/status", s.requireAuth(s.handleTLSStatus))
 	// 续期：不要求 token，凭据是**当前仍有效的证书**（走 mTLS），公钥指纹必须一致
 	mux.HandleFunc("POST /api/enroll/renew", s.handleEnrollRenew)

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  LogShareFile, AnalysisProvidersResp, AnalysisRecord, AnalysisKind,
+  LogShareFile, AnalysisProvidersResp, AnalysisRecord, AnalysisKind, InstancePlatformStatus,
   listLogShareFiles, listAnalysisProviders, analyseInstance, deleteAnalysisRecord,
   streamAnalysisAI, listAnalysisHistory, previewHelpText,
+  getInstanceAnalysisPolicy, setInstanceAnalysisPolicy,
 } from '../api'
 import MiniMarkdown from './MiniMarkdown'
 import { parseServerTime, formatServerTime } from '../time'
@@ -150,6 +151,13 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
   const [loading, setLoading] = useState(false)
   const [disabled, setDisabled] = useState('')
 
+  // 本实例每个分析平台的开关（三态：跟随全局 / 强制开 / 强制关）。
+  // 为什么要有它：面板全局那两个开关管的是"整台面板允不允许把日志发出去"，
+  // 而真实需求常常是"正式服的日志不许外发、测试服随便发"。
+  const [platforms, setPlatforms] = useState<InstancePlatformStatus[]>([])
+  const [platBusy, setPlatBusy] = useState('')
+  const [platMsg, setPlatMsg] = useState('')
+
   // 上传确认弹窗
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [agree, setAgree] = useState(false)
@@ -210,10 +218,47 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
       }
     } catch (e: any) {
       const m = String(e?.message || '')
-      if (m.includes('未启用')) setDisabled(m)
+      // 服务端在"这个实例的平台都被关掉"时返回的也是 503 + 一句人话，
+      // 两种文案都要认（旧的写「未启用」，新的写「关闭」）。
+      if (m.includes('未启用') || m.includes('关闭')) setDisabled(m)
       else setError(m)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadPolicy = async () => {
+    try {
+      const r = await getInstanceAnalysisPolicy(instanceId)
+      setPlatforms(Array.isArray(r.platforms) ? r.platforms : [])
+    } catch {
+      // 老服务端没有这个接口：整块平台开关不显示，功能照旧（全部跟随全局）
+      setPlatforms([])
+    }
+  }
+
+  /** 改本实例的某个平台：''=跟随全局，'on'/'off'=强制。 */
+  const setOverride = async (key: string, value: '' | 'on' | 'off') => {
+    const next: Record<string, 'on' | 'off'> = {}
+    for (const p of platforms) {
+      if (p.key === key) {
+        if (value) next[p.key] = value
+      } else if (p.override === 'on' || p.override === 'off') {
+        next[p.key] = p.override
+      }
+    }
+    setPlatBusy(key); setPlatMsg('')
+    try {
+      const r = await setInstanceAnalysisPolicy(instanceId, next)
+      setPlatforms(Array.isArray(r.platforms) ? r.platforms : [])
+      setPlatMsg(r.message || '已保存')
+      // 开关变了，本页的文件列表、提供方链、历史都可能跟着变
+      await Promise.all([load(), loadProviders(), loadHistory()])
+    } catch (e: any) {
+      setPlatMsg('')
+      setError(String(e?.message || e))
+    } finally {
+      setPlatBusy('')
     }
   }
 
@@ -234,6 +279,7 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
     load()
     loadProviders()
     loadHistory()
+    loadPolicy()
     return () => { abortRef.current?.abort() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instanceId])
@@ -422,6 +468,46 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
       ? '请勾选下方的确认项'
       : ''
 
+  /** 本实例的平台开关卡片（老服务端没有这个接口时整块不渲染）。 */
+  const platformCard = platforms.length > 0 ? (
+    <div className="ls-platforms">
+      <div className="ls-card-title">
+        这台实例可以用哪些平台
+        <span className="ls-card-sub">默认跟随面板全局开关；只改这一台，不影响别的实例</span>
+      </div>
+      <div className="ls-plat-list">
+        {platforms.map((p) => (
+          <div key={p.key} className={`ls-plat ${p.effective ? 'on' : 'off'}`}>
+            <div className="ls-plat-main">
+              <span className="ls-plat-name">
+                {p.name}
+                <span className={`ls-plat-tag ${p.is_ai ? 'ai' : ''}`}>{p.is_ai ? 'AI 结论' : '公开分享'}</span>
+              </span>
+              <span className="ls-plat-state">
+                {p.effective ? '● 可用' : '○ 不可用'}
+                {p.override
+                  ? ` · 本实例强制${p.override === 'on' ? '开启' : '关闭'}`
+                  : ` · 跟随全局（${p.global ? '开' : '关'}）`}
+              </span>
+            </div>
+            <select
+              value={p.override || ''}
+              disabled={!canWrite || platBusy === p.key}
+              title={canWrite ? '' : '需要 owner 及以上权限'}
+              onChange={(e) => { void setOverride(p.key, e.target.value as '' | 'on' | 'off') }}
+            >
+              <option value="">跟随面板全局（当前{p.global ? '开' : '关'}）</option>
+              <option value="on">在这台实例上强制开启</option>
+              <option value="off">在这台实例上强制关闭</option>
+            </select>
+          </div>
+        ))}
+      </div>
+      {platMsg && <div className="ls-plat-msg">{platMsg}</div>}
+      {!canWrite && <div className="ls-plat-msg muted">改这些需要 owner 及以上权限。</div>}
+    </div>
+  ) : null
+
   if (disabled) {
     return (
       <div className="logshare-tab">
@@ -429,10 +515,11 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
           <div className="ls-disabled-title">日志分析功能未启用</div>
           <p>{disabled}</p>
           <p className="muted">
-            日志分析会按「LogShare → mclo.gs → 自配平台」的顺序尝试；
-            总管理员可以在本页开启或关闭它。
+            日志分析会按「LogShare → mclo.gs → 自配平台」的顺序尝试。下面是这台实例的开关，
+            也可以在面板「日志分析」页调整全局开关（总管理员）。
           </p>
         </div>
+        {platformCard}
       </div>
     )
   }
@@ -441,6 +528,7 @@ export default function LogShareTab({ instanceId, canWrite }: { instanceId: stri
     <div className="logshare-tab">
       {error && <div className="ls-error" onClick={() => setError('')}>{error}</div>}
       {msg && <div className="ls-msg" onClick={() => setMsg('')}>{msg}</div>}
+      {platformCard}
 
       {/* ---- 提供方与归因 ---- */}
       <div className="ls-provider">

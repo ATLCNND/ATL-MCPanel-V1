@@ -186,15 +186,14 @@ func (s *Server) handleInstanceAnalyse(w http.ResponseWriter, r *http.Request) {
 	if !s.requireInstanceLevel(w, r, instanceID, LevelOwner) {
 		return
 	}
-	// 总开关：第三方日志分析被关掉之后，这条链路上**任何**外发都不许发生。
+	// 总闸：**所有**第三方平台都被关掉之后，这条链路上任何外发都不许发生。
 	//
-	// 为什么闸必须放在这里（而不是只靠 attemptLogShare 里那一句）：
-	// LogShare 那一步失败之后会自动**回退到 mclo.gs** —— 于是"管理员已经关掉
-	// 第三方分析"的部署里，日志（含未打码的 IP）仍然会被传到公开的 api.mclo.gs，
-	// 而且生成的分享链接是公开的。开关失效比没有开关更糟：用户会以为数据没出门。
+	// 注意这里是"全关"才拦（AnyThirdPartyEnabled）：只关掉其中一个平台时，
+	// 另一个照常工作 —— 这正是本版从"一个开关管两个平台"里拆出来的目的。
+	// LogShare 那一步失败之后会自动**回退到 mclo.gs**，所以闸必须放在链的最前面。
 	// 措辞与 handleSetLogShareSettings 的提示保持一致（关的是上传入口，
 	// 已经传出去的副本仍然能删，见 handleLogShareDelete）。
-	if !s.LogShareEnabled() {
+	if !s.AnyThirdPartyEnabled() {
 		writeErr(w, http.StatusForbidden,
 			"第三方日志分析已被管理员关闭：日志不会上传到任何外部服务（已上传的云端副本仍可删除）")
 		return
@@ -265,8 +264,11 @@ func (s *Server) handleInstanceAnalyse(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// 实例级开关：这个实例上被显式禁用的平台直接从链里剔掉（见 analysis_policy.go）
+	chain = s.filterChainForInstance(instanceID, chain)
 	if len(chain) == 0 {
-		writeErr(w, http.StatusServiceUnavailable, "没有可用的分析提供方（可在「分析平台」里配置，或联系管理员）")
+		writeErr(w, http.StatusForbidden,
+			"这个实例的日志分析平台都被关闭了：可在「实例设置 → 日志分析」里为它打开某个平台，或由管理员在面板「日志分析」页调整全局开关")
 		return
 	}
 
@@ -359,8 +361,8 @@ func (s *Server) attemptProvider(r *http.Request, cli pb.DaemonServiceClient, in
 func (s *Server) attemptLogShare(r *http.Request, cli pb.DaemonServiceClient, instanceID string,
 	p analysis.Provider, prep *analysisPrep, ctx context.Context) (map[string]interface{}, error) {
 
-	if !s.LogShareEnabled() {
-		return nil, fmt.Errorf("LogShare 未启用")
+	if !s.instancePlatformAllowed(instanceID, platformLogShare) {
+		return nil, fmt.Errorf("这个实例上的 LogShare 已关闭")
 	}
 	// 与原来一致：附带 latest.log 与最近一份崩溃报告（对方建议多文件上传）
 	files := []logshare.UploadFile{}

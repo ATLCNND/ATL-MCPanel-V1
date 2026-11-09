@@ -1,0 +1,268 @@
+/* 面板 HTTPS 证书设置。
+   三张卡片：当前证书 / 上传证书（压缩包或粘贴）/ 生成自签证书。
+
+   为什么要单独一份样式：这一页此前只有裸 <textarea> 与裸按钮，跟面板其它页
+   完全不是一套视觉（textarea 甚至没有全局样式，浏览器默认白底 + 等宽字体，
+   在深色主题里像一块贴错地方的纸）。这里把它做成与「节点卡片」「分析平台卡片」
+   同一套：同一个 --bg-surface 底、同样的圆角与边框、标题统一 13px 加粗。 */
+
+.tls-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 940px;
+}
+
+.tls-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 14px 16px 16px;
+}
+
+.tls-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.tls-head h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+  margin: 0 0 4px;
+}
+
+.tls-sub {
+  display: block;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-3);
+  max-width: 78ch;
+}
+
+.tls-sub b {
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+.tls-badge {
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: var(--r-full);
+  white-space: nowrap;
+}
+
+.tls-badge.on {
+  background: var(--success-bg-2, var(--success-bg));
+  color: var(--success);
+}
+
+.tls-badge.off {
+  background: var(--bg-subtle);
+  color: var(--text-3);
+}
+
+/* ---- 当前证书的键值表 ---- */
+.tls-kv {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+
+.tls-kv > div {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 13px;
+}
+
+.tls-kv dt {
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+.tls-kv dd {
+  color: var(--text-2);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.tls-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  font-size: 11.5px;
+  border-radius: var(--r-full);
+  background: var(--bg-subtle);
+  color: var(--text-3);
+}
+
+.tls-tag.warn {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.tls-note {
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--text-3);
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+}
+
+.tls-note code {
+  margin: 0 6px;
+  padding: 2px 6px;
+  border-radius: var(--r);
+  background: var(--bg-base);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+/* ---- 拖放区 ---- */
+.tls-drop {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 16px;
+  border: 1.5px dashed var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-base);
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+
+.tls-drop:hover,
+.tls-drop.drag {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.tls-drop.has-file {
+  border-style: solid;
+  border-color: var(--accent-border);
+}
+
+/* 真正的 <input type=file> 藏起来但**不能 display:none**：
+   display:none 的元素在部分浏览器里拿不到点击，label 点不动。 */
+.tls-drop input[type='file'] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.tls-drop-icon {
+  font-size: 22px;
+  color: var(--text-3);
+}
+
+.tls-drop-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 13px;
+  color: var(--text-2);
+  min-width: 0;
+}
+
+.tls-drop-text b {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.tls-drop-text small {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.tls-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.tls-hosts {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+/* ---- 手工粘贴（折叠区） ---- */
+.tls-more {
+  margin-top: 14px;
+  border-top: 1px dashed var(--border);
+  padding-top: 12px;
+}
+
+.tls-more > summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--accent);
+  user-select: none;
+}
+
+.tls-more > summary:hover {
+  color: var(--accent-light, var(--accent));
+}
+
+.tls-paste {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+@media (max-width: 860px) {
+  .tls-paste {
+    grid-template-columns: 1fr;
+  }
+  .tls-kv > div {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}
+
+.tls-paste label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tls-paste label > span {
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+
+/* textarea 统一到与 input 同一套外观（此前全站没有 textarea 样式，
+   于是每个用 textarea 的地方都是浏览器默认白底）。 */
+.tls-ta {
+  width: 100%;
+  resize: vertical;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  color: var(--text-1);
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  outline: none;
+}
+
+.tls-ta:focus {
+  border-color: var(--accent);
+}
+
+.tls-ta::placeholder {
+  color: var(--text-4, var(--text-3));
+}

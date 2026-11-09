@@ -847,6 +847,28 @@ var migrations = []migration{
 		Name:    "instance_kind_and_spec",
 		Apply:   func(tx *sql.Tx) error { return addInstanceKindColumns(tx) },
 	},
+	{
+		// 38：实例级日志分析开关（每个分析平台可以在这个实例上单独开/关）。
+		//
+		// 为什么需要一张表而不是给 instances 加列：平台集合是**动态**的 ——
+		// 内置两个（logshare / mclogs）+ 管理员自建的 N 个 OpenAI 兼容平台
+		//（analysis_providers 里的行，可以随时增删）。给每个平台加一列等于把
+		// 数据库结构绑死在"当前有几个平台"上。
+		//
+		// 所以存成一行 JSON：{"logshare":"off","mclogs":"on","openai:3":"off"}。
+		// 语义三态：键存在且为 on/off = 该实例强制启用/禁用；键不存在 = 跟随面板全局开关。
+		// 这样"全局开、这个实例例外"和"全局关、只给这一个实例开"都能表达，
+		// 而升级前的实例（没有这一行）行为完全不变。
+		Version: 38,
+		Name:    "instance_analysis_policy",
+		Statements: []string{
+			`CREATE TABLE IF NOT EXISTS instance_analysis_policy (
+				instance_id TEXT PRIMARY KEY,
+				policy      TEXT NOT NULL DEFAULT '',
+				updated_at  TEXT NOT NULL DEFAULT ''
+			)`,
+		},
+	},
 }
 
 // addInstanceKindColumns 给 instances 补上类型与规格两列（已存在则跳过）。

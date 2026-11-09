@@ -51,8 +51,8 @@ func (s *Server) handleLogShareFiles(w http.ResponseWriter, r *http.Request) {
 	if !s.requireInstanceLevel(w, r, instanceID, LevelCollab) {
 		return
 	}
-	if !s.LogShareEnabled() {
-		writeErr(w, http.StatusServiceUnavailable, "日志分析功能未启用（管理员可在面板配置中打开 logshare.enabled）")
+	if !s.instanceAnyPlatformAllowed(instanceID) {
+		writeErr(w, http.StatusServiceUnavailable, "这个实例的日志分析平台都被关闭了（可在「实例设置 → 日志分析」或面板「日志分析」页打开）")
 		return
 	}
 	cli, _, err := s.getDaemonClient(instanceID)
@@ -123,8 +123,8 @@ func (s *Server) handleLogShareAnalyse(w http.ResponseWriter, r *http.Request) {
 	if !s.requireInstanceLevel(w, r, instanceID, LevelOwner) {
 		return
 	}
-	if !s.LogShareEnabled() {
-		writeErr(w, http.StatusServiceUnavailable, "日志分析功能未启用")
+	if !s.instancePlatformAllowed(instanceID, platformLogShare) {
+		writeErr(w, http.StatusServiceUnavailable, "这个实例上的 LogShare 分析已关闭（可在面板「日志分析」页或该实例的设置里打开）")
 		return
 	}
 	var req struct {
@@ -367,8 +367,8 @@ func (s *Server) handleLogShareAI(w http.ResponseWriter, r *http.Request) {
 	if !s.requireInstanceLevel(w, r, instanceID, LevelCollab) {
 		return
 	}
-	if !s.LogShareEnabled() {
-		writeErr(w, http.StatusServiceUnavailable, "日志分析功能未启用")
+	if !s.instancePlatformAllowed(instanceID, platformLogShare) {
+		writeErr(w, http.StatusServiceUnavailable, "这个实例上的 LogShare 分析已关闭（可在面板「日志分析」页或该实例的设置里打开）")
 		return
 	}
 	logID := r.PathValue("logshare_id")
@@ -701,8 +701,9 @@ func (s *Server) handleLogShareHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"enabled": s.LogShareEnabled(),
-		"history": s.logShareHistory(instanceID),
+		"enabled":   s.instanceAnyPlatformAllowed(instanceID),
+		"platforms": s.instancePlatformStatus(instanceID, currentUserID(r)),
+		"history":   s.logShareHistory(instanceID),
 	})
 }
 

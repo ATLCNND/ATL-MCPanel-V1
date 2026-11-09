@@ -943,6 +943,18 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
     let disposed = false
 
     /**
+     * 本次挂载期间，是否因为「首次握手被浏览器拒绝」打印过证书提示。
+     *
+     * ⚠️ 2026-11-09（生产机现场反馈）：面板用自签证书跑 HTTPS 时，
+     * 打开控制台的**第一次** wss 握手经常会被浏览器直接拒掉（1006），
+     * 于是先打出那一段「服务器证书不受信任」的排查提示，
+     * 3 秒后自动重连就通了 —— 用户看到的是「先吓一下、然后一切正常」。
+     * 重连成功时 onopen 会 t.reset() 清屏，那条提示随即消失，
+     * 用户因此不知道刚才那段红字是为什么。用一个标记在连上时补一句说明。
+     */
+    let certHintShown = false
+
+    /**
      * 处理一条控制台消息。
      *
      * 半行（没有换行的分片）要合并：Daemon 是按行推送的，但服务端偶尔会写下
@@ -1063,6 +1075,13 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
         pendingRef.current = null
         recount()
         t.writeln('\x1b[90m[控制台已连接]\x1b[0m')
+        // 上一次失败是「首次握手被拒」时补一句说明 —— 否则用户只看到终端
+        // 被清屏，不知道刚那段红字是怎么回事（自签证书下最常见）。
+        if (certHintShown) {
+          t.writeln('\x1b[90m  上面那次失败是首次握手被浏览器拒绝，已自动重连成功；' +
+            '面板若用自签证书，换成受信任证书后不会再出现。\x1b[0m')
+          certHintShown = false
+        }
       }
       ws.onmessage = (e) => {
         // 迟到的旧连接帧直接丢弃 —— 这是"重复显示"的主要来源
@@ -1123,6 +1142,9 @@ export default function ConsoleTab({ instanceId, canSend }: { instanceId: string
             t.writeln('    处理：用 HTTP 端口访问面板，或为面板配置受信任的证书')
             t.writeln('    （生产环境建议申请正式证书，如阿里云测试证书 / Let\'s Encrypt）。\x1b[0m')
             t.writeln('\x1b[90m  · 登录态异常：刷新页面并重新登录。\x1b[0m')
+            // 记下来：下一次连上时补一句「刚才那次是首次握手被拒」，
+            // 因为 onopen 会清屏，这段话用户其实看不到第二眼。
+            certHintShown = true
           } else {
             t.writeln('\x1b[90m[连接已断开，3 秒后重连…]（若持续失败，请刷新页面并重新登录）\x1b[0m')
           }

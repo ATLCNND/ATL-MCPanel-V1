@@ -1310,6 +1310,39 @@ export async function uploadCert(cert: string, key: string): Promise<any> {
   return apiFetch('/api/tls/upload', { method: 'POST', body: JSON.stringify({ cert, key }) })
 }
 
+/**
+ * 上传证书压缩包（zip 里放证书 + 私钥，或单个合并 PEM）。
+ *
+ * 为什么要有这条路：从 IDC / 证书商后台下载下来的就是一个 zip，
+ * 里面叫什么名字各家都不一样（cert.crt / fullchain.pem / privkey.key …），
+ * 让用户自己开包、挑文件、再分别粘贴两段文本，是最容易出错的一步。
+ * 后端按**内容**识别，不看文件名。
+ */
+export async function uploadCertArchive(file: File): Promise<{
+  cert_path: string; key_path: string; subject?: string; dns?: string[]; ips?: string[]
+  not_after?: string; used?: string; message: string
+}> {
+  const fd = new FormData()
+  fd.append('file', file)
+  // 不能走 apiFetch：它会强行带上 Content-Type: application/json，
+  // 而 multipart 的 boundary 必须由浏览器自己生成（手写会拼错 body）。
+  const headers: Record<string, string> = {}
+  const token = getToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  const res = await fetch(`${basePath()}/api/tls/upload-archive`, {
+    method: 'POST',
+    headers,
+    body: fd,
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    let msg = text
+    try { msg = JSON.parse(text).error || text } catch { /* 原样显示 */ }
+    throw new Error(msg || `上传失败（HTTP ${res.status}）`)
+  }
+  return res.json()
+}
+
 /** 把本机正在运行的 Daemon 直接登记成节点（ip=127.0.0.1，不需要 SSH 凭据）。 */
 export async function adoptLocalNode(): Promise<{ created: boolean; node: any; message: string }> {
   return apiFetch('/api/nodes/local/adopt', { method: 'POST', body: '{}' })
@@ -1772,6 +1805,34 @@ export interface LogShareSettings {
   /** 对方的实际保留期（实测自 LogShare /limits，会变，所以不写死） */
   retention_days: number
   site_url: string
+  /** 每个内置平台各自的开关（1.0.0-preview.2 起；老服务端不返回此字段） */
+  platforms?: LogSharePlatformSwitch[]
+}
+
+/** 一个内置平台的开关状态。 */
+export interface LogSharePlatformSwitch {
+  key: 'logshare' | 'mclogs' | string
+  name: string
+  enabled: boolean
+  is_ai: boolean
+  /** 这个平台的数据流向说明（两个平台关掉的不是同一件事，必须写清楚） */
+  note?: string
+}
+
+/**
+ * 只开关**某一个**平台（LogShare 的 AI 分析 / mclo.gs 的公开分享）。
+ *
+ * 早先只有一个总开关，两个平台绑在一起：「只想关公开分享、保留 AI 分析」做不到，
+ * 反过来也做不到 —— 管理员关掉之后 AI 分析看起来就像坏了。
+ */
+export async function setLogSharePlatform(
+  platform: 'logshare' | 'mclogs',
+  enabled: boolean,
+): Promise<{ message: string; enabled: boolean; platforms?: LogSharePlatformSwitch[] }> {
+  return apiFetch('/api/logshare/settings', {
+    method: 'PUT',
+    body: JSON.stringify({ platform, enabled }),
+  })
 }
 
 /** 读取第三方日志分析的运行时开关与对方的保留期 */
@@ -1790,6 +1851,45 @@ export async function setLogShareEnabled(enabled: boolean): Promise<{ message: s
   return apiFetch('/api/logshare/settings', {
     method: 'PUT',
     body: JSON.stringify({ enabled }),
+  })
+}
+
+/** 某台实例上某个分析平台的可用状态（三态里的 effective 是最终结果）。 */
+export interface InstancePlatformStatus {
+  key: string
+  name: string
+  kind: string
+  is_ai: boolean
+  /** 面板全局开关（自建平台 = 该行自己的 enabled） */
+  global: boolean
+  /** 实例上的例外：'' = 跟随全局，'on' / 'off' */
+  override: '' | 'on' | 'off'
+  /** 最终是否可用 */
+  effective: boolean
+}
+
+/**
+ * 这个实例的每个分析平台能不能用（三态：跟随全局 / 强制开 / 强制关）。
+ *
+ * 为什么需要实例级：真实部署里「正式服的日志不许外发、测试服随便发」是常态，
+ * 只有面板全局开关时，管理员只能把整个功能关掉。
+ */
+export async function getInstanceAnalysisPolicy(instanceId: string): Promise<{
+  instance_id: string
+  policy: Record<string, string>
+  platforms: InstancePlatformStatus[]
+}> {
+  return apiFetch(`/api/instances/${encodeURIComponent(instanceId)}/analysis-policy`)
+}
+
+/** 保存某个实例的分析平台开关（传 {} = 全部跟随全局）。 */
+export async function setInstanceAnalysisPolicy(
+  instanceId: string,
+  policy: Record<string, 'on' | 'off'>,
+): Promise<{ message: string; policy: Record<string, string>; platforms: InstancePlatformStatus[] }> {
+  return apiFetch(`/api/instances/${encodeURIComponent(instanceId)}/analysis-policy`, {
+    method: 'PUT',
+    body: JSON.stringify({ policy }),
   })
 }
 
