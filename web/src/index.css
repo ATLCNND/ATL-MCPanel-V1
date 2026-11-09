@@ -70,6 +70,20 @@ button.danger:hover {
   background: var(--danger);
 }
 
+/* 危险但**不是主操作**（列表行里的「删除」）：描边式。
+   这个类名此前全站没有定义（5 处都在用），于是「删除」和「刷新」长得一模一样，
+   破坏性动作在视觉上毫无区别。主操作仍然是 `button.danger`（实心红）。 */
+button.danger-outline {
+  color: var(--danger);
+  border-color: var(--danger-border);
+  background: transparent;
+}
+
+button.danger-outline:hover:not(:disabled) {
+  background: var(--danger-bg);
+  border-color: var(--danger-dark);
+}
+
 input {
   background: var(--bg-base);
   border: 1px solid var(--border);

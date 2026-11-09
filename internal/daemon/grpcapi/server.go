@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/config"
+	"github.com/ATLCNND/ATL-MCPanel/internal/common/instancekind"
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/logger"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/container"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/hoststats"
@@ -100,7 +101,30 @@ func (s *Server) getCollector(instanceID string) *metricsCollector {
 
 // CreateInstance 创建实例。
 func (s *Server) CreateInstance(ctx context.Context, req *pb.CreateInstanceRequest) (*pb.OperationResponse, error) {
-	s.log.Info("创建实例", "id", req.InstanceId, "core_type", req.CoreType, "jar", req.JarUrl, "start_command", req.StartCommand)
+	s.log.Info("创建实例", "id", req.InstanceId, "core_type", req.CoreType, "template", req.Template,
+		"jar", req.JarUrl, "start_command", req.StartCommand)
+
+	// 实例类型与规格在这里**校验一次**（面板也校验，但 Daemon 不能假设调用方
+	// 一定是自家面板 —— 规格里的镜像名、端口、卷路径最终都会进 docker 命令行）。
+	kind := instancekind.Normalize(req.Template)
+	spec, err := instancekind.DecodeSpec(req.Spec)
+	if err != nil {
+		return &pb.OperationResponse{Success: false, Error: err.Error()}, nil
+	}
+	if err := spec.Validate(kind); err != nil {
+		return &pb.OperationResponse{Success: false, Error: err.Error()}, nil
+	}
+	// 必须容器承载的类型（docker）不允许退化成 native：
+	// 那样"面板写着 Docker 实例、实际跑在宿主上"，与容器化开关的静默降级同一个坑。
+	wantContainer := req.Container
+	if kind.IsContainerBacked() {
+		wantContainer = true
+		if s.reg.ContainerRuntime() == nil {
+			return &pb.OperationResponse{Success: false,
+				Error: "本节点没有可用的容器运行时（docker），无法创建 Docker 类型实例"}, nil
+		}
+	}
+
 	inst, err := s.reg.Create(registry.Meta{
 		ID:           req.InstanceId,
 		Name:         req.Name,
@@ -114,7 +138,9 @@ func (s *Server) CreateInstance(ctx context.Context, req *pb.CreateInstanceReque
 		CPUQuota:     int(req.CpuQuota),
 		BackupDir:    req.BackupDir,
 		MemLimit:     req.MemLimit,
-		Container:    req.Container,
+		Container:    wantContainer,
+		Template:     string(kind),
+		Spec:         req.Spec,
 	})
 	if err != nil {
 		return &pb.OperationResponse{Success: false, Error: err.Error()}, nil

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ATLCNND/ATL-MCPanel/internal/common/instancekind"
 	pb "github.com/ATLCNND/ATL-MCPanel/internal/proto/mcpanel"
 )
 
@@ -40,7 +41,10 @@ func buildCreateInstanceRequest(req createInstanceReq, coreType string, containe
 		CpuQuota:     req.CPUQuota,
 		BackupDir:    req.BackupDir,
 		MemLimit:     req.MemLimit,
-		Container:    resolveContainer(req.Container, containerDefault),
+		// Docker 类型**必须**容器化：镜像本身就是隔离前提，不能让请求体关掉它。
+		Container: resolveContainer(req.Container, containerDefault) || instancekind.Normalize(req.Template).IsContainerBacked(),
+		Template:  string(instancekind.Normalize(req.Template)),
+		Spec:      req.Spec,
 	}
 }
 
@@ -107,6 +111,14 @@ type createInstanceReq struct {
 	MemLimit     string `json:"mem_limit"`     // cgroup 内存上限（如 "4G"；空 = 不限制）
 	DiskLimitMB  int64  `json:"disk_limit_mb"` // 实例目录软配额（MB，0 = 不限制）
 	DiskAutostop bool   `json:"disk_autostop"` // 超限时是否自动停止实例
+	// Template 实例类型：minecraft / docker / console（空 = minecraft）。
+	//
+	// 这是"这实例是什么"的唯一依据，能力（有没有控制台之外的页签、能不能 RCON）
+	// 全部由它推出，见 internal/common/instancekind。前端**不许**再按类型写
+	// 散落的 if（底账 F9 的核心要求）。
+	Template string `json:"template"`
+	// Spec 非 minecraft 类型的启动规格（JSON：镜像/命令/卷/端口/环境变量）。
+	Spec string `json:"spec"`
 	// 创建时按线路申请的穿透端口数：[{frps_id, count}]
 	//
 	// 放在创建时而不是之后补：多端口的需求来自模组/插件（BlueMap、Geyser 等），
@@ -195,6 +207,56 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		coreType = "custom"
 	}
 
+	// ---- 实例类型与规格（能力化重构）----
+	//
+	// 校验放在**建任何东西之前**：镜像名、端口、卷路径最终都会进 docker 命令行，
+	// 一个不合法的规格没有理由先把实例目录和端口占下来再说。
+	kind := instancekind.Normalize(req.Template)
+	spec, err := instancekind.DecodeSpec(req.Spec)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// Minecraft 类型的实例没有这些概念；非 Minecraft 类型也不需要 jar / Java。
+	if kind == instancekind.KindMinecraft {
+		// MC 实例不存在"规格"：前端若带着残留字段过来（改类型时会残留），
+		// 直接忽略而不是报错 —— 那不是用户填错了什么，只是界面没清干净。
+		spec = instancekind.Spec{}
+	} else {
+		coreType = "custom" // 非 MC 类型没有"服务端核心"这回事
+		req.JarURL = ""
+		req.JavaVersion = ""
+	}
+	// 主端口（req.Port）对 Docker 类型就是"第一段映射的宿主端口"：
+	// 隧道、监控、端口冲突检查全都沿用它，因此这里把它写回规格，
+	// 而不是让规格里再出现一个可能与它不一致的数字。
+	if kind.IsContainerBacked() && len(spec.Ports) == 0 {
+		// 一条都没有的话，实例起来了也没有可连的端口（隧道无从下手），
+		// 与其让人事后发现"连不上"，不如在创建时就说清楚。
+		writeErr(w, http.StatusBadRequest,
+			"请至少填写一条端口映射：容器内端口（如 80）会映射到面板分配的宿主端口")
+		return
+	}
+	if kind.IsContainerBacked() && len(spec.Ports) > 0 {
+		spec.Ports[0].Host = int(req.Port)
+		for i, p := range spec.Ports[1:] {
+			if p.Host == int(req.Port) {
+				writeErr(w, http.StatusBadRequest,
+					fmt.Sprintf("第 %d 条端口映射的宿主端口 %d 与实例主端口重复", i+2, p.Host))
+				return
+			}
+		}
+	}
+	if err := spec.Validate(kind); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	specJSON, err := spec.Encode()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	// 端口配额**必须在建实例之前**校验。
 	//
 	// 曾经把它放在建完之后（想着"失败了也别把实例回滚"），结果申请 3 个端口
@@ -229,12 +291,18 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if kind.IsContainerBacked() && s.nodeContainerDefault(req.NodeID) == false {
+		// 面板这边先挡一道：Docker 类型必须有容器运行时，否则建出来也起不来。
+		writeErr(w, http.StatusBadRequest,
+			"该节点没有可用的容器运行时（docker），请换一台节点或先安装 docker")
+		return
+	}
 	// 写 instances 表
 	if _, err := s.db.Exec(
-		`INSERT INTO instances (instance_id, node_id, name, mc_type, core_type, java_version, port, max_mem, start_command, cpu_quota, mem_limit, disk_limit_mb, disk_autostop, created_by, status)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped')`,
+		`INSERT INTO instances (instance_id, node_id, name, mc_type, core_type, java_version, port, max_mem, start_command, cpu_quota, mem_limit, disk_limit_mb, disk_autostop, created_by, status, template, spec)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?, ?)`,
 		req.InstanceID, req.NodeID, req.Name, coreType, coreType, req.JavaVersion, req.Port, req.MaxMem, req.StartCommand, req.CPUQuota, req.MemLimit,
-		req.DiskLimitMB, boolInt(req.DiskAutostop), currentUserID(r),
+		req.DiskLimitMB, boolInt(req.DiskAutostop), currentUserID(r), string(kind), specJSON,
 	); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -439,6 +507,20 @@ type instanceView struct {
 	MemLimit     string `json:"mem_limit"`     // cgroup 内存上限（空 = 不限制）
 	DiskLimitMB  int64  `json:"disk_limit_mb"` // 磁盘软配额（MB，0 = 不限制）
 	DiskAutostop bool   `json:"disk_autostop"` // 超限自动停机
+	// Template 实例类型（minecraft / docker / console）。
+	Template string `json:"template"`
+	// Capabilities 该类型支持的能力清单（见 instancekind.Capability）。
+	//
+	// 前端**只**按这份清单决定显示哪些页签与操作，不再按 template 写 if：
+	// 类型会越来越多，而"要不要显示 RCON"是能力问题、不是类型问题。
+	Capabilities []string `json:"capabilities"`
+
+	// Spec 非 minecraft 类型的启动规格（JSON 原文）。
+	//
+	// 前端只**只读展示**它：改镜像/端口/卷等于换一台实例，那属于重建，
+	// 不是"设置里改个字段"（容器已经按旧规格跑起来了，改元数据只会让
+	// 面板说的和容器实际的不是一回事）。
+	Spec string `json:"spec,omitempty"`
 
 	// 扫描阶段的中间值：**先读进内存、关掉 rows 之后**再算派生字段。
 	// 不能让"算派生字段"发生在遍历结果集期间 —— 那会占着连接再要连接，
@@ -471,7 +553,11 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 	//   节点用户 → 上述**并集**"自己在管节点上的全部实例"
 	//                （否则在他管的节点上、但归属别人的实例会看不到，
 	//                 而他恰恰要对那台机器负责）
-	const cols = `i.id, i.instance_id, i.node_id, i.name, i.core_type, i.port, i.max_mem, i.status,
+	// 列顺序必须与下面 rows.Scan 的参数顺序**逐字对应**（这次就踩过：把 template/spec
+	// 插在 status 后面而 Scan 里插在 status 前面，结果是 status 扫进 Template、
+	// template 扫进 Spec、spec 扫进 Status —— 实例全部显示成 minecraft，
+	// 而 status 又恰好被 reconcileInstanceStatus 覆盖回去，所以几乎看不出来）。
+	const cols = `i.id, i.instance_id, i.node_id, i.name, i.core_type, i.port, i.max_mem, i.template, i.spec, i.status,
 	              i.cpu_quota, i.mem_limit, i.disk_limit_mb, i.disk_autostop,
 	              i.expires_at, i.expiry_notice_days, i.expiry_autostop`
 
@@ -508,7 +594,7 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 		v := &instanceView{}
 		var diskAutostop int
 		var expires sql.NullTime
-		if err := rows.Scan(&v.ID, &v.InstanceID, &v.NodeID, &v.Name, &v.CoreType, &v.Port, &v.MaxMem,
+		if err := rows.Scan(&v.ID, &v.InstanceID, &v.NodeID, &v.Name, &v.CoreType, &v.Port, &v.MaxMem, &v.Template, &v.Spec,
 			&v.Status, &v.CPUQuota, &v.MemLimit, &v.DiskLimitMB, &diskAutostop,
 			&expires, &v.ExpiryDays, &v.ExpiryAutostop); err != nil {
 			continue
@@ -545,6 +631,10 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 // 这个模式本身就容易把连接池锁死（见 handleListInstances 里的长注释）。
 func applyInstanceExtras(s *Server, userID int64, role string, v *instanceView, levels map[string]string) {
 	v.DiskAutostop = v.diskAutostop == 1
+	// 类型归一 + 能力清单：老记录（template 空）按 minecraft 处理。
+	kind := instancekind.Normalize(v.Template)
+	v.Template = string(kind)
+	v.Capabilities = kind.CapabilityStrings()
 	if role == RoleAdmin {
 		// admin 对一切实例都是 owner（与 instanceLevel 的短路一致）
 		v.Level = LevelOwner

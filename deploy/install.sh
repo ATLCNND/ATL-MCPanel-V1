@@ -60,6 +60,33 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# 面板运行身份：**独立系统用户**，不是 root（2026-11-09，第 6 步四项门槛之 D）
+# ---------------------------------------------------------------------------
+#
+# 面板不需要 root：它监听的端口安装时就被限制在 1024 以上（见下面 --port 的校验），
+# 对节点的操作全部走 SSH 与 gRPC，不碰实例进程、不改宿主设置。
+#
+# 代价只有一处：**「本机一键部署节点」**要写 /etc/systemd/system 并调 systemctl，
+# 那需要 root。加固后它会在界面上报权限错误 —— 这是有意的取舍，不是 bug：
+# 单机想要这个功能，就用 `PANEL_USER=root` 显式退回，或者在同一台机器上
+# 跑节点包的 `install.sh daemon`（推荐，面板只做远程登记）。
+#
+# 逐项加固矩阵见 deploy/systemd/HARDENING.md。
+PANEL_USER="${PANEL_USER:-atlpanel}"
+
+if [ "$MODE" = "panel" ]; then
+  case "$PANEL_USER" in
+    ""|*[!a-zA-Z0-9_-]*)
+      echo "错误：PANEL_USER 只能包含字母、数字、下划线与连字符，收到 '$PANEL_USER'" >&2
+      exit 1 ;;
+    root|0)
+      echo "    ⚠️ PANEL_USER=root：面板将以 root 运行"
+      echo "       （systemd 沙箱加固会因此全部失效；只有「本机一键部署节点」需要它）"
+      PANEL_USER="root" ;;
+  esac
+fi
+
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BIN_NAME="atl-$MODE"
 UNIT="atlmcpanel-$MODE"
@@ -280,6 +307,37 @@ chmod 711 "$INSTALL_DIR/instances" 2>/dev/null || true
 chmod 700 "$INSTALL_DIR/state" "$INSTALL_DIR/frp" 2>/dev/null || true
 # 共享资源（jar）：只读放开给实例用户
 chmod 755 "$INSTALL_DIR/resources" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# 1b. 面板运行用户（仅面板模式）
+# ---------------------------------------------------------------------------
+#
+# 为什么用 `--system`（无 home、不可登录）：它只需要读写自己那几个目录，
+# 不该有人能 `su - atlpanel` 登进去，也不该在 /home 下留东西。
+# 已存在就复用 —— 重复安装绝不改它的 uid/gid（改了会把 data/ 的所有权搞乱）。
+if [ "$MODE" = "panel" ] && [ "$PANEL_USER" != "root" ]; then
+  if id -u "$PANEL_USER" >/dev/null 2>&1; then
+    echo "==> 运行用户 $PANEL_USER 已存在，复用它"
+  elif command -v useradd >/dev/null 2>&1; then
+    NOLOGIN=""
+    for p in /usr/sbin/nologin /sbin/nologin /bin/false; do
+      [ -x "$p" ] && { NOLOGIN="$p"; break; }
+    done
+    # Debian/Ubuntu 认 --system/--no-create-home，老一点的实现只认 -r/-M；
+    # 两种都试一遍，避免在奇怪的发型版上直接失败。
+    if ! useradd --system --no-create-home --home-dir "$INSTALL_DIR" \
+           --shell "${NOLOGIN:-/bin/false}" "$PANEL_USER" 2>/dev/null; then
+      useradd -r -M -d "$INSTALL_DIR" -s "${NOLOGIN:-/bin/false}" "$PANEL_USER" || {
+        echo "    ⚠️ 创建用户 $PANEL_USER 失败，面板将退回以 root 运行" >&2
+        PANEL_USER="root"
+      }
+    fi
+    [ "$PANEL_USER" != "root" ] && echo "==> 已创建系统用户 $PANEL_USER（无 home、不可登录）"
+  else
+    echo "    ⚠️ 找不到 useradd，无法创建 $PANEL_USER，面板将退回以 root 运行" >&2
+    PANEL_USER="root"
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # 2. 二进制
@@ -730,8 +788,30 @@ else
   UNIT_DST="/etc/systemd/system/${UNIT}.service"
   if [ -f "$UNIT_SRC" ]; then
     echo "==> 安装 systemd 单元"
-    sed "s|__INSTALL_DIR__|$INSTALL_DIR|g" "$UNIT_SRC" > "$UNIT_DST"
+    sed -e "s|__INSTALL_DIR__|$INSTALL_DIR|g" -e "s|__PANEL_USER__|$PANEL_USER|g" \
+      "$UNIT_SRC" > "$UNIT_DST"
     chmod 644 "$UNIT_DST"
+
+    # 面板用户的文件所有权：必须在**所有文件都写完**之后做
+    # （证书、配置、数据库都在前面几步生成；早做会被后来的 root 写入覆盖掉）。
+    #
+    #   data/  —— 整个目录交给面板用户（SQLite 要建库、要写 -wal/-shm）
+    #   certs/ —— 同上：「面板设置 → 域名与证书」会往这里写证书
+    #   config.yaml —— 面板只读，属主仍是 root、给面板用户组读（0600→0640）
+    #
+    # 不做 chown -R 到整个安装目录：bin/ 与 web/ 只读即可，
+    # 让面板用户拥有二进制等于允许它改写自己的程序。
+    if [ "$MODE" = "panel" ] && [ "$PANEL_USER" != "root" ]; then
+      chown -R "$PANEL_USER:$PANEL_USER" "$INSTALL_DIR/data" 2>/dev/null || true
+      chown -R "$PANEL_USER:$PANEL_USER" "$INSTALL_DIR/certs" 2>/dev/null || true
+      chown -R "$PANEL_USER:$PANEL_USER" "$INSTALL_DIR/logs" 2>/dev/null || true
+      if [ -f "$CFG" ]; then
+        chown root:"$PANEL_USER" "$CFG" 2>/dev/null || true
+        chmod 640 "$CFG" 2>/dev/null || true
+      fi
+      echo "    已把 data/ certs/ logs/ 交给 $PANEL_USER，config.yaml 只给它读"
+    fi
+
     systemctl daemon-reload
     systemctl enable "$UNIT" >/dev/null 2>&1 || true
     systemctl restart "$UNIT"
@@ -827,13 +907,27 @@ if [ "$MODE" = "panel" ]; then
   echo
   echo "==> 创建首个管理员账号（面板不提供免登录注册入口，只能在本机创建）"
   if [ -x "$INSTALL_DIR/bin/atl-panel" ]; then
+    # 以**面板用户**身份创建：账号会写进 data/mcpanel.db。
+    # 用 root 建的话这个库文件就归 root，面板（低权用户）启动后写不进去，
+    # 症状是登录成功但所有写操作 500 —— 这是切换运行用户时最容易漏的一步。
+    RUNAS=""
+    if [ "$PANEL_USER" != "root" ]; then
+      if command -v runuser >/dev/null 2>&1; then
+        RUNAS="runuser -u $PANEL_USER --"
+      elif command -v setpriv >/dev/null 2>&1; then
+        RUNAS="setpriv --reuid $PANEL_USER --regid $PANEL_USER --clear-groups"
+      else
+        echo "    ⚠️ 没有 runuser/setpriv，只能以 root 创建管理员；事后请执行：" >&2
+        echo "       chown -R $PANEL_USER:$PANEL_USER $INSTALL_DIR/data" >&2
+      fi
+    fi
     ADMIN_OUT=""
-    if ADMIN_OUT=$(cd "$INSTALL_DIR" && ./bin/atl-panel -config "$CFG" user create \
+    if ADMIN_OUT=$(cd "$INSTALL_DIR" && $RUNAS ./bin/atl-panel -config "$CFG" user create \
                      -username admin -role admin -if-empty 2>&1); then
       echo "$ADMIN_OUT" | sed 's/^/    /'
     else
       echo "    ⚠️ 自动创建失败（面板仍可正常使用）。请手动执行：" >&2
-      echo "       cd $INSTALL_DIR && ./bin/atl-panel -config $CFG user create -username admin" >&2
+      echo "       cd $INSTALL_DIR && sudo $RUNAS ./bin/atl-panel -config $CFG user create -username admin" >&2
       echo "$ADMIN_OUT" | sed 's/^/       /' >&2
     fi
   else
@@ -844,6 +938,7 @@ if [ "$MODE" = "panel" ]; then
   echo " 面板地址:   http://${IP}:${PORT}"
   echo " 配置文件:   $CFG"
   echo " 数据目录:   $INSTALL_DIR/data（含数据库、PKI、备份）"
+  echo " 运行用户:   $PANEL_USER$([ "$PANEL_USER" = "root" ] && echo '（⚠️ root：无沙箱加固，仅「本机一键部署节点」需要）')"
   echo
   echo " 建议下一步:"
   echo "   1) 立刻用上面的账号登录，并到「账号」页改掉初始口令"
@@ -851,7 +946,7 @@ if [ "$MODE" = "panel" ]; then
   echo "   3) 为节点签发证书并部署 Daemon（见 docs/MTLS.md、docs/DEPLOYMENT.md）"
   echo "      节点机上跑节点包的 deploy/install.sh daemon"
   echo
-  echo " 忘记口令:   cd $INSTALL_DIR && ./bin/atl-panel -config $CFG user passwd -username admin"
+  echo " 忘记口令:   cd $INSTALL_DIR && sudo $RUNAS ./bin/atl-panel -config $CFG user passwd -username admin"
 else
   echo " 节点 ID:    见 $CFG 的 daemon.node_id"
   echo " 配置面板地址: 修改 daemon.panel_address 为面板可达地址"

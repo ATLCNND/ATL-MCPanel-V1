@@ -17,9 +17,9 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/config"
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/grpclimits"
@@ -291,6 +291,70 @@ func (d *Daemon) StopFrpAll() int {
 	return d.frp.StopAll()
 }
 
+// ensureNodeCerts 在「证书不在本地」时尝试向面板领回来。
+//
+// 背景见 enroll_pickup.go：`enroll --init`（③ 节点发起）只把 CSR 交给了管理员，
+// 面板签好的证书随着 HTTP 响应回到了**管理员的浏览器**，节点自己没拿到。
+// 于是节点的第一次启动必然缺 cert/key/ca —— 这里补上那一步。
+//
+// 只在「本机有 join.key」时才动手：那是 enroll --init 留下的接入密钥，
+// 也是身份本身（面板按公钥指纹认人）。没有它说明这台机器不是这么装的，
+// 直接放行，让原有的「读取证书失败」报错照旧出现。
+func (d *Daemon) ensureNodeCerts() error {
+	if !d.cfg.TLS {
+		return nil
+	}
+	exists := func(p string) bool {
+		if p == "" {
+			return false
+		}
+		_, err := os.Stat(p)
+		return err == nil
+	}
+	if exists(d.cfg.CertFile) && exists(d.cfg.KeyFile) && exists(d.cfg.CAFile) {
+		return nil
+	}
+	certDir := "certs"
+	if d.cfg.CertFile != "" {
+		certDir = filepath.Dir(d.cfg.CertFile)
+	}
+	if !exists(filepath.Join(certDir, "join.key")) {
+		return nil
+	}
+	if strings.TrimSpace(d.cfg.PanelURL) == "" {
+		return fmt.Errorf("节点还没有证书（%s 不存在），而本机存有「节点发起」的接入密钥："+
+			"请在 config.yaml 里配置 daemon.panel_url（面板 HTTP 地址，例如 http://10.0.0.5:25080；"+
+			"面板启用安全入口时带上 /<入口>），重启后会自动把面板已签发的证书领回来",
+			d.cfg.CertFile)
+	}
+
+	// 管理员可能还没把 enroll --init 那一行贴进面板 —— 那种情况下面板会答
+	// 「找不到该节点记录」，等一会儿再试即可。给 3 分钟窗口：
+	// 贴一行字通常几秒钟的事，而这个窗口之外还等下去，不如直接报错让人看见。
+	deadline := time.Now().Add(3 * time.Minute)
+	for attempt := 1; ; attempt++ {
+		certPath, caPath, err := PickupCert(EnrollOptions{
+			PanelBase: d.cfg.PanelURL,
+			CertDir:   certDir,
+			StateDir:  d.cfg.StateDir,
+		})
+		if err == nil {
+			d.log.Info("已从面板领回节点证书", "cert", certPath, "ca", caPath, "attempt", attempt)
+			return nil
+		}
+		if errors.Is(err, ErrJoinNotImported) {
+			d.log.Warn("面板还没有导入这台节点的接入请求，稍后重试",
+				"panel", d.cfg.PanelURL, "attempt", attempt)
+		} else {
+			d.log.Warn("领取节点证书失败，稍后重试", "err", err.Error(), "attempt", attempt)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("领取节点证书失败（面板 %s）: %w", d.cfg.PanelURL, err)
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
 // transportCredentials 返回连接 Panel 的传输凭据。
 // daemon.tls 为 true 时使用 mTLS（需 cert_file / key_file / ca_file），否则使用明文。
 func (d *Daemon) transportCredentials() (credentials.TransportCredentials, error) {
@@ -325,6 +389,11 @@ func (d *Daemon) transportCredentials() (credentials.TransportCredentials, error
 
 // Run 启动 Daemon：起 gRPC server + 连 Panel 注册 + 心跳。
 func (d *Daemon) Run() error {
+	// 0. 缺证书时先尝试自己领回来（「③ 节点发起」的节点第一次启动就是这种状态）
+	if err := d.ensureNodeCerts(); err != nil {
+		return err
+	}
+
 	// 0. 初始化 cgroup 资源限制（失败只降级，不影响实例运行）
 	if d.cfg.CgroupEnabled != nil && !*d.cfg.CgroupEnabled {
 		d.log.Warn("cgroup 资源限制已被配置显式关闭（daemon.cgroup_enabled=false）")
@@ -612,7 +681,17 @@ func (d *Daemon) registerWithRetry(client pb.DaemonServiceClient, req *pb.Regist
 
 		if err == nil {
 			if !resp.Accepted {
-				// 面板明确拒绝（例如未授权/版本不兼容）—— 重试没有意义，如实上报
+				// 面板明确拒绝（例如未授权/版本不兼容）—— 重试没有意义，如实上报。
+				//
+				// 「节点身份校验失败」几乎总是同一件事：证书 CN 与本机 node_id 不一致。
+				// 面板按 pki.CertNodeName(node_id) 比对 CN，而 CN 是签发时按接入请求里
+				// 的 node_name 定的（enroll --name / 面板上填的节点名）。两边都不报名字，
+				// 只报一句"校验失败"，排查起来毫无线索，所以这里把话说明白。
+				if strings.Contains(resp.Message, "身份校验失败") {
+					return nil, fmt.Errorf("Panel 拒绝注册: %s（证书里的节点名与本机 daemon.node_id=%q 不一致："+
+						"面板按证书 CN 校验身份，请用与 node_id 相同的 --name 重新走一次凭证交换）",
+						resp.Message, d.cfg.NodeID)
+				}
 				return nil, fmt.Errorf("Panel 拒绝注册: %s", resp.Message)
 			}
 			if attempt > 1 {

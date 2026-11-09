@@ -14,10 +14,16 @@ import (
 //   - 每个迁移在独立事务中执行，失败则整体回滚并终止启动
 //   - 语句需保持幂等（CREATE ... IF NOT EXISTS / CREATE INDEX IF NOT EXISTS），
 //     以便兼容早期由手工建表产生的数据库
+//
+// Apply 是给"纯 SQL 表达不了"的迁移用的逃生口（在 Statements 之后、同一个事务里执行）：
+// SQLite 没有 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`，而加列这件事恰恰**必须**
+// 幂等 —— 一个曾经跑过 0.12.x（已撤回）的面板库、或者由人手改过的库，可能已经有
+// 这一列了。那种库升级上来时不能因为"列已存在"就整个面板起不来。
 type migration struct {
 	Version    int
 	Name       string
 	Statements []string
+	Apply      func(*sql.Tx) error
 }
 
 // migrations 全部 schema 变更（按 Version 升序）。
@@ -829,6 +835,88 @@ var migrations = []migration{
 			`ALTER TABLE logshare_uploads ADD COLUMN help_text TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		// 37：实例类型与启动规格（底账 F9，能力化重构）。
+		//
+		// 用 Apply 而不是纯 SQL：`ADD COLUMN` 在 SQLite 里没有 IF NOT EXISTS，
+		// 而这两列**可能已经存在** —— 0.12.x（已撤回）的 34 号迁移就叫
+		// instance_template，它也加过 instances.template（取值同样是
+		// minecraft/docker/console）。跑过那个内测分支的库升级上来时，
+		// 一句裸 ADD COLUMN 就会让面板从此起不来（实测：duplicate column name）。
+		Version: 37,
+		Name:    "instance_kind_and_spec",
+		Apply:   func(tx *sql.Tx) error { return addInstanceKindColumns(tx) },
+	},
+}
+
+// addInstanceKindColumns 给 instances 补上类型与规格两列（已存在则跳过）。
+//
+// 语义约定：
+//   - template 空串 = minecraft。0.11.x 及更早建出来的实例全是这一类，
+//     升级后行为必须与升级前完全一致，所以老数据只可能是 minecraft。
+//   - 认不出的取值（可能来自已撤回的 0.12.x 内测分支）一律归为 minecraft，
+//     与 instancekind.Normalize 的兜底保持一致：宁可当它是 Minecraft，
+//     也不要留一个面板自己都不认识的值在库里。
+//   - spec 只在非 minecraft 类型上有意义，老实例留空。
+func addInstanceKindColumns(tx *sql.Tx) error {
+	have, err := tableColumns(tx, "instances")
+	if err != nil {
+		return err
+	}
+	if !have["template"] {
+		if _, err := tx.Exec(`ALTER TABLE instances ADD COLUMN template TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if !have["spec"] {
+		if _, err := tx.Exec(`ALTER TABLE instances ADD COLUMN spec TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE instances SET template = 'minecraft' WHERE template = ''`); err != nil {
+		return err
+	}
+	_, err = tx.Exec(`UPDATE instances SET template = 'minecraft'
+		WHERE template NOT IN ('minecraft', 'docker', 'console')`)
+	return err
+}
+
+// tableColumns 读一张表现有的列名（PRAGMA table_info 在事务里同样可用）。
+func tableColumns(tx *sql.Tx, table string) (map[string]bool, error) {
+	rows, err := tx.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return nil, err
+	}
+	return scanColumnNames(rows)
+}
+
+// tableColumnsDB 同 tableColumns，但用连接而不是事务（测试里用）。
+func tableColumnsDB(d *sql.DB, table string) (map[string]bool, error) {
+	rows, err := d.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return nil, err
+	}
+	return scanColumnNames(rows)
+}
+
+func scanColumnNames(rows *sql.Rows) (map[string]bool, error) {
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			ctype   string
+			notnull int
+			dflt    sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		out[name] = true
+	}
+	return out, rows.Err()
 }
 
 // migrate 应用尚未执行的迁移。
@@ -900,6 +988,11 @@ func applyMigration(d *sql.DB, m migration) error {
 	for i, stmt := range m.Statements {
 		if _, err := tx.Exec(stmt); err != nil {
 			return fmt.Errorf("第 %d 条语句出错: %w", i+1, err)
+		}
+	}
+	if m.Apply != nil {
+		if err := m.Apply(tx); err != nil {
+			return fmt.Errorf("迁移 %d 的自定义步骤出错: %w", m.Version, err)
 		}
 	}
 	if _, err := tx.Exec(`INSERT INTO schema_migrations (version, name) VALUES (?, ?)`, m.Version, m.Name); err != nil {

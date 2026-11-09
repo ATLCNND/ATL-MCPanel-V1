@@ -76,14 +76,25 @@ func (s *Server) handleLocalNodeState(w http.ResponseWriter, r *http.Request) {
 
 	// 能不能直接在本机装：安装目录可写 + 有 systemd（面板本身就跑在 systemd 下，
 	// 这条基本恒真；但容器化部署的面板里不一定，所以还是探一下）
-	if err := os.MkdirAll(s.remoteInstallDir(), 0o755); err == nil {
+	//
+	// 还有一条硬前提：**必须是 root**。一键部署要写 /etc/systemd/system/<svc>.service
+	// 再 `systemctl enable --now`。0.11.3 起面板默认以独立低权用户运行（systemd 沙箱
+	// 加固，见 deploy/systemd/HARDENING.md），所以这条在默认安装下就是假的 ——
+	// 这里必须如实说清楚"为什么不行、怎么办"，否则用户只会看到一个莫名其妙的
+	// permission denied（那是运维最难查的一类报错）。
+	if os.Geteuid() != 0 {
+		st.CanAutoDeploy = false
+		st.Message = "面板当前以非 root 用户运行（systemd 加固模式），无法写 /etc/systemd/system，" +
+			"因此不能在本机一键部署节点。请在那台机器上用节点包执行 deploy/install.sh daemon，" +
+			"再回到这里用 SSH / 凭证交换登记；若就是要一键部署，安装面板时用 PANEL_USER=root 退回。"
+	} else if err := os.MkdirAll(s.remoteInstallDir(), 0o755); err == nil {
 		if f, err := os.CreateTemp(s.remoteInstallDir(), ".probe-*"); err == nil {
 			_ = f.Close()
 			_ = os.Remove(f.Name())
 			st.CanAutoDeploy = dirHasSystemd()
 		}
 	}
-	if !st.CanAutoDeploy {
+	if !st.CanAutoDeploy && st.Message == "" {
 		st.Message = "本机不具备自动安装条件（需要可写的安装目录与 systemd），请手动安装节点"
 	}
 	writeJSON(w, http.StatusOK, st)
@@ -240,7 +251,10 @@ func (s *Server) handleInstallLocalNode(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if os.Geteuid() != 0 {
-		writeErr(w, http.StatusForbidden, "本机一键部署需要面板以 root 运行（要写 /etc/systemd/system）")
+		writeErr(w, http.StatusForbidden,
+			"本机一键部署需要面板以 root 运行（要写 /etc/systemd/system 并调 systemctl）。"+
+				"面板当前是非 root 的加固模式：请在那台机器上用节点包执行 deploy/install.sh daemon 后再登记，"+
+				"或用 PANEL_USER=root 重新安装面板")
 		return
 	}
 	dir, err := localPanelDir()

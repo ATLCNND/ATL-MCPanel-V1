@@ -1,8 +1,8 @@
 package httpapi
 
 import (
-	crand "crypto/rand"
 	"crypto/ecdsa"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"database/sql"
@@ -15,7 +15,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
 )
 
 // 凭证交换的第一个端点（M3）。
@@ -73,7 +72,7 @@ func (s *Server) handleIssueJoinToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Mode     string `json:"mode"`     // panel（默认）/ node
+		Mode     string `json:"mode"` // panel（默认）/ node
 		NodeName string `json:"node_name"`
 		NodeUID  string `json:"node_uid"`
 	}
@@ -109,11 +108,11 @@ func (s *Server) handleIssueJoinToken(w http.ResponseWriter, r *http.Request) {
 	// token 文本：把 jti 包一层前缀，便于在日志里一眼认出来（不是秘密本身）
 	token := "atl-join-v1." + jti
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"token":      token,
-		"expires_at": exp.UTC().Format(time.RFC3339),
+		"token":       token,
+		"expires_at":  exp.UTC().Format(time.RFC3339),
 		"ttl_seconds": int(joinTokenTTL.Seconds()),
-		"panel_grpc": s.grpcPublicAddress(),
-		"mode":       mode,
+		"panel_grpc":  s.grpcPublicAddress(),
+		"mode":        mode,
 	})
 }
 
@@ -204,7 +203,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.upsertEnrolledNode(name, req.NodeUID, ip)
+	s.upsertEnrolledNode(name, req.NodeUID, ip, "panel")
 	s.auditAs(0, r, "enroll_ok", req.NodeUID, "name="+name+" from="+ip)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -218,12 +217,19 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 }
 
 // upsertEnrolledNode 按 node_uid 建立/更新节点行（凭证交换接入的节点没有 SSH 凭据）。
-func (s *Server) upsertEnrolledNode(name, nodeUID, ip string) {
+//
+// mode 记录这条节点是怎么进来的：'panel' = ② 面板签发 token、节点执行 enroll --panel；
+// 'node' = ③ 节点 enroll --init、管理员把接入请求贴回面板。界面用它决定给哪条提示
+// （此前恒写 'node'，于是 ② 接入的节点也被标成"节点发起"——A-46 真机验收时发现）。
+func (s *Server) upsertEnrolledNode(name, nodeUID, ip, mode string) {
+	if mode != "panel" && mode != "node" {
+		mode = "node"
+	}
 	var id int64
 	err := s.db.QueryRow(`SELECT id FROM nodes WHERE node_uid = ?`, nodeUID).Scan(&id)
 	if err == nil {
-		_, _ = s.db.Exec(`UPDATE nodes SET name = ?, enroll_mode = COALESCE(NULLIF(enroll_mode,''), 'node')
-			WHERE id = ?`, name, id)
+		_, _ = s.db.Exec(`UPDATE nodes SET name = ?, enroll_mode = ?
+			WHERE id = ?`, name, mode, id)
 		return
 	}
 	if err != sql.ErrNoRows {
@@ -241,8 +247,8 @@ func (s *Server) upsertEnrolledNode(name, nodeUID, ip string) {
 	}
 	_, _ = s.db.Exec(`INSERT INTO nodes (name, ip, public_ip, ssh_user, ssh_auth, ssh_auth_type, ssh_port,
 		grpc_port, status, node_uid, enroll_mode)
-		VALUES (?, ?, '', '', '', '', 22, ?, 'offline', ?, 'node')`,
-		n, ip, s.daemonPortFromListen(), nodeUID)
+		VALUES (?, ?, '', '', '', '', 22, ?, 'offline', ?, ?)`,
+		n, ip, s.daemonPortFromListen(), nodeUID, mode)
 }
 
 // sha256Hex 证书/CSR 指纹（十六进制小写）。
@@ -258,16 +264,17 @@ func randomTokenString() (string, error) {
 	}
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
+
 // handleEnrollImport POST /api/enroll/import（管理员）——「③ 节点发起」的导入端。
 //
 // 请求体：{ "request": "atl-join-v1.<payload>.<sig>" }
 //
 // 校验链（任何一步不过就拒，且不透露具体哪一步 —— 这个端点是管理员接口，但没必要帮人试探）：
-//   1. 格式与版本；
-//   2. **过期时间**（默认 30 分钟，粘贴晚了就失效）；
-//   3. **签名**：用 payload 里 CSR 的公钥验证 —— 验签通过即证明发起方持有该私钥。
-//      这是这套流程的安全根基：请求字符串被旁观者抄走也用不了。
-//   4. node_uid 非空、CSR 可解析。
+//  1. 格式与版本；
+//  2. **过期时间**（默认 30 分钟，粘贴晚了就失效）；
+//  3. **签名**：用 payload 里 CSR 的公钥验证 —— 验签通过即证明发起方持有该私钥。
+//     这是这套流程的安全根基：请求字符串被旁观者抄走也用不了。
+//  4. node_uid 非空、CSR 可解析。
 //
 // 通过后：签 CSR、记录 pubkey 指纹（后续续期必须沿用）、按 node_uid 建/更新节点行。
 func (s *Server) handleEnrollImport(w http.ResponseWriter, r *http.Request) {
@@ -304,7 +311,7 @@ func (s *Server) handleEnrollImport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.upsertEnrolledNode(req.NodeName, req.NodeUID, "")
+	s.upsertEnrolledNode(req.NodeName, req.NodeUID, "", "node")
 	s.audit(r, "enroll_import", req.NodeUID, "name="+req.NodeName)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"cert":        string(certPEM),

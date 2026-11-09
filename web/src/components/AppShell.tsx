@@ -6,7 +6,7 @@ import ThemeToggle from './ThemeToggle'
 import './AppShell.css'
 
 /** 全局导航项 */
-export type NavKey = 'dashboard' | 'instances' | 'monitor' | 'nodes' | 'tunnels' | 'audit' | 'users' | 'avatars' | 'providers' | 'account' | 'help' | 'about'
+export type NavKey = 'dashboard' | 'instances' | 'monitor' | 'nodes' | 'tunnels' | 'settings' | 'audit' | 'users' | 'avatars' | 'providers' | 'account' | 'help' | 'about'
 
 /**
  * 全局导航项的**唯一定义处**。
@@ -19,21 +19,28 @@ export type NavKey = 'dashboard' | 'instances' | 'monitor' | 'nodes' | 'tunnels'
  * 实例页那份会在此基础上插一个「告警」（那一项在实例页走弹窗而不是页面），
  * 见 InstanceDetail 的 GLOBAL_NAV。
  */
-export const NAV_ITEMS: { key: NavKey; label: string; icon: string; adminOnly?: boolean; providerAdmin?: boolean }[] = [
+export const NAV_ITEMS: {
+  key: NavKey
+  label: string
+  icon: string
+  adminOnly?: boolean
+  providerAdmin?: boolean
+  /** 管理员在「面板设置」里看到同一份内容，侧边栏就不再单列（避免两个入口两套状态） */
+  hiddenForAdmin?: boolean
+}[] = [
   { key: 'dashboard', label: '总览', icon: '▦' },
   { key: 'instances', label: '实例管理', icon: '▤' },
   { key: 'monitor', label: '节点监控', icon: '◔' },
   { key: 'nodes', label: '节点管理', icon: '◇', adminOnly: true },
   { key: 'tunnels', label: '穿透管理', icon: '⇄', adminOnly: true },
-  // 用户管理 / 头像审核 / 审计日志：原来挤在「账户设置」弹窗里，
-  // 而那是个"改自己密码"的地方 —— 管理功能放在那里既不好找，弹窗也撑不住表格。
-  // 现已统一提到总导航。
-  { key: 'users', label: '用户管理', icon: '☷', adminOnly: true },
-  { key: 'avatars', label: '头像审核', icon: '◍', adminOnly: true },
+  // 面板设置：用户管理 / 头像审核 / 分析平台 / 域名与证书 四页合一（见 SettingsPage）。
+  // 这四件事都是"面板自己怎么运作"，原来分散在总导航与「关于」页里 ——
+  // 用户管理、头像审核曾各自占一个导航项，证书则藏在「关于」页最下面。
+  { key: 'settings', label: '面板设置', icon: '⚙', adminOnly: true },
   { key: 'audit', label: '审计日志', icon: '≡', adminOnly: true },
-  // 分析平台：配置日志分析的提供方（管理员与节点用户可配自己的）。
-  // 放在总导航而不是实例页里 —— 它是"我信任哪些平台"的全局设置，与某个实例无关。
-  { key: 'providers', label: '分析平台', icon: '⌘', providerAdmin: true },
+  // 分析平台：管理员的那份在「面板设置」里，这里只留给节点用户/节点管理员
+  // （他们有自己的额度与隐私边界要配，但看不到用户管理那些东西）。
+  { key: 'providers', label: '分析平台', icon: '⌘', providerAdmin: true, hiddenForAdmin: true },
   // 账户：所有角色都有。原来是弹窗，改成页面后能看到自己的实例、端口配额、磁盘与权限清单。
   { key: 'account', label: '账户', icon: '☺' },
   // 公告与帮助：公告是管理员对全体用户说话的地方，帮助是"面板怎么用"。
@@ -103,8 +110,14 @@ export default function AppShell({
   const isAdmin = user?.role === 'admin'
   const canProviders = canManageProviders(user?.role)
 
-  // 两类可见性：adminOnly（总管理员）/ providerAdmin（管理员或节点用户）
-  const items = NAV_ITEMS.filter((it) => (!it.adminOnly || isAdmin) && (!it.providerAdmin || canProviders))
+  // 三类可见性：adminOnly（总管理员）/ providerAdmin（管理员或节点用户）
+  // / hiddenForAdmin（内容已并入「面板设置」，管理员不再单列）
+  const items = NAV_ITEMS.filter(
+    (it) =>
+      (!it.adminOnly || isAdmin) &&
+      (!it.providerAdmin || canProviders) &&
+      (!it.hiddenForAdmin || !isAdmin),
+  )
 
   if (bare) {
     return <div className="shell-bare">{children}</div>

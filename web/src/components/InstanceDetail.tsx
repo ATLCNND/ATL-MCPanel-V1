@@ -16,6 +16,7 @@ import {
   instanceAction, levelAtLeast, listInstances, currentUser, User, isNodeUser,
   getMetrics, listBackups, listInstancePorts, getSchedule, getInstanceRuntime,
   BackupItem, Metrics, Instance, InstanceRuntime, instanceIconUrl, renameInstance,
+  capabilitiesOf, templateOf, InstanceCapability,
 } from '../api'
 import AppShell, { NavKey, NAV_ITEMS } from './AppShell'
 import ThemeToggle from './ThemeToggle'
@@ -25,19 +26,19 @@ import './InstanceDetail.css'
 
 type Tab = 'console' | 'loganalysis' | 'players' | 'gamesettings' | 'files' | 'config' | 'backups' | 'settings' | 'stats' | 'tasks'
 
-const TABS: { key: Tab; label: string; icon: string }[] = [
-  { key: 'console', label: '控制台', icon: '▸' },
+const TABS: { key: Tab; label: string; icon: string; cap?: InstanceCapability }[] = [
+  { key: 'console', label: '控制台', icon: '▸', cap: 'console' },
   // 日志分析紧挨着控制台：它处理的就是控制台里的那些日志（崩溃、报错），
   // 排查顺序天然是"先看控制台 → 再看不懂就交给 AI 分析"
-  { key: 'loganalysis', label: '日志分析', icon: '⌬' },
-  { key: 'players', label: '玩家', icon: '◉' },
+  { key: 'loganalysis', label: '日志分析', icon: '⌬', cap: 'log_analysis' },
+  { key: 'players', label: '玩家', icon: '◉', cap: 'players' },
   // 「游戏设置」紧跟在玩家后面（用户 2026-10-05 指定位置：玩家 → 游戏设置 → 文件）：
   // 它管的是**世界本身**（世界信息 + 原版 gamerule），与"谁在玩"是同一类对象，
   // 排在文件管理之前更符合"先看内容、再碰文件"的顺路。
-  { key: 'gamesettings', label: '游戏设置', icon: '◈' },
-  { key: 'files', label: '文件', icon: '▤' },
-  { key: 'config', label: '配置', icon: '⚙' },
-  { key: 'backups', label: '备份', icon: '▣' },
+  { key: 'gamesettings', label: '游戏设置', icon: '◈', cap: 'world' },
+  { key: 'files', label: '文件', icon: '▤', cap: 'files' },
+  { key: 'config', label: '配置', icon: '⚙', cap: 'config' },
+  { key: 'backups', label: '备份', icon: '▣', cap: 'backup' },
   // 端口、核心、启动都属于实例运行环境，合并后放在第一组末尾便于集中管理。
   { key: 'settings', label: '实例设置', icon: '⚙' },
 ]
@@ -58,7 +59,14 @@ const TABS_EXTRA: { key: Tab; label: string; icon: string }[] = [
  * 加了「账户」「公告与帮助」之后没同步，导致在实例页里进不去这两个页面。
  * 唯一的不同是中间插一个「告警」：那一项在实例页走弹窗，而不是页面。
  */
-const GLOBAL_NAV: { key: NavKey | 'alerts'; label: string; icon: string; adminOnly?: boolean; providerAdmin?: boolean }[] =
+const GLOBAL_NAV: {
+  key: NavKey | 'alerts'
+  label: string
+  icon: string
+  adminOnly?: boolean
+  providerAdmin?: boolean
+  hiddenForAdmin?: boolean
+}[] =
   NAV_ITEMS.flatMap((it) =>
     it.key === 'tunnels'
       ? [it, { key: 'alerts' as const, label: '告警', icon: '◈', adminOnly: true }]
@@ -232,6 +240,17 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
   //（见 StatsTab）—— 右栏原先那套 state 与处理函数已随之删除。
 
   const [inst, setInst] = useState<Instance | null>(null)
+  // 该实例支持的能力（后端按类型算好）。
+  //
+  // 页签**只**按这份清单过滤：类型会继续增加，而"要不要显示玩家页"是能力问题。
+  // 写 `if (template === 'minecraft')` 那种分支，每加一种类型都要回来改一遍。
+  const caps = capabilitiesOf(inst)
+  const tabs = TABS.filter((t) => !t.cap || caps.has(t.cap))
+  // 能力清单是异步到的（实例信息要先拉回来）：默认页签可能恰好是这台实例
+  // 没有的那一页。落到一个不存在的页签上会是一片空白，不如退回控制台。
+  useEffect(() => {
+    if (inst && !tabs.some((t) => t.key === tab)) setTab('console')
+  }, [inst, tab, tabs])
   const [metrics, setMetrics] = useState<Metrics | null>(null)
   const [backups, setBackups] = useState<BackupItem[]>([])
   const [policyDesc, setPolicyDesc] = useState('')
@@ -274,6 +293,8 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
   const [navExpanded, setNavExpanded] = useState(false)
   const navItems = GLOBAL_NAV.filter((g) =>
     (!g.adminOnly || isAdminUser) &&
+    // 内容已并入「面板设置」的项（目前是分析平台）：管理员那侧不再单列
+    (!g.hiddenForAdmin || !isAdminUser) &&
     // 「分析平台」是管理员/节点用户的全局设置页，普通用户看不到（与后端权限一致）
     (!g.providerAdmin || isAdminUser || isNodeUser(user?.role)))
   const visibleNav = navExpanded ? navItems : navItems.filter((g) => NAV_ALWAYS.includes(g.key))
@@ -503,9 +524,19 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
           </div>
 
           <div className="side-card">
-            <div className="side-card-title"><span>实例导航</span><span className="hint2">{name}</span></div>
+            <div className="side-card-title">
+              <span>实例导航</span>
+              {/* 类型徽标只在非 Minecraft 时出现：MC 是默认形态，老用户看着
+                  页签没变才是对的；换了类型的人一眼就该看出"这台不一样"。 */}
+              {inst && templateOf(inst) !== 'minecraft' && (
+                <span className={`tmpl-badge tmpl-${templateOf(inst)}`} title="实例类型">
+                  {templateOf(inst) === 'docker' ? 'Docker 容器' : '控制台程序'}
+                </span>
+              )}
+              <span className="hint2">{name}</span>
+            </div>
             <nav className="vnav">
-              {TABS.map((t) => (
+              {tabs.map((t) => (
                 <button
                   key={t.key}
                   className={`vnav-item ${tab === t.key ? 'active' : ''}`}
@@ -680,6 +711,9 @@ export default function InstanceDetail({ instanceId, name, status, level, user, 
                 canWriteFiles={canWriteFiles}
                 running={curStatus === 'running'}
                 isAdmin={isAdminUser}
+                template={templateOf(inst)}
+                caps={caps}
+                spec={inst?.spec}
               />
             )}
             {tab === 'files' && <FilesTab instanceId={instanceId} canWrite={canWriteFiles} />}

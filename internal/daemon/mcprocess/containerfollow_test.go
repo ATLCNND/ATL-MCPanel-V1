@@ -120,7 +120,7 @@ func TestEnsureContainerLogFollowWithoutRuntime(t *testing.T) {
 }
 
 // containerRunCLIAlive 的判断：不存在的容器名必须为 false
-//（这条防的是"扫 /proc 时匹配得太宽，把整个节点上任何一个 docker 进程都算上"）。
+// （这条防的是"扫 /proc 时匹配得太宽，把整个节点上任何一个 docker 进程都算上"）。
 func TestContainerRunCLIAliveNoFalsePositive(t *testing.T) {
 	if containerRunCLIAlive("definitely-not-a-real-instance-id") {
 		t.Error("不存在的实例不该被判为「采集进程还活着」（否则接管后永远不补跟随）")

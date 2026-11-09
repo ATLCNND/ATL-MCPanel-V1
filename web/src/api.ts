@@ -1,4 +1,4 @@
-﻿export interface Instance {
+export interface Instance {
   id: number
   instance_id: string
   node_id: number
@@ -23,6 +23,60 @@
   expiry_autostop?: boolean    // 到期是否自动停止
   expiry_state?: 'none' | 'active' | 'soon' | 'expired'
   expiry_days_left?: number
+  /**
+   * 实例类型。**空/未定义按 minecraft 处理** —— 0.11.x 及更早建的实例没有这个字段，
+   * 把它们当成"另一种东西"会让老用户升级后看到一个空壳实例页。
+   */
+  template?: InstanceTemplate
+  /**
+   * 该类型支持的能力（后端按类型算好，见 internal/common/instancekind）。
+   *
+   * 界面**只**按这份清单决定显示哪些页签：类型会继续增加，而"要不要显示 RCON"
+   * 是能力问题。缺字段时（老面板）按 minecraft 的能力兜底，见 capabilitiesOf。
+   */
+  capabilities?: string[]
+  /**
+   * 非 minecraft 类型的规格 JSON（镜像/端口映射/卷/环境变量）。
+   *
+   * 界面**只读展示**它：改这些等于换一台实例，重建才是正路。
+   */
+  spec?: string
+}
+
+/** 实例类型（与后端 instancekind.Kind 一一对应）。 */
+export type InstanceTemplate = 'minecraft' | 'docker' | 'console'
+
+/** 实例能力（与后端 instancekind.Capability 一一对应）。 */
+export type InstanceCapability =
+  | 'console' | 'files' | 'backup' | 'logs' | 'log_analysis'
+  | 'java' | 'core' | 'rcon' | 'world' | 'players' | 'config'
+  | 'image' | 'ports' | 'volumes' | 'env' | 'script'
+
+/** 老面板/老数据没有 capabilities 时的兜底（= minecraft 的全部能力）。 */
+const MC_CAPS: InstanceCapability[] = [
+  'console', 'files', 'backup', 'logs', 'log_analysis', 'java', 'core',
+  'rcon', 'world', 'players', 'config', 'script',
+]
+
+/** 取某实例的能力集合；字段缺失时按 minecraft 兜底。 */
+export function capabilitiesOf(inst?: { template?: InstanceTemplate; capabilities?: string[] } | null): Set<InstanceCapability> {
+  if (!inst) return new Set(MC_CAPS)
+  if (Array.isArray(inst.capabilities) && inst.capabilities.length > 0) {
+    return new Set(inst.capabilities as InstanceCapability[])
+  }
+  // 没有能力清单（老面板）时按类型推：非 minecraft 至少不该显示 RCON 那一套。
+  const t = inst.template
+  if (t && t !== 'minecraft') {
+    const base: InstanceCapability[] = ['console', 'files', 'backup', 'logs', 'script']
+    if (t === 'docker') base.push('image', 'ports', 'volumes', 'env')
+    return new Set(base)
+  }
+  return new Set(MC_CAPS)
+}
+
+/** 该实例是不是某种类型（缺字段按 minecraft）。 */
+export function templateOf(inst?: { template?: InstanceTemplate } | null): InstanceTemplate {
+  return inst?.template || 'minecraft'
 }
 
 // 权限级别判定
@@ -292,6 +346,19 @@ export interface CreateInstancePayload {
    * 非总管理员不提交此字段：开关只掌握在管理员手里，用户侧一律走节点默认值。
    */
   container?: boolean
+  /**
+   * 实例类型（minecraft / docker / console，缺省 = minecraft）。
+   *
+   * 与 container 是两件事：container 决定"用什么方式跑"，template 决定
+   * "跑的是什么"。docker 类型必须容器化（后端强制），但 MC 实例也可以在
+   * 容器里跑 —— 所以不能合成一个字段。
+   */
+  template?: InstanceTemplate
+  /**
+   * 类型规格（JSON 字符串，见 internal/common/instancekind.Spec）。
+   * 只有 docker 类型需要（镜像、端口映射、卷、环境变量）；其余类型留空。
+   */
+  spec?: string
   /** 创建时按线路申请的穿透端口数（多端口模组/插件用） */
   tunnels?: { frps_id: number; count: number }[]
 }

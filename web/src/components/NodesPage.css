@@ -37,25 +37,8 @@
   flex-wrap: wrap;
 }
 
-.node-form {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  padding: 16px;
-  margin-bottom: 16px;
-}
-
-.node-form h3 {
-  color: var(--accent);
-  font-size: 15px;
-  margin-bottom: 12px;
-}
-
-.node-form .grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-}
+/* .node-form / .node-form h3 / .node-form .grid 已随登记表单搬进 NodeRegisterDialog
+   一并删除（2026-11-08，§13 第 7 步 B4）—— 页面上不再有内联的登记表单 */
 
 .form-note {
   color: var(--text-3);
@@ -114,6 +97,119 @@
   margin-top: 8px;
   color: var(--warning);
   font-size: 12px;
+}
+
+/* ---------------- 节点编辑（就地展开在卡片里） ----------------
+   以前是页面顶部一个「编辑节点 #3」的弹窗：改的是列表里那一台，
+   眼睛却要跳到页面最上面，也没有任何线索指出改的是谁。
+   现在展开在这张卡片内部，与「共享资源」同一层级、同一套留白。 */
+
+.node-edit {
+  margin: 10px 0 4px;
+  padding: 12px 14px 14px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent-solid);
+  border-radius: var(--r);
+}
+
+.ne-sec + .ne-sec {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+
+.ne-sec-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 8px;
+}
+
+.ne-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px 14px;
+}
+
+.ne-span-all {
+  grid-column: 1 / -1;
+}
+
+/* 字段用「标签在上、输入框在下、补充说明再下一行」的竖排 ——
+   原来的占位符当标签用，一旦填了值就不知道这格是什么。 */
+.ne-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ne-field > span {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.ne-field input,
+.ne-field textarea,
+.ne-field select {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.ne-field textarea {
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.ne-field em {
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.55;
+  /* 说明不是装饰：像「留空=默认」「换目录会让老备份链脱钩」这类话得能读清。
+     --text-3(#8b949e) 在白底上只有约 3:1，11.5px 太吃力，提到 --text-2。 */
+  color: var(--text-2);
+}
+
+.ne-req {
+  color: var(--danger);
+  font-style: normal;
+}
+
+.ne-radios {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  margin-bottom: 10px;
+}
+
+.ne-radios label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+
+.ne-radio-hint {
+  font-size: 11.5px;
+}
+
+.ne-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.ne-foot-note {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-3);
 }
 
 /* 弹窗遮罩统一在 styles/components.css 里定义（历史上这里曾重定义过一份
@@ -177,7 +273,7 @@
 }
 
 /* 用 label 包住隐藏的 file input：原生 file 控件在各浏览器里长相不一，
-   ͳһ成一个按钮更好对齐，也让"点哪都能触发"这件事成立 */
+   统一成一个按钮更好对齐，也让"点哪都能触发"这件事成立 */
 .nr-upload input[type='file'] {
   display: none;
 }

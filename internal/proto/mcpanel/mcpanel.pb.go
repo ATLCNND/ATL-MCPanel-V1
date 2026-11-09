@@ -596,10 +596,18 @@ type CreateInstanceRequest struct {
 	JarUrl       string                 `protobuf:"bytes,10,opt,name=jar_url,json=jarUrl,proto3" json:"jar_url,omitempty"`                   // jar 路径（Daemon 本地绝对路径）
 	StartCommand string                 `protobuf:"bytes,12,opt,name=start_command,json=startCommand,proto3" json:"start_command,omitempty"` // 自定义启动命令模板（可选）。为空则用默认 java -jar 模板
 	// 支持占位符：{jar} {max_mem} {min_mem} {java} {dir}
-	CpuQuota      int32  `protobuf:"varint,13,opt,name=cpu_quota,json=cpuQuota,proto3" json:"cpu_quota,omitempty"`   // CPU 配额百分比（100 = 1 核；0 = 不限制）。由 Daemon 通过 cgroup 实施
-	BackupDir     string `protobuf:"bytes,14,opt,name=backup_dir,json=backupDir,proto3" json:"backup_dir,omitempty"` // 备份存放目录（留空则用节点配置的 backup_root，再退回实例目录下的 backups/）
-	MemLimit      string `protobuf:"bytes,15,opt,name=mem_limit,json=memLimit,proto3" json:"mem_limit,omitempty"`    // cgroup 内存上限（如 "4G"；留空 = 不限制）。需比 -Xmx 留出堆外余量
-	Container     bool   `protobuf:"varint,16,opt,name=container,proto3" json:"container,omitempty"`                 // 是否以容器方式运行（容器化隔离）。需节点具备 docker 与基础镜像
+	CpuQuota  int32  `protobuf:"varint,13,opt,name=cpu_quota,json=cpuQuota,proto3" json:"cpu_quota,omitempty"`   // CPU 配额百分比（100 = 1 核；0 = 不限制）。由 Daemon 通过 cgroup 实施
+	BackupDir string `protobuf:"bytes,14,opt,name=backup_dir,json=backupDir,proto3" json:"backup_dir,omitempty"` // 备份存放目录（留空则用节点配置的 backup_root，再退回实例目录下的 backups/）
+	MemLimit  string `protobuf:"bytes,15,opt,name=mem_limit,json=memLimit,proto3" json:"mem_limit,omitempty"`    // cgroup 内存上限（如 "4G"；留空 = 不限制）。需比 -Xmx 留出堆外余量
+	Container bool   `protobuf:"varint,16,opt,name=container,proto3" json:"container,omitempty"`                 // 是否以容器方式运行（容器化隔离）。需节点具备 docker 与基础镜像
+	// template 实例类型：minecraft / docker / console（见 internal/common/instancekind）。
+	// 空串按 minecraft 处理（0.11.x 及更早建出来的实例都没有这个字段）。
+	// 类型决定**能力**：docker 实例没有 RCON/世界/玩家这些概念，Daemon 不提供、
+	// 面板也不显示对应入口。
+	Template string `protobuf:"bytes,17,opt,name=template,proto3" json:"template,omitempty"`
+	// spec 非 minecraft 类型的启动规格（JSON，见 instancekind.Spec）：
+	// 镜像 / 命令 / 卷 / 端口映射 / 环境变量。minecraft 类型必须为空。
+	Spec          string `protobuf:"bytes,18,opt,name=spec,proto3" json:"spec,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -744,6 +752,20 @@ func (x *CreateInstanceRequest) GetContainer() bool {
 		return x.Container
 	}
 	return false
+}
+
+func (x *CreateInstanceRequest) GetTemplate() string {
+	if x != nil {
+		return x.Template
+	}
+	return ""
+}
+
+func (x *CreateInstanceRequest) GetSpec() string {
+	if x != nil {
+		return x.Spec
+	}
+	return ""
 }
 
 type InstanceStatus struct {
@@ -5520,7 +5542,7 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\x10backup_disk_used\x18\b \x01(\x03R\x0ebackupDiskUsed\x12*\n" +
 	"\x11backup_disk_total\x18\t \x01(\x03R\x0fbackupDiskTotal\",\n" +
 	"\fPingResponse\x12\x1c\n" +
-	"\ttimestamp\x18\x01 \x01(\x03R\ttimestamp\"\xd3\x03\n" +
+	"\ttimestamp\x18\x01 \x01(\x03R\ttimestamp\"\x83\x04\n" +
 	"\x15CreateInstanceRequest\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x12\n" +
@@ -5541,7 +5563,9 @@ const file_mcpanel_proto_rawDesc = "" +
 	"\n" +
 	"backup_dir\x18\x0e \x01(\tR\tbackupDir\x12\x1b\n" +
 	"\tmem_limit\x18\x0f \x01(\tR\bmemLimit\x12\x1c\n" +
-	"\tcontainer\x18\x10 \x01(\bR\tcontainer\"\xaf\x01\n" +
+	"\tcontainer\x18\x10 \x01(\bR\tcontainer\x12\x1a\n" +
+	"\btemplate\x18\x11 \x01(\tR\btemplate\x12\x12\n" +
+	"\x04spec\x18\x12 \x01(\tR\x04spec\"\xaf\x01\n" +
 	"\x0eInstanceStatus\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x16\n" +

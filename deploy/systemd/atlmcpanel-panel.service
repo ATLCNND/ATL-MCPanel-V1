@@ -11,15 +11,60 @@ ExecStart=__INSTALL_DIR__/bin/atl-panel -config __INSTALL_DIR__/config.yaml
 Restart=on-failure
 RestartSec=5
 
+# 面板**不需要 root**：它监听的都是 1024 以上的端口（安装脚本已经强制这一条），
+# 只是转发/代理节点上的操作，不碰实例进程、不改宿主系统设置。
+# 因此以独立系统用户运行（安装脚本创建，见 deploy/install.sh）。
+#
+# 代价（明确写在这里，免得以后把它当 bug 查）：
+#   · 面板的「本机一键部署节点」写 /etc/systemd/system 并调 systemctl —— 需要 root。
+#     加固模式下这一步会失败，会在界面里报权限错误。要用这个功能，
+#     要么在同一台机器上跑节点包的 install.sh daemon，
+#     要么安装时用 `PANEL_USER=root` 显式退回老行为。
+User=__PANEL_USER__
+Group=__PANEL_USER__
+
 # 面板自身不需要保持子进程存活，但其管理着面板穿透用的 frpc 子进程：
 # KillMode=control-group（默认）会在服务重启时一并杀掉 frpc，
 # 这是期望行为（重启后面板会自动恢复隧道）。若希望 frpc 独立存活，可改为 process。
+#
+# ⚠️ 不要照抄 Daemon 那份的 KillMode=process：Daemon 是为了让实例进程活过重启，
+# 面板没有这个需求，而 control-group 能保证 frpc 不会变成孤儿。
 KillMode=control-group
 
 # 资源与安全限制
 LimitNOFILE=65535
-NoNewPrivileges=false
-ProtectSystem=false
+
+# ---- 沙箱（详见 deploy/systemd/HARDENING.md）----
+#
+# 面板只写**数据目录**（SQLite、PKI、面板穿透工作目录、数据库备份），
+# 其余位置一律只读：Web 静态资源、二进制、配置文件都不需要写。
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+# 只留 TCP/UDP + 本地 socket（frpc / SQLite 不走网络，但 Go 运行时会用到 AF_NETLINK）。
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+# 面板只做「服务端 + 出站连接」这类普通工作，不需要任何特权系统调用。
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+# 仅有的两个可写路径。`-` 前缀表示"目录不存在时忽略"（首装时可能还没建）。
+#   data/  —— SQLite、PKI、面板穿透工作目录、数据库备份
+#   certs/ —— 「面板设置 → 域名与证书」会**写**这里（自签生成 / 上传正式证书）
+#             所以它不能只读，否则界面上传证书会报 permission denied。
+ReadWritePaths=-__INSTALL_DIR__/data -__INSTALL_DIR__/certs
 
 [Install]
 WantedBy=multi-user.target

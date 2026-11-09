@@ -91,6 +91,27 @@
   gap: 1px;
 }
 
+/* 实例类型徽标：只在非 Minecraft 时出现，所以要一眼能认出来又别抢戏 ——
+   它解释的是"上面那些页签为什么少了几项"。 */
+.tmpl-badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.6;
+  white-space: nowrap;
+  border-radius: 999px;
+  color: var(--accent-solid);
+  background: var(--accent-soft, rgba(236, 72, 153, 0.12));
+  border: 1px solid var(--accent-border, rgba(236, 72, 153, 0.3));
+}
+
+.tmpl-badge.tmpl-console {
+  color: var(--text-2);
+  background: var(--bg-subtle);
+  border-color: var(--border);
+}
+
 .vnav-sep {
   height: 1px;
   background: var(--border);

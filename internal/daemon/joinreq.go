@@ -71,11 +71,11 @@ func BuildJoinRequest(o EnrollOptions, ttl time.Duration) (string, error) {
 		return "", err
 	}
 	req := JoinRequest{
-		V:        joinRequestVersion,
-		NodeUID:  uid,
-		NodeName: name,
-		Hostname: hostnameOrEmpty(),
-		CSR:      string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})),
+		V:         joinRequestVersion,
+		NodeUID:   uid,
+		NodeName:  name,
+		Hostname:  hostnameOrEmpty(),
+		CSR:       string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})),
 		ExpiresAt: time.Now().Add(ttl).Unix(),
 		Nonce:     nonce,
 	}

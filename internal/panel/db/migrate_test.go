@@ -156,3 +156,74 @@ func TestNormalizeSQLiteDSN(t *testing.T) {
 		t.Errorf("已有 query 参数时应使用 & 连接，实际 %s", normalizeSQLiteDSN("x.db?a=1"))
 	}
 }
+
+// 37 号迁移必须能跑在"已经有 instances.template"的库上。
+//
+// 这不是假想场景：0.12.x（已撤回）的 34 号迁移 instance_template 也加过这一列，
+// 任何跑过那个内测分支的库都已经有它。实测过一次 —— 裸 `ALTER TABLE ... ADD COLUMN`
+// 直接报 `duplicate column name: template`，面板从此每次启动都退出，
+// 而且它在**初始化数据库**阶段失败，连登录页都出不来。
+func TestMigration37ToleratesExistingTemplateColumn(t *testing.T) {
+	dsn := filepath.Join(t.TempDir(), "legacy-012.db")
+
+	d, err := Open("sqlite3", dsn)
+	if err != nil {
+		t.Fatalf("打开数据库失败: %v", err)
+	}
+	// 回退到 36：模拟"升级前"的库
+	if _, err := d.Exec(`DELETE FROM schema_migrations WHERE version >= 37`); err != nil {
+		d.Close()
+		t.Fatalf("回退迁移记录失败: %v", err)
+	}
+	// 已有 template 列但没有 spec 列 —— 这正是 0.12.x 留下的样子
+	//（那个分支的 34 号迁移加过 instances.template，却没有 spec）
+	if _, err := d.Exec(`ALTER TABLE instances DROP COLUMN spec`); err != nil {
+		d.Close()
+		t.Fatalf("伪造 0.12.x 的形态失败（去掉 spec 列）: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO nodes (name, ip, ssh_user, ssh_auth) VALUES ('n1','127.0.0.1','root','x')`); err != nil {
+		d.Close()
+		t.Fatalf("插入节点失败: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO instances (instance_id, node_id, name, template) VALUES ('old-mc', 1, 'mc', 'minecraft'),
+		('old-plain', 1, 'plain', ''), ('old-weird', 1, 'weird', 'containerized')`); err != nil {
+		d.Close()
+		t.Fatalf("插入实例失败: %v", err)
+	}
+	d.Close()
+
+	// 再次打开 = 跑 37
+	d2, err := Open("sqlite3", dsn)
+	if err != nil {
+		t.Fatalf("已有 template 列时迁移 37 应成功，实际失败: %v", err)
+	}
+	defer d2.Close()
+
+	if v, _ := CurrentVersion(d2); v != LatestVersion() {
+		t.Errorf("版本应到 %d，实际 %d", LatestVersion(), v)
+	}
+	// spec 列被补上了
+	have, err := tableColumnsDB(d2, "instances")
+	if err != nil {
+		t.Fatalf("读取列失败: %v", err)
+	}
+	if !have["spec"] {
+		t.Error("spec 列应被补上")
+	}
+	// 空串与不认识的取值都被归到 minecraft，认得的原样保留
+	rows, err := d2.Query(`SELECT instance_id, template FROM instances ORDER BY instance_id`)
+	if err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	defer rows.Close()
+	want := map[string]string{"old-mc": "minecraft", "old-plain": "minecraft", "old-weird": "minecraft"}
+	for rows.Next() {
+		var id, tpl string
+		if err := rows.Scan(&id, &tpl); err != nil {
+			t.Fatalf("扫描失败: %v", err)
+		}
+		if want[id] != tpl {
+			t.Errorf("实例 %s 的类型应为 %q，实际 %q", id, want[id], tpl)
+		}
+	}
+}

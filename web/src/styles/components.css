@@ -238,3 +238,19 @@
 .page-toolbar > .muted:first-child {
   margin-right: auto;
 }
+
+/* ---- 页面导语（标题下方那句"这一页是干什么的"） ----
+   `.page-lead` 此前**全站没有定义**（App.tsx 与 AnalysisProviders.tsx 都在用），
+   于是说明文字和正文同色同字号，读不出层次。 */
+.page-lead {
+  max-width: 82ch;
+  margin-bottom: 14px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1.75;
+}
+
+.page-lead strong {
+  color: var(--text-1);
+  font-weight: 600;
+}

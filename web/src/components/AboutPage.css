@@ -68,6 +68,20 @@
   font-size: 13px;
 }
 
+.about-tip {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+.about-tip strong {
+  color: var(--text-1);
+  font-weight: 600;
+}
+
 @media (max-width: 560px) {
   .about-meta-row {
     grid-template-columns: 90px minmax(0, 1fr);

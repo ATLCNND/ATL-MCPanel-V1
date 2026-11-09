@@ -11,14 +11,12 @@ import TunnelsPage from './components/TunnelsPage'
 import NodesPage from './components/NodesPage'
 import MonitorPage from './components/MonitorPage'
 import AuditPage from './components/AuditPage'
-import UsersPage from './components/UsersPage'
-import AvatarReview from './components/AvatarReview'
+import SettingsPage from './components/SettingsPage'
 import DashboardPage from './components/DashboardPage'
 import AccountPage from './components/AccountPage'
 import HelpPage from './components/HelpPage'
 import AboutPage from './components/AboutPage'
 import AlertsModal from './components/AlertsModal'
-import AnalysisProviders from './components/AnalysisProviders'
 import { useSessionWatchdog } from './components/usePanelMeta'
 
 /** 当前视图：全局页面，或某个实例的详情 */
@@ -37,6 +35,7 @@ const PAGE_META: Record<NavKey, { title: string; subtitle: string }> = {
   monitor: { title: '节点监控', subtitle: '查看各节点的运行状况与资源占用' },
   nodes: { title: '节点管理', subtitle: '登记与部署节点上的 Daemon' },
   tunnels: { title: '穿透管理', subtitle: '管理实例的公网穿透线路' },
+  settings: { title: '面板设置', subtitle: '用户、头像审核、分析平台与 HTTPS 证书' },
   users: { title: '用户管理', subtitle: '账号、角色，以及节点用户的节点授权' },
   avatars: { title: '头像审核', subtitle: '审核用户上传的头像（通过后才会对外显示）' },
   audit: { title: '审计日志', subtitle: '查看所有管理操作记录' },
@@ -44,25 +43,6 @@ const PAGE_META: Record<NavKey, { title: string; subtitle: string }> = {
   account: { title: '账户', subtitle: '我的资源、权限与账号设置' },
   help: { title: '公告与帮助', subtitle: '管理员公告，以及面板使用说明' },
   about: { title: '关于', subtitle: '面板版本、构建信息与项目链接' },
-}
-
-/**
- * 头像审核页。
- *
- * AvatarReview 组件本身已经有标题与说明，这里只补一句"为什么需要人工审核"
- * 的上下文 —— 单独成一个页面后，它不再有弹窗里的语境了。
- */
-function AvatarReviewPage() {
-  return (
-    <div className="page">
-      <p className="page-lead">
-        用户上传的头像默认为「待审核」，<strong>通过后才会对外显示</strong>；
-        未通过时其他人看到的是字母头像。这里可以看到待审图片本身，
-        驳回时可填写原因，用户会在自己的账号卡上看到。
-      </p>
-      <AvatarReview />
-    </div>
-  )
 }
 
 export default function App() {
@@ -226,14 +206,20 @@ export default function App() {
         return <NodesPage />
       case 'tunnels':
         return <TunnelsPage />
+      // 面板设置：用户管理 / 头像审核 / 分析平台 / 域名与证书 四页合一。
+      // 旧的三个入口已从侧边栏移除，但仍在这里接住（书签、实例详情页那份清单、
+      // 以及「分析平台」对节点用户的独立入口）—— 落到设置页对应的那一页上，
+      // 而不是渲染两套互不相干的界面。
+      case 'settings':
+        return <SettingsPage role={user?.role} />
       case 'users':
-        return <UsersPage />
+        return <SettingsPage role={user?.role} initial="users" />
       case 'avatars':
-        return <AvatarReviewPage />
+        return <SettingsPage role={user?.role} initial="avatars" />
       case 'audit':
         return <AuditPage />
       case 'providers':
-        return <AnalysisProviders role={user?.role} />
+        return <SettingsPage role={user?.role} initial="providers" />
       case 'account':
         return <AccountPage onLogout={handleLogout} />
       case 'help':

@@ -1,0 +1,73 @@
+# ATL-MCPanel 面板（容器化部署）
+#
+# 用法：
+#   1) ./deploy/docker/build.sh --tag atl-mcpanel-panel:0.11.3
+#   2) 准备三个挂载点：data/（可写）、certs/（可写）、config.yaml（只读）
+#        mkdir -p /srv/mcpanel/{data,certs}
+#        cp config.example.yaml /srv/mcpanel/config.yaml   # 再按需改端口等
+#        sudo chown -R 10001:10001 /srv/mcpanel/data /srv/mcpanel/certs
+#        # config 是容器里的进程读的，必须对 10001 可读（属主 root + 600 会直接退出）
+#        sudo chown 10001:10001 /srv/mcpanel/config.yaml
+#        sudo chmod 640 /srv/mcpanel/config.yaml            # 里面有 tom 口令/入口
+#   3) ATL_ROOT=/srv/mcpanel docker compose -f deploy/docker/docker-compose.yml up -d
+#
+# ---------------------------------------------------------------------------
+# 为什么默认是 network_mode: host
+# ---------------------------------------------------------------------------
+# 面板要连的节点 Daemon 默认监听 127.0.0.1:9091（见 daemon.grpc_port）。
+# 桥接网络下，"容器 → 宿主 127.0.0.1"根本到不了宿主；而且节点的
+# `atl-container-firewall` 单元会 **DROP 容器网段到宿主的新连接**
+# （`-i br-+ --ctstate NEW -j DROP`），这是刻意的隔离，不该为面板开口子。
+#
+# host 网络下容器与宿主共享网络命名空间，9091 直接可达，也不用映射端口。
+# 代价是 `ports:` 在 host 模式下无效 —— 面板监听什么端口完全由 config.yaml 决定。
+#
+# 面板与节点**不在同一台机器**时（控制面独立部署），可以改回桥接 + 端口映射，
+# 但要自己保证：
+#   · config.yaml 的 grpc_listen 绑定 0.0.0.0 或宿主可达地址；
+#   · server.listen 同样的道理；
+#   · 节点 daemon.panel_address 指向宿主 IP，而不是 127.0.0.1。
+services:
+  panel:
+    image: atl-mcpanel-panel:${ATL_VERSION:-latest}
+    container_name: atl-mcpanel-panel
+    restart: unless-stopped
+    network_mode: host
+
+    # 与镜像里的 UID 一致（固定 10001）。写数字而不是名字：
+    # 宿主上并不存在 atlpanel 这个用户，写名字反而会启动失败。
+    user: "10001:10001"
+
+    # 只读根文件系统：面板只写 data/ 与 certs/（两个 bind mount）。
+    # 这条与 systemd 部署里的 ProtectSystem=strict + ReadWritePaths 是同一个设计。
+    read_only: true
+    tmpfs:
+      - /tmp:rw,size=64m
+
+    # 面板不需要任何 capability（不碰实例进程、不改宿主设置）。
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # 健康检查会自己从挂载的 config.yaml 里读 server.listen 的端口与
+      # server.security_entry 的前缀；下面两个只在读不到配置时兜底。
+      ATL_PORT: ${ATL_PORT:-25080}
+      ATL_ENTRY: ${ATL_ENTRY:-}
+      # 面板穿透要能找到容器里的 frpc（镜像里放在 bin/ 下，已在 PATH 之外）
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/mcpanel/bin
+
+    volumes:
+      - ${ATL_ROOT:-./data}:/opt/mcpanel/data
+      # certs 单独挂：面板设置页里"生成自签 / 上传正式证书"会写这里
+      - ${ATL_CERTS:-./certs}:/opt/mcpanel/certs
+      # 配置只读挂载：面板**从不**回写 config.yaml（改配置一律改文件再重启）
+      - ${ATL_CONFIG:-./config.yaml}:/opt/mcpanel/config.yaml:ro
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

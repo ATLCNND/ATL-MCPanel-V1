@@ -240,6 +240,15 @@ message CreateInstanceRequest {
   string backup_dir = 14;    // 备份存放目录（留空则用节点配置的 backup_root，再退回实例目录下的 backups/）
   string mem_limit = 15;     // cgroup 内存上限（如 "4G"；留空 = 不限制）。需比 -Xmx 留出堆外余量
   bool container = 16;       // 是否以容器方式运行（容器化隔离）。需节点具备 docker 与基础镜像
+
+  // template 实例类型：minecraft / docker / console（见 internal/common/instancekind）。
+  // 空串按 minecraft 处理（0.11.x 及更早建出来的实例都没有这个字段）。
+  // 类型决定**能力**：docker 实例没有 RCON/世界/玩家这些概念，Daemon 不提供、
+  // 面板也不显示对应入口。
+  string template = 17;
+  // spec 非 minecraft 类型的启动规格（JSON，见 instancekind.Spec）：
+  // 镜像 / 命令 / 卷 / 端口映射 / 环境变量。minecraft 类型必须为空。
+  string spec = 18;
 }
 
 message InstanceStatus {

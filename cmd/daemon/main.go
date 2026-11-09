@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -126,7 +127,15 @@ func runEnroll(args []string) {
 	}
 	cfgStateDir := filepath.Join(base, "state")
 	cfgCertDir := filepath.Join(base, "certs")
+	// cfgNodeID：用配置里的 node_id 当默认显示名。
+	//
+	// 面板按**证书 CN** 校验节点身份（pki.CertNodeName(node_id)），而 CN 是面板
+	// 在签发时按接入请求里的 node_name 定的。默认拿主机名当 node_name，就会得到
+	// 一张 CN=主机名 的证书，随后 Daemon 用 node_id 去注册 → 被拒
+	// 「节点身份校验失败」，而两边都不提"名字不一致"这件事（真机踩到）。
+	cfgNodeID := ""
 	if cfg, err := config.Load(*cfgPath); err == nil {
+		cfgNodeID = strings.TrimSpace(cfg.Daemon.NodeID)
 		if cfg.Daemon.StateDir != "" {
 			cfgStateDir = cfg.Daemon.StateDir
 			// config.Load 会按 instance_dir 推导 state_dir，而 instance_dir 常写成相对值
@@ -150,6 +159,10 @@ func runEnroll(args []string) {
 	if *certDir == "" {
 		*certDir = cfgCertDir
 	}
+	// 没显式 --name 时，用配置里的 node_id —— 见上面 cfgNodeID 的说明。
+	if *name == "" && cfgNodeID != "" {
+		*name = cfgNodeID
+	}
 
 	if *initMode {
 		req, err := daemon.BuildJoinRequest(daemon.EnrollOptions{
@@ -164,6 +177,10 @@ func runEnroll(args []string) {
 		fmt.Println(req)
 		fmt.Println()
 		fmt.Println("有效期 30 分钟；面板导入后本机即可用同一把钥匙完成接入（无需再跑其它命令）。")
+		fmt.Println()
+		fmt.Println("⚠️ 面板导入后，本机启动 Daemon 时会自己去面板领证书，但需要知道面板的 HTTP 地址：")
+		fmt.Println("   请在 config.yaml 的 daemon 段里配上 panel_url（例如 http://10.0.0.5:25080，")
+		fmt.Println("   面板启用安全入口时带上 /<入口>），再启动服务。")
 		return
 	}
 

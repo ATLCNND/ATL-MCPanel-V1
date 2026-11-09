@@ -25,3 +25,27 @@
   min-height: 0;
   min-width: 0;
 }
+
+/* ---- 容器规格（只读） ---- */
+.ctr-spec-note {
+  margin: 0 0 12px;
+  max-width: 82ch;
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--text-2);
+}
+
+.ctr-spec-json {
+  margin: 0;
+  padding: 12px 14px;
+  max-width: 100%;
+  overflow-x: auto;
+  font-family: var(--mono-ui);
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-1);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--r, 8px);
+  white-space: pre;
+}

@@ -4,13 +4,15 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
-	"path/filepath"
+	"encoding/json"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -94,12 +96,70 @@ func TestEnrollIssuesCertWithNodeUID(t *testing.T) {
 	var mode, auth string
 	_ = srv.db.QueryRow(`SELECT COALESCE(enroll_mode,''), COALESCE(ssh_auth,'') FROM nodes WHERE node_uid = ?`, uid).
 		Scan(&mode, &auth)
-	if mode == "" {
-		t.Error("节点行的 enroll_mode 未写入")
+	if mode != "panel" {
+		t.Errorf("② 面板发起接入的节点 enroll_mode 应为 panel，实际 %q", mode)
 	}
 	if auth != "" {
 		t.Error("凭证交换接入的节点不该有 SSH 凭据")
 	}
+}
+
+// ② 与 ③ 两条接入路径必须被区分开：面板发起写 'panel'，节点发起写 'node'。
+//
+// 这条用例防的是「两处都写死 'node'」——A-46 干净环境验收时发现：管理员在面板上
+// 签 token 让节点来接（②），节点行却被标成「节点发起」，界面据此给的提示是错的。
+func TestEnrollModeDistinguishesPanelAndNode(t *testing.T) {
+	srv, ts := newTestServerWithCA(t)
+	admin := loginAs(t, srv, ts, "adm-e2", "adm-e2-pass-1234")
+
+	// ② 面板发起
+	uidPanel := "12345678-1111-4222-8333-444455556666"
+	token := issueJoinToken(t, ts, admin, "panel", uidPanel)
+	if code, out := enrollOnce(t, ts, token, makeCSR(t, "n1"), uidPanel); code != http.StatusOK {
+		t.Fatalf("② 接入应成功: %d %v", code, out)
+	}
+
+	// ③ 节点发起：节点自己造一行接入请求，管理员贴回面板
+	uidNode := "87654321-1111-4222-8333-444455556666"
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("生成密钥失败: %v", err)
+	}
+	req := makeJoinRequest(t, key, uidNode, "n2")
+	code, out := doJSON(t, ts, "POST", "/api/enroll/import", admin, map[string]interface{}{"request": req})
+	if code != http.StatusOK {
+		t.Fatalf("③ 导入应成功: %d %v", code, out)
+	}
+
+	for uid, want := range map[string]string{uidPanel: "panel", uidNode: "node"} {
+		var mode string
+		if err := srv.db.QueryRow(`SELECT COALESCE(enroll_mode,'') FROM nodes WHERE node_uid = ?`, uid).Scan(&mode); err != nil {
+			t.Fatalf("查节点行失败(%s): %v", uid, err)
+		}
+		if mode != want {
+			t.Errorf("node_uid=%s 的 enroll_mode = %q，期望 %q", uid, mode, want)
+		}
+	}
+}
+
+// makeJoinRequest 造一行与 daemon.BuildJoinRequest 同构的接入请求（面板侧不 import daemon 包）。
+func makeJoinRequest(t *testing.T, key *ecdsa.PrivateKey, uid, name string) string {
+	t.Helper()
+	payload, err := json.Marshal(map[string]interface{}{
+		"v": 1, "node_uid": uid, "node_name": name, "hostname": "host1",
+		"csr": makeCSRWithKey(t, name, key),
+		"exp": time.Now().Add(30 * time.Minute).Unix(), "nonce": "test-nonce",
+	})
+	if err != nil {
+		t.Fatalf("编码接入请求失败: %v", err)
+	}
+	enc := base64.RawURLEncoding.EncodeToString(payload)
+	sum := sha256.Sum256([]byte(enc))
+	sig, err := ecdsa.SignASN1(rand.Reader, key, sum[:])
+	if err != nil {
+		t.Fatalf("签名失败: %v", err)
+	}
+	return "atl-join-v1." + enc + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
 // token 只能用一次 —— 这是防重放的核心，必须有测试。

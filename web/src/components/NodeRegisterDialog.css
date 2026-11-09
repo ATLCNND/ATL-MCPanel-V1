@@ -1,0 +1,169 @@
+/* ---------------- 登记节点弹窗（§13 第 7 步 B4） ----------------
+   三条接入口子（面板 SSH 装 / 凭证交换 / 粘贴导入）原来是页面上三块并列横幅，
+   谁跟谁互斥看不出来；收进一个弹窗后用页签并列摆，一次只展开一条路。 */
+
+.nreg-dialog {
+  width: min(880px, 94vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
+.nreg-dialog .modal-header {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.nreg-dialog .modal-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.nreg-close {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+  line-height: 1;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+}
+
+.nreg-close:hover {
+  color: var(--text-1);
+  background: var(--bg-subtle);
+  border-color: var(--border);
+}
+
+/* 三个页签等宽铺满：每条路都是一等公民，不做"主/次"的排位 */
+.nreg-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+
+.nreg-tab {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 14px;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.nreg-tab b {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.nreg-tab span {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-2);
+  white-space: normal;
+}
+
+.nreg-tab:hover {
+  background: var(--bg-base);
+}
+
+.nreg-tab.active {
+  background: var(--bg-base);
+  border-bottom-color: var(--accent-solid);
+}
+
+.nreg-tab.active b {
+  color: var(--accent-solid);
+}
+
+.nreg-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 18px 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 说明段：比 hint 大一号，但仍是正文色，别用 --text-3 压成灰底看不清 */
+.nreg-lead {
+  margin: 0 0 12px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-2);
+}
+
+.nreg-cmd {
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+}
+
+.nreg-cmd code {
+  font-size: 12px;
+  line-height: 1.7;
+  word-break: break-all;
+  color: var(--text-1);
+}
+
+.nreg-radios-hint {
+  flex: 1 1 100%;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+/* 底部操作条：贴底、右侧成组（跟随 A1 弹窗的排布，两处弹窗长得一样） */
+.nreg-foot {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 18px -18px 0;
+  padding: 14px 18px;
+  background: var(--bg-base);
+  border-top: 1px solid var(--border);
+}
+
+.nreg-foot-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+@media (max-width: 760px) {
+  .nreg-dialog {
+    width: 100vw;
+    max-height: 100vh;
+    height: 100vh;
+    border-radius: 0;
+  }
+
+  .nreg-tab span {
+    display: none;
+  }
+}

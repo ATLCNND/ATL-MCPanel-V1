@@ -6,6 +6,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# 注意：本单元**没有** User=。Daemon 需要 root，因为它要
+#   · 以 `daemon.instance_user` 指定的用户身份拉起实例（setuid/setgid）；
+#   · chown 实例目录、写 cgroup 的 cpu/memory 配额；
+#   · 调 docker CLI 起容器（docker socket 通常只给 root 或 docker 组）。
+# 它的加固只能做"不碰实例"的那一部分，见文件末尾的说明与 deploy/systemd/HARDENING.md。
 WorkingDirectory=__INSTALL_DIR__
 ExecStart=__INSTALL_DIR__/bin/atl-daemon -config __INSTALL_DIR__/config.yaml
 Restart=on-failure
@@ -18,6 +23,26 @@ RestartSec=5
 KillMode=process
 
 LimitNOFILE=65535
+
+# ---- 沙箱（只加"实例用不到"的那几项）----
+#
+# 为什么这里比面板那份保守得多：**实例进程是 Daemon 的子进程，会继承整套沙箱**。
+# 面板只是自己受约束，而 Daemon 的每一次收紧都会同时收紧玩家服的运行环境 ——
+# 一个 java 服因为 PrivateTmp / ProtectSystem 起不来，代价远大于这点加固收益。
+# 具体取舍逐条写在 HARDENING.md 里，改这里之前务必先读它。
+#
+# 明确**不**加（每条都是踩过的边界）：
+#   · NoNewPrivileges=true —— 实例的降权启动依赖 setuid/setgid，不能封。
+#   · ProtectSystem=strict / ReadWritePaths —— 实例要写自己的目录、日志、存档，
+#     而实例目录的位置由 `daemon.instance_dir` 决定，沙箱写死路径迟早对不上。
+#   · PrivateTmp —— 实例的 /tmp 会变成私有目录，跨重启消失（部分脚本依赖 /tmp 里的路径）。
+#   · ProtectControlGroups —— Daemon 本身要写 cgroup 的 cpu/memory 配额。
+#   · RestrictAddressFamilies —— java 与部分脚本会用到 AF_PACKET / AF_VSOCK 等。
+#
+# 下面这几条只约束 Daemon 自身的调度与身份操作，不改变实例的读写能力：
+RestrictRealtime=true
+LockPersonality=true
+ProtectClock=true
 
 [Install]
 WantedBy=multi-user.target

@@ -1,8 +1,111 @@
-﻿# 更新日志
+# 更新日志
 
 本文件记录所有值得使用者注意的变更。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
+
+## [0.11.3] - 2026-11-09
+
+> 这一版做了两件事：把「实例只等于 Minecraft」这个假设拆掉（实例现在有**类型**：
+> Minecraft / 通用 Docker / 通用控制台，能力由类型声明、界面按能力出页签），
+> 以及把面板本身从「裸跑 root」里拉出来（独立低权用户 + systemd 沙箱，或容器化部署）。
+> 四项 preview 门槛里 **A、B、C、D 四项都已落地**：A/B 的干净环境接入验收本轮补齐
+> （「节点发起」那条路以前是断的，见下文），只剩需要真浏览器人工确认的「证书不受
+> 信任」与需要生产机的整体验收（见 docs/V1.0-PREVIEW-GOALS.md §13）。
+
+### 新增：三种实例类型（Minecraft / 通用 Docker / 通用控制台）
+
+建实例的第一步先选类型，之后每一页只问这个类型真正需要的字段：
+
+| 类型 | 适合 | 独有字段 | 页面 |
+|---|---|---|---|
+| **Minecraft 服务器** | 原版/插件/模组服 | 服务端核心、Java 版本、JVM 内存、jar | 控制台 · 文件 · 备份 · **玩家 · 世界 · 日志分析 · 游戏设置 · 配置** |
+| **通用 Docker 容器** | 任何有现成镜像的服务 | 镜像、容器内端口、启动命令、环境变量、卷挂载 | 控制台 · 文件 · 备份 · 日志 |
+| **通用控制台程序** | 没有镜像、只有可执行文件 | 只需把程序放进实例目录，写个 `start.sh` | 控制台 · 文件 · 备份 · 日志 |
+
+- **能力化**：后端用一张能力表描述类型（`internal/common/instancekind`），
+  面板把能力清单随实例一起下发，前端只问「这个实例有没有这个能力」，
+  不再有 `if 模板 == …` 的分支。
+- **只有 MC 才有那些页签**：Docker 与控制台实例下不再出现
+  玩家 / 游戏设置 / 日志分析 / 配置 —— 那些页对它们没有意义。
+- **控制台 / 文件 / 备份**三种类型的用法完全一致（它们都基于所有类型共有的能力）。
+- **Docker 类型强制容器化**：镜像即隔离前提，创建请求里没有「关掉容器」这个选项；
+  卷的宿主路径只能是实例目录下的相对子路径；容器仍以实例所属 uid 运行
+  （容器内 root 等于宿主 root，这条不变）。
+- 老实例一律按 Minecraft 处理，行为与本版之前完全一致。
+
+### 修掉：非 Minecraft 实例被当成 MC 对待（真机验收抓到的四处）
+
+- 监控每轮给所有实例注入 `list` / `tps` —— Docker / 控制台实例的终端里会冒出
+  `echo: list`（如果程序把 stdin 回显）。现在只对 Minecraft 实例注入。
+- 停止一律往 stdin 写 `stop` —— 控制台实例根本停不掉；已停止的实例再点停止还会报 500。
+  现在按类型分流：容器实例走 `docker stop`（超时后 force remove），
+  控制台实例向整个进程组发 `SIGTERM`，Minecraft 仍是写 `stop`。
+- 启动时给非 MC 实例改 `server.properties`（日志里能看到
+  「已把服务端监听端口校准为实例端口」）—— 现在只对 Minecraft 做。
+- 实例列表的 `SELECT` 列顺序与 `Scan` 串位，导致类型**永远显示 minecraft**、
+  清单里还出现 `"spec":"docker"` 这种错位值。已修，并有回归测试钉住三条记录。
+
+### 修掉：面板在一台跑过 0.12.x 的机器上启动即退出
+
+迁移 37 直接 `ALTER TABLE instances ADD COLUMN template`，而 0.12.x（已撤回）的
+34 号迁移早就加过这一列 → `duplicate column name: template`，失败发生在**初始化数据库**
+阶段，于是面板每次启动就退出，连登录页都出不来。
+迁移现在支持自定义步骤，加列前先读 `PRAGMA table_info` 判存在。
+**经历过 0.12.x 的机器升级到本版不会再有这个问题**；库里已有的 `template` 取值
+（`minecraft` / `docker` / `console`）与本版语义一致，不需要数据迁移。
+
+### 修掉：「节点发起接入」这条路只走了一半
+
+节点上执行 `atl-daemon enroll --init` 会打印一行接入请求，管理员把它贴进面板
+（登记节点 → 粘贴导入）后，面板确实签发了证书 —— 但证书只出现在**管理员浏览器
+的响应**里，节点侧没有任何代码去取。于是导入成功、面板上也能看到这台节点，
+节点进程一启动却报 `读取 CA 证书失败: no such file or directory`，接入永远完成不了。
+
+现在节点会自己把证书领回来：启动时若本地只有 `join.key` 而没有证书，就用这把
+钥匙向面板 `/api/enroll/renew` 换取证书与 CA（凭据就是私钥本身，不需要 token），
+3 分钟内每 5 秒重试一次，管理员慢一点贴也不影响。附带两处：
+
+- 接入请求里的默认节点名改成读 `daemon.node_id`。面板按**证书 CN** 校验节点身份，
+  之前默认取主机名（如 `debian`），注册时会被判「节点身份校验失败」。
+- 新增可选配置 `daemon.panel_url`（面板的 **HTTP** 地址，如 `http://10.0.0.5:8080`）——
+  只有「节点发起」这条路需要它，因为 `panel_address` 是 gRPC 地址。
+
+另外节点管理里的接入方式以前一律记成「节点发起」：由面板签发 token 接入的节点
+（`enroll --panel`）也被标错。现在两种方式分开记录。
+
+### 修掉：建实例在第 1 页被一个「看不见的字段」拦住
+
+选了 Docker 类型后，第 1 页会提示「请填写要运行的镜像」，而镜像输入框在后面的
+「容器规格」页 —— 用户只能对着一条无从下手的报错反复点下一步。
+现在每页只管自己那一页的字段。
+
+### 安全：面板不再以 root 裸跑
+
+以前面板和节点都是 root，`NoNewPrivileges=false`、`ProtectSystem=false` ——
+面板被打穿就等于拿到节点 root。这一版给了两条路，**默认走低权用户**：
+
+- **systemd 部署（默认）**：安装脚本创建专用系统用户（默认 `atlpanel`），
+  面板以它运行；单元文件加 `NoNewPrivileges` / `ProtectSystem=strict` / `ProtectHome` /
+  `PrivateTmp` / `PrivateDevices` / `ProtectKernel*` / `RestrictNamespaces` /
+  `RestrictSUIDSGID` / `LockPersonality` / `RestrictAddressFamilies` /
+  `SystemCallFilter=@system-service`，可写目录只开 `data/` 与 `certs/`。
+- **容器化部署（可选，`deploy/docker/`）**：固定 UID/GID 10001、只读根文件系统、
+  `cap_drop: ALL`、`no-new-privileges`、`config.yaml` 只读挂载，自带健康检查
+  （不依赖 curl；端口与安全入口直接读挂载进来的 `config.yaml`）。
+
+仍有 root 的只有节点（Daemon）—— 它要 setuid 拉实例、写 cgroup、调 docker CLI，
+容器化它没有意义（见 `deploy/docker/README.md`）。节点单元的加固只加了安全的三项
+（`RestrictRealtime` / `LockPersonality` / `ProtectClock`），其余项逐条写明为什么不能加。
+
+**代价（写在这里，别当成 bug）**：「本机一键部署节点」要写 `/etc/systemd/system` 并调
+`systemctl`，非 root 下不可用。节点页现在会直接说明原因，并给两条出路
+（在节点机器上跑 `deploy/install.sh daemon`，或走 SSH / 凭证交换 / 粘贴导入登记）；
+确实需要一键部署时用 `PANEL_USER=root` 安装。
+
+安装与升级都会自动处理目录归属：新装时 `data/`、`certs/`、`logs/` 交给面板用户
+（`config.yaml` 为 `root:组 0640`），从老版本升级时 `upgrade.sh` 会读单元文件里的
+`User=` 后补 chown —— 漏了这一步的表现是启动即 `SQLITE_READONLY`。
 
 ## [0.11.2] - 2026-11-07
 

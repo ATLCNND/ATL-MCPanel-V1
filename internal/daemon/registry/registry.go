@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ATLCNND/ATL-MCPanel/internal/common/instancekind"
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/safepath"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/container"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/mcprocess"
@@ -51,6 +52,17 @@ type Meta struct {
 	// 它决定实例进程能不能看见宿主，若能由租户改写，就等于给了
 	// "关掉自己的隔离"这个开关 —— 那正是 T0 修复要堵的口子。
 	Container bool `json:"container,omitempty"`
+
+	// Template 实例类型（minecraft / docker / console，见 instancekind）。
+	//
+	// 存空串 = minecraft：0.11.x 及更早的 instance.json 没有这个字段，
+	// 读出来必须是"和以前完全一样"的行为。
+	Template string `json:"template,omitempty"`
+	// Spec 非 minecraft 类型的启动规格（JSON，见 instancekind.Spec）。
+	//
+	// 与 Container 一样放在**平台状态目录**下：它决定容器挂什么卷、开什么端口、
+	// 跑什么镜像 —— 若由租户改写就等于让租户自己决定"能不能挂 /etc"。
+	Spec string `json:"spec,omitempty"`
 }
 
 // Registry 实例注册表。
@@ -122,6 +134,31 @@ func (r *Registry) bindContainer(inst *mcprocess.Instance, m Meta) {
 	inst.SetContainer(r.container, r.resourcesDir, m.Container)
 }
 
+// bindKind 把实例类型与启动规格接到实例上。
+//
+// 老实例（instance.json 里没有 template）按 minecraft 处理 —— Normalize 负责这件事，
+// 因此升级后行为与升级前完全一致。
+//
+// 规格 JSON 解析失败**不拦启动**：实例仍然注册得进去，只是打不开（Start 会发现
+// 镜像为空并拒绝），这样运维在面板上看得到这台实例、能删能改，而不是"凭空消失"。
+// 反过来，如果这里直接报错，一个字段写坏的 spec 就会让整台实例从列表里消失。
+func bindKind(inst *mcprocess.Instance, m Meta) {
+	kind := instancekind.Normalize(m.Template)
+	if m.Template != "" && string(kind) != m.Template {
+		slog.Warn("实例类型无法识别，按 minecraft 处理", "instance", m.ID, "template", m.Template)
+	}
+	inst.Kind = kind
+	if m.Spec == "" {
+		return
+	}
+	spec, err := instancekind.DecodeSpec(m.Spec)
+	if err != nil {
+		slog.Warn("实例规格无法解析，该实例将无法启动", "instance", m.ID, "error", err)
+		return
+	}
+	inst.Spec = spec
+}
+
 // Identity 返回实例的运行身份（必要时创建专用系统用户）。
 //
 // 已注册的实例走 Ensure（缺用户就建）；未注册的目录只做解析、不建用户 ——
@@ -148,6 +185,7 @@ func (r *Registry) registerContainerInstance(m Meta, dir, sdir string) *mcproces
 	apply := func(inst *mcprocess.Instance) {
 		inst.StartCommand = m.StartCommand
 		inst.JavaVersion = m.JavaVersion
+		bindKind(inst, m)
 		inst.CPUQuotaPercent = m.CPUQuota
 		inst.BackupDir = m.BackupDir
 		inst.MemLimitBytes = mcprocess.ParseMemBytes(m.MemLimit)
@@ -324,6 +362,7 @@ func (r *Registry) Create(m Meta) (*mcprocess.Instance, error) {
 	inst := mcprocess.NewInstance(m.ID, dir, sdir, m.JarPath, m.MaxMem, m.MinMem)
 	inst.StartCommand = m.StartCommand
 	inst.JavaVersion = m.JavaVersion
+	bindKind(inst, m)
 	inst.CPUQuotaPercent = m.CPUQuota
 	inst.BackupDir = m.BackupDir
 	inst.MemLimitBytes = mcprocess.ParseMemBytes(m.MemLimit)
@@ -423,6 +462,7 @@ func (r *Registry) Load() (loaded int, adopted int) {
 		if pid > 0 && mcprocess.IsAlive(pid) {
 			inst := mcprocess.NewAdopted(m.ID, dir, sdir, m.JarPath, m.MaxMem, m.MinMem, m.StartCommand, pid)
 			inst.JavaVersion = m.JavaVersion
+			bindKind(inst, m)
 			inst.CPUQuotaPercent = m.CPUQuota
 			inst.BackupDir = m.BackupDir
 			inst.MemLimitBytes = mcprocess.ParseMemBytes(m.MemLimit)
@@ -439,6 +479,7 @@ func (r *Registry) Load() (loaded int, adopted int) {
 			// 且报出与真实原因无关的 "already locked"。
 			inst := mcprocess.NewAdopted(m.ID, dir, sdir, m.JarPath, m.MaxMem, m.MinMem, m.StartCommand, opid)
 			inst.JavaVersion = m.JavaVersion
+			bindKind(inst, m)
 			inst.CPUQuotaPercent = m.CPUQuota
 			inst.BackupDir = m.BackupDir
 			inst.MemLimitBytes = mcprocess.ParseMemBytes(m.MemLimit)
@@ -453,6 +494,7 @@ func (r *Registry) Load() (loaded int, adopted int) {
 			// 必须恢复自定义启动命令：否则 Daemon 重启后实例会退回默认 java 命令
 			inst.StartCommand = m.StartCommand
 			inst.JavaVersion = m.JavaVersion
+			bindKind(inst, m)
 			inst.CPUQuotaPercent = m.CPUQuota
 			inst.BackupDir = m.BackupDir
 			inst.MemLimitBytes = mcprocess.ParseMemBytes(m.MemLimit)

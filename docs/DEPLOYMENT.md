@@ -61,12 +61,41 @@ cd atlmcpanel-1.0.0-linux-amd64
 
 安装脚本会：
 1. 创建 `/opt/mcpanel/{bin,data,instances,certs,logs}`
-2. 安装二进制与前端静态资源
-3. 生成初始 `config.yaml`（**已存在则保留，便于升级**）
-4. 生成自签 HTTPS 证书（若安装了 openssl）
-5. 安装并启动 `atlmcpanel-panel.service`
+2. 创建一个**专用系统用户**（默认 `atlpanel`）并把 `data/`、`certs/`、`logs/` 交给它
+3. 安装二进制与前端静态资源
+4. 生成初始 `config.yaml`（**已存在则保留，便于升级**）
+5. 生成自签 HTTPS 证书（若安装了 openssl）
+6. 安装并启动 `atlmcpanel-panel.service`（以 `atlpanel` 身份运行，带 systemd 沙箱）
 
 > 脚本是**幂等**的：升级时重新解压并再次执行即可，配置与数据不受影响。
+
+#### 面板运行用户与沙箱（0.11.3 起）
+
+```bash
+sudo ./deploy/install.sh panel                  # 默认：以 atlpanel 身份运行 + 全量沙箱
+sudo PANEL_USER=myuser ./deploy/install.sh panel # 换成自己指定的用户
+sudo PANEL_USER=root ./deploy/install.sh panel   # 退回老行为（面板以 root 跑，不加沙箱）
+```
+
+- 面板有权限写的只有 `data/` 与 `certs/`；`config.yaml` 是 `root:atlpanel 0640`（只读）；
+- 代价：**「本机一键部署节点」在非 root 下不可用**（要写 `/etc/systemd/system`）。
+  节点页会直接说明原因 —— 在节点机器上跑 `deploy/install.sh daemon`，或走 SSH / 凭证交换 / 粘贴导入登记；
+- 逐项加固矩阵、以及「为什么节点的单元不能加同样的项」见 `deploy/systemd/HARDENING.md`。
+
+#### 容器化安装（可选）
+
+```bash
+./deploy/docker/build.sh --tag atl-mcpanel-panel:0.11.3
+sudo mkdir -p /srv/mcpanel/{data,certs}
+sudo cp config.example.yaml /srv/mcpanel/config.yaml
+sudo chown -R 10001:10001 /srv/mcpanel/data /srv/mcpanel/certs /srv/mcpanel/config.yaml
+sudo chmod 640 /srv/mcpanel/config.yaml
+ATL_ROOT=/srv/mcpanel ATL_CERTS=/srv/mcpanel/certs ATL_CONFIG=/srv/mcpanel/config.yaml \
+  docker compose -f deploy/docker/docker-compose.yml up -d
+```
+
+容器版与节点**同机时必须用 host 网络**（节点的 `atl-container-firewall` 会挡容器→宿主的新连接），
+详见 `deploy/docker/README.md`。「本机一键部署」同样不可用（容器里没有 systemd）。
 
 ### 3.2 从源码安装
 
@@ -139,6 +168,7 @@ chmod 600 /opt/mcpanel/certs/node.key
 daemon:
   node_id: "node-002"                  # 必须与签发证书时使用的名称一致
   panel_address: "10.0.0.10:9090"      # 面板 gRPC 地址（示例；按你的实际地址填）
+  panel_url: ""                        # 只有「节点发起」接入需要（面板 HTTP 地址，如 http://10.0.0.10:8080）
   grpc_listen: ":9091"
   instance_dir: "instances"
   tls: true
@@ -150,6 +180,25 @@ daemon:
 4. 重启：`systemctl restart atlmcpanel-daemon`
 
 日志出现 `注册成功` 即接入完成。
+
+#### 用「节点发起」接入（`enroll --init`）
+
+节点上 `atl-daemon enroll --init` 会打印一行 `atl-join-v1.<…>` 接入请求，管理员把它贴进
+面板（登记节点 → 粘贴导入）后**节点会自己把证书领回来** —— 前提是 `config.yaml` 里填了
+`daemon.panel_url`（面板的 **HTTP** 地址；`panel_address` 是 gRPC 地址，不能用它领证书）：
+
+```yaml
+daemon:
+  node_id: "node-002"
+  panel_address: "10.0.0.10:9090"
+  panel_url: "http://10.0.0.10:8080"   # ← 节点发起接入必须有
+```
+
+启动后节点在 3 分钟内每 5 秒向面板要一次证书（管理员贴请求慢一点也没关系），
+日志依次出现 `已从面板领回节点证书` → `注册成功`。没导入时日志是
+`面板还没有导入这台节点的接入请求，稍后重试`（不退出，等你自己贴）。
+`node_id` 必须与接入请求里的节点名一致 —— 面板按**证书 CN** 校验身份，用别的名字会报
+「节点身份校验失败」。
 
 ---
 
@@ -233,6 +282,12 @@ ssh root@<面板IP> 'cd /tmp && tar xzf atlmcpanel-1.1.0-linux-amd64.tar.gz && \
 
 **数据库结构变更由内置迁移自动完成**（`schema_migrations` 表记录版本），
 升级时无需手工改表；迁移失败会回滚并阻止启动，不会留下半成品状态。
+
+> 从 0.11.2 及更早（面板以 root 运行）升级到 0.11.3 时，`deploy/upgrade.sh`
+> 会读单元文件里的 `User=` 并把 `data/`、`certs/`、`logs/` 交给该用户、
+> `config.yaml` 改成 `root:组 0640`。**漏了这一步的表现是启动即报
+> `SQLITE_READONLY`/`permission denied`**，手工补一句
+> `chown -R <用户>:<组> /opt/mcpanel/{data,certs,logs}` 即可。
 
 ---
 

@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ATLCNND/ATL-MCPanel/internal/common/instancekind"
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/safepath"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/container"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/javaruntime"
@@ -43,6 +44,15 @@ type Instance struct {
 	// 并把回退原因记进日志与启动提示 —— "选了 17 却跑 21" 必须让人看得见，
 	// 静默回退比启动失败更难排查。
 	JavaVersion string
+
+	// Kind 实例类型（见 instancekind）。零值等于 minecraft：
+	// 0.11.x 及更早建出来的实例没有这个字段，行为必须与以前完全一致。
+	//
+	// 类型决定"这台实例是什么"，进而决定能力（有没有 RCON、世界备份、
+	// 镜像/端口/卷这些入口）。进程层只关心落到命令上的差别，见 Start()。
+	Kind instancekind.Kind
+	// Spec 非 minecraft 类型的启动规格（镜像/命令/挂载/端口/环境变量）。
+	Spec instancekind.Spec
 
 	mu        sync.Mutex
 	cmd       *exec.Cmd
@@ -556,7 +566,13 @@ func (i *Instance) Start() error {
 
 	// 让服务端监听的端口与实例的 port 一致（隧道正是按后者下发的）。
 	// 失败只记日志、不拦启动 —— 这是修正一致性的动作，不是启动的前置条件。
-	i.syncServerPortLogged()
+	//
+	// **只有 Minecraft 才有 server.properties**：通用容器/控制台程序的端口是
+	// 用户自己在镜像或脚本里定的，替它们"校准"只会凭空造出一个没人用的
+	// server.properties（真机日志里出现过 kindconsole1 被写端口 18081）。
+	if instancekind.Normalize(string(i.Kind)) == instancekind.KindMinecraft {
+		i.syncServerPortLogged()
+	}
 
 	// 日志轮转：MC 的 stdout 直接写入该文件且进程持有 fd，
 	// 运行期间无法安全轮转，因此在每次启动前按大小滚动。
@@ -579,25 +595,64 @@ func (i *Instance) Start() error {
 	}
 	i.logFile = lf
 
-	// 构建启动命令。优先级（高 → 低）：
-	//   1. 实例目录下的 start.sh（可在文件管理中直接编辑，最灵活）
-	//   2. 自定义启动命令模板（instance.json 的 start_command，支持占位符）
-	//   3. 默认 java -Xms/-Xmx -jar
-	// 这一优先级让「启动脚本」成为可见、可改、可版本管理的实体，
-	// 同时保留零配置开箱即用的默认行为。
+	// 构建启动命令。**按实例类型分支**（instancekind）：
+	//
+	//   minecraft —— 优先级（高 → 低）：start.sh → 自定义命令 → 默认 java -jar。
+	//     这一优先级让「启动脚本」成为可见、可改、可版本管理的实体，
+	//     同时保留零配置开箱即用的默认行为。
+	//   docker —— 命令来自实例规格（镜像 + 命令 + 参数），没有 jar/java/start.sh
+	//     这套概念，也不去猜。它必须跑在容器里：镜像本身就是一个隔离前提。
+	//   console —— 只提供 stdin/stdout：start.sh → 自定义命令 → 交互式 shell。
+	//     它刻意**不**启动任何 Minecraft 相关的东西（没有 jar 也能起）。
+	//
+	// "按类型分支"与"按能力开关"是两件事：页签显不显示由 capabilities 决定
+	//（前端 + 面板 API），这里只处理"这类型的进程到底怎么起"。
 	var cmd *exec.Cmd
 	scriptPath := filepath.Join(i.Dir, "start.sh")
+	hasScript := false
 	if fi, err := os.Stat(scriptPath); err == nil && !fi.IsDir() {
+		hasScript = true
+	}
+	kindDocker := i.Kind == instancekind.KindDocker
+
+	switch {
+	case kindDocker:
+		i.startMode = "docker"
+		if i.Container == nil {
+			i.status = "error"
+			i.logFile.Close()
+			i.logFile = nil
+			return fmt.Errorf("该实例是 Docker 类型，但节点上没有可用的容器运行时（docker）：" +
+				"请先在节点上安装并启动 docker")
+		}
+		// 命令在下面的容器分支里组装（需要 uid/gid）。
+		cmd = nil
+
+	case i.Kind == instancekind.KindConsole:
+		if hasScript {
+			i.startMode = "start.sh"
+			cmd = exec.Command("sh", scriptPath)
+		} else if i.StartCommand != "" {
+			i.startMode = "custom"
+			cmd = exec.Command("sh", "-c", i.renderCommandLocked(i.StartCommand))
+		} else {
+			// 既没有脚本也没有自定义命令：给一个交互式 shell，让控制台
+			// 真的能"收发 stdin/stdout"。这不是降级，而是这种类型的默认形态。
+			i.startMode = "shell"
+			cmd = exec.Command("sh", "-i")
+		}
+
+	case hasScript:
 		// 通过 sh 调用，因此不要求脚本本身带执行位 —— 用户可直接在
 		// 文件管理中创建/编辑 start.sh，无需额外 chmod。
 		i.startMode = "start.sh"
 		cmd = exec.Command("sh", scriptPath)
-	} else if i.StartCommand != "" {
+	case i.StartCommand != "":
 		i.startMode = "custom"
 		// 自定义命令：用 sh -c 执行，支持占位符替换和任意脚本
 		command := i.renderCommandLocked(i.StartCommand)
 		cmd = exec.Command("sh", "-c", command)
-	} else {
+	default:
 		i.startMode = "default"
 		// 默认 java -jar 模板
 		if _, err := os.Stat(i.JarPath); err != nil {
@@ -616,9 +671,11 @@ func (i *Instance) Start() error {
 		javaBin := i.resolveJavaBinLocked()
 		cmd = exec.Command(javaBin, args...)
 	}
-	cmd.Dir = i.Dir
-	// 独立进程组：便于停止时连同子进程一起终止（sh -c 包裹时尤其重要）
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if cmd != nil {
+		cmd.Dir = i.Dir
+		// 独立进程组：便于停止时连同子进程一起终止（sh -c 包裹时尤其重要）
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	}
 
 	// ---- 容器模式：把"宿主命令行"换成"docker run"（见 docs/CONTAINERIZATION.md）----
 	//
@@ -633,7 +690,7 @@ func (i *Instance) Start() error {
 	// registry 也会调 bindContainer（registry.go:430）。于是"节点装了 docker +
 	// 实例是接管来的"两个条件凑在一起时，任何实例的启动都会走进这里 ——
 	// 哪怕它根本没开容器化，接着就会踩到 containerJava 里的自死锁。
-	if i.wantContainer && i.Container != nil {
+	if kindDocker || (i.wantContainer && i.Container != nil) {
 		if identity == nil {
 			// 没有 uid 就写不出 --user；而容器里的 root 就是宿主 root。
 			i.status = "error"
@@ -645,7 +702,15 @@ func (i *Instance) Start() error {
 				"容器里的 root 等同于节点 root，因此拒绝以 root 身份启动。" +
 				"请检查节点配置里的 instance_user（默认 per-instance）")
 		}
-		cargv, cerr := i.containerArgv(cmd, identity)
+		var cargv []string
+		var cerr error
+		if kindDocker {
+			// Docker 类型：命令完全来自实例规格，不经过 containerArgv 里
+			// "把宿主命令行改写进容器"的那套规则（那套是给 Minecraft 用的）。
+			cargv, cerr = i.dockerKindArgv(identity)
+		} else {
+			cargv, cerr = i.containerArgv(cmd, identity)
+		}
 		if cerr != nil {
 			i.status = "error"
 			if i.logFile != nil {
@@ -857,6 +922,77 @@ func (i *Instance) containerArgv(native *exec.Cmd, identity *runas.Identity) ([]
 		Command:      inner,
 	}
 	return i.Container.Argv(spec)
+}
+
+// dockerKindArgv 组装 Docker 类型实例的 `docker run` 命令行。
+//
+// 与 containerArgv 的区别在于：这里**没有** java/jar/start.sh 的概念，
+// 命令行完全来自实例规格（instancekind.Spec）；镜像也由用户指定。
+// 保留的约束一条都不放松：--user 降权、cap-drop、no-new-privileges、
+// pids-limit、端口只发回环（除非直连线路要求对外）。
+func (i *Instance) dockerKindArgv(identity *runas.Identity) ([]string, error) {
+	if err := i.Container.EnsureNetwork(context.Background(), i.ID); err != nil {
+		return nil, fmt.Errorf("准备容器网络失败：%w", err)
+	}
+
+	spec := i.Spec
+	mounts := make([]container.MountSpec, 0, len(spec.Mounts))
+	for _, m := range spec.Mounts {
+		host, err := i.mountHostPath(m.Host)
+		if err != nil {
+			return nil, err
+		}
+		mounts = append(mounts, container.MountSpec{
+			Host:      host,
+			Container: m.Target,
+			ReadOnly:  m.ReadOnly,
+		})
+	}
+	ports := make([]container.PortSpec, 0, len(spec.Ports))
+	for _, p := range spec.Ports {
+		ports = append(ports, container.PortSpec{Host: p.Host, Container: p.Container, UDP: p.UDP})
+	}
+
+	cspec := container.Spec{
+		InstanceID:   i.ID,
+		Dir:          i.Dir,
+		Mounts:       mounts,
+		Ports:        ports,
+		Entrypoint:   spec.Entrypoint,
+		UID:          identity.UID,
+		GID:          identity.GID,
+		MemoryBytes:  i.MemLimitBytes,
+		CPUPercent:   i.CPUQuotaPercent,
+		PublishHost:  i.containerPublishHost(),
+		ResourcesDir: i.ContainerResourcesDir,
+		Command:      spec.Cmd,
+		WorkDir:      spec.WorkingDir,
+		ExtraEnv:     spec.Env,
+		Image:        spec.Image,
+		ReadOnlyRoot: spec.ReadOnlyRoot,
+	}
+	if cspec.Image == "" {
+		return nil, fmt.Errorf("Docker 类型实例缺少镜像：请在「面板设置 / 实例」里填写镜像名")
+	}
+	return i.Container.Argv(cspec)
+}
+
+// mountHostPath 把规格里的"实例目录内相对路径"解析成宿主绝对路径。
+//
+// 只允许实例目录下的子路径：卷的来源若能指向任意宿主路径，
+// 一个租户就能把自己目录之外的东西（甚至 /）挂进容器改写 —— 那等于节点 root。
+func (i *Instance) mountHostPath(rel string) (string, error) {
+	clean, err := instancekind.CleanMountHost(rel)
+	if err != nil {
+		return "", err
+	}
+	full := filepath.Join(i.Dir, clean)
+	// 双重确认：解析后的路径必须仍在实例目录内。
+	rel2, err := filepath.Rel(i.Dir, full)
+	if err != nil || rel2 == ".." || strings.HasPrefix(rel2, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("卷的来源必须是实例目录内的路径（收到 %q）", rel)
+	}
+	return full, nil
 }
 
 // containerPublishHost 容器端口发布到哪个宿主地址。
@@ -1317,12 +1453,23 @@ func (i *Instance) watchAdoptedStop(pid int, gen uint64) {
 }
 
 // Stop 停止实例进程。托管实例优先优雅 stop；接管实例发送 SIGTERM。
+//
+// 三种类型的"优雅停止"手段并不相同，不能一律往 stdin 里写 `stop`：
+//   - minecraft：`stop` 是服务端指令，走 stdin 最优雅（接管/容器情形退化成 SIGTERM）；
+//   - docker：镜像自己根本听不懂 `stop`，要交给 docker 送 SIGTERM 再删容器；
+//   - console：用户自己的程序，同样听不懂 `stop`，只能给进程组发信号
+//     （必须发整个进程组，否则 `sh start.sh` 的子进程会留下来继续占端口）。
 func (i *Instance) Stop() error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.status != "running" {
-		return fmt.Errorf("实例未运行")
+		// 幂等：进程已经退出（典型的是"启动即失败"，比如镜像起不来、
+		// 端口被占）时再点"停止"不该报错 —— 否则界面上会跳出一句
+		// "停止失败：实例未运行"，让人以为它还在跑。
+		return nil
 	}
+	// 类型归一：空值（0.11.x 老实例）按 minecraft 处理，与 instancekind.Normalize 一致。
+	isMC := instancekind.Normalize(string(i.Kind)) == instancekind.KindMinecraft
 	// 接管状态：无 stdin 管道，用 SIGTERM（MC 有 shutdown hook，可优雅退出）
 	if i.adoptedPID != 0 {
 		// 跟随进程要一起收掉：容器停了之后 `docker logs -f` 自己会退出，
@@ -1351,6 +1498,51 @@ func (i *Instance) Stop() error {
 		go i.watchAdoptedStop(i.adoptedPID, i.procGen)
 		return nil
 	}
+	// 通用 Docker 类型：让 docker 自己送 SIGTERM 并删容器。
+	//
+	// 注意这里**不能**走下面写 stdin 的那条路：镜像（nginx / 自己的应用）
+	// 不认识 `stop` 这个词，写进去只会变成程序的输入。
+	//
+	// 判据不是"类型 == docker"，而是"**这个进程是不是容器**"：
+	// console 类型同样会被容器化（start.sh 在容器里跑，进程是 `docker run`），
+	// 对它发信号只会杀掉 CLI 自己。凡是容器化且不是 minecraft 的，一律 `docker stop`。
+	//
+	// 为什么 minecraft 例外：它能听懂 stdin 里的 `stop`（容器模式的 stdin 由
+	// docker CLI 转发进容器），走那条路更优雅（服务端会先 save-all 再退出）。
+	if !isMC && i.containerized && i.Container != nil {
+		i.stopFollowLocked()
+		// 10 秒：面板侧的停止 RPC 有它自己的超时，等 30 秒会先被调用方判成
+		// DeadlineExceeded（真机踩到过：容器其实停了，接口却报 500）。
+		if err := i.Container.GracefulStop(context.Background(), i.ID, 10*time.Second); err != nil {
+			// docker stop 失败（进程不响应 SIGTERM、容器已半死）不能就这样把
+			// "停止"判为失败：退化成删容器，让实例真的停下来。
+			if err2 := i.Container.Remove(context.Background(), i.ID, true); err2 != nil {
+				return fmt.Errorf("停止容器失败: %v（强制删除也失败: %v）", err, err2)
+			}
+		}
+		i.stopRecorded = true
+		go fireLifecycle(i.ID, false)
+		return nil
+	}
+
+	// 通用控制台类型（原生进程形态）：用户自己的程序，只能发信号。
+	//
+	// startMode=shell（`sh -i`）时写一下 "exit" 也能退，但 start.sh 形态
+	// 就只能靠信号；统一发 SIGTERM 到**进程组**，两种情况都收得掉。
+	if !isMC && (i.Kind == instancekind.KindConsole || i.startMode == "shell") {
+		if i.cmd != nil && i.cmd.Process != nil {
+			if err := syscall.Kill(-i.cmd.Process.Pid, syscall.SIGTERM); err != nil {
+				// 进程组不存在（比如只有一个进程）时退回单进程信号
+				if err2 := i.cmd.Process.Signal(syscall.SIGTERM); err2 != nil {
+					return fmt.Errorf("发送停止信号失败: %v", err2)
+				}
+			}
+			i.stopRecorded = true
+			go fireLifecycle(i.ID, false)
+			return nil
+		}
+	}
+
 	if i.stdin != nil {
 		i.stdin.Write([]byte("stop\n"))
 	}

@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ATLCNND/ATL-MCPanel/internal/common/instancekind"
 	"github.com/ATLCNND/ATL-MCPanel/internal/common/logger"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/mcprocess"
 	"github.com/ATLCNND/ATL-MCPanel/internal/daemon/registry"
@@ -153,9 +154,17 @@ func (p *Poller) tick(lastInject map[string]time.Time) {
 			continue
 		}
 
+		// 非 Minecraft 实例没有 `list` / `tps` 可解析 —— 别为它们起采集协程、
+		// 也别往它们 stdin 里写东西。类型为空（0.11.x 老实例）按 minecraft 处理。
+		if instancekind.Normalize(string(inst.Kind)) != instancekind.KindMinecraft {
+			p.dropState(id)
+			p.store.Forget(id)
+			continue
+		}
+
 		st := p.ensureState(id, inst)
 
-		// 周期性注入 list/tps 以刷新基线（仅托管实例有 stdin）
+		// 周期性注入 list/tps 以刷新基线（仅托管实例有 stdin）。
 		if !inst.Adopted() {
 			if last, seen := lastInject[id]; !seen || time.Since(last) >= injectInterval {
 				lastInject[id] = time.Now()

@@ -271,6 +271,28 @@ if [ "$SERVICE_OK" -eq 1 ] && grep -qE 'bin/dsh-(panel|daemon)' "$UNIT_PATH" 2>/
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# 3c. 运行用户的所有权（0.11.3 起面板以独立低权用户运行）
+# ---------------------------------------------------------------------------
+#
+# 老安装的 data/、certs/ 都归 root；单元换成 User=atlpanel 之后，面板会因为
+# 写不了 data/mcpanel.db 而反复失败（日志里是 SQLITE_READONLY / attempt to write
+# a readonly database）。这一步不新建用户、也不改单元 —— 只按单元里**实际写着**的
+# User= 同步目录所有权，因为用户名可能被用户自定义过（install.sh 支持 PANEL_USER）。
+if [ "$MODE" = "panel" ] && [ "$SERVICE_OK" -eq 1 ]; then
+  RUN_USER=$(sed -n 's/^User=//p' "$UNIT_PATH" 2>/dev/null | head -1 | tr -d '[:space:]' || true)
+  if [ -n "$RUN_USER" ] && [ "$RUN_USER" != "root" ] && id -u "$RUN_USER" >/dev/null 2>&1; then
+    echo "==> 面板运行用户: $RUN_USER（同步 data/ certs/ logs/ 的所有权）"
+    run "chown -R '$RUN_USER:$RUN_USER' '$INSTALL_DIR/data' '$INSTALL_DIR/certs' '$INSTALL_DIR/logs' 2>/dev/null || true"
+    if [ -f "$INSTALL_DIR/config.yaml" ]; then
+      run "chown root:'$RUN_USER' '$INSTALL_DIR/config.yaml' 2>/dev/null || true"
+      run "chmod 640 '$INSTALL_DIR/config.yaml' 2>/dev/null || true"
+    fi
+  else
+    echo "==> 面板运行用户: root（单元里没有 User=，或该用户不存在）"
+  fi
+fi
+
 # ---------- 4. 重启并验证；失败就回滚 ----------
 echo
 echo "==> 重启服务"

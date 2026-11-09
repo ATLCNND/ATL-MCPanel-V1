@@ -91,8 +91,8 @@ type ServerConfig struct {
 	// 打开后，没有 node_uid 或没有 enrollment 记录的节点会在注册/心跳时被拒 ——
 	// 也就是「老的一键部署节点必须迁移一次」才能继续用。
 	// 默认 false：升级不会把现存节点直接踢下线；迁移完成后再打开。
-	RequireEnrollment bool `yaml:"require_enrollment"`
-	WebDir      string `yaml:"web_dir"`      // 前端静态资源目录（SPA），为空则不托管
+	RequireEnrollment bool   `yaml:"require_enrollment"`
+	WebDir            string `yaml:"web_dir"` // 前端静态资源目录（SPA），为空则不托管
 
 	// PanelName 面板**显示名称**：登录页、侧边栏品牌区、浏览器标题都用它。
 	//
@@ -156,12 +156,23 @@ type ServerConfig struct {
 type DaemonConfig struct {
 	NodeID       string `yaml:"node_id"`
 	PanelAddress string `yaml:"panel_address"` // Panel gRPC 地址
-	GRPCListen   string `yaml:"grpc_listen"`   // Daemon 自身 gRPC 监听（供 Panel 反向调用），如 ":9091"
-	InstanceDir  string `yaml:"instance_dir"`  // 实例根目录
-	TLS          bool   `yaml:"tls"`
-	CertFile     string `yaml:"cert_file"`
-	KeyFile      string `yaml:"key_file"`
-	CAFile       string `yaml:"ca_file"`
+
+	// PanelURL 面板的 **HTTP** 基地址，例如 "http://10.0.0.5:25080"；
+	// 面板启用了安全入口时要把入口带上："https://panel.example.com/abc123"。
+	//
+	// 只有按「③ 节点发起」（在节点上跑 enroll --init、把打印的那一行贴进面板）
+	// 接入的节点才需要它：那种方式下面板签好的证书是随 HTTP 响应回到管理员浏览器
+	// 的，节点自己没参与，于是第一次启动时得主动去 `/api/enroll/renew` 领回来 ——
+	// 那是一次 HTTP 请求，而 panel_address 是 gRPC 地址，用不了。
+	//
+	// 按「② 面板发起」（enroll --panel --token）装的节点证书已经在本地，留空即可。
+	PanelURL    string `yaml:"panel_url"`
+	GRPCListen  string `yaml:"grpc_listen"`  // Daemon 自身 gRPC 监听（供 Panel 反向调用），如 ":9091"
+	InstanceDir string `yaml:"instance_dir"` // 实例根目录
+	TLS         bool   `yaml:"tls"`
+	CertFile    string `yaml:"cert_file"`
+	KeyFile     string `yaml:"key_file"`
+	CAFile      string `yaml:"ca_file"`
 
 	// AllowInsecureGRPC 显式允许"明文 gRPC + 对外监听"。
 	//

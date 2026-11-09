@@ -1,5 +1,4 @@
 import Brand from './Brand'
-import TlsSettings from './TlsSettings'
 import { usePanelMeta } from './usePanelMeta'
 import { formatServerTime } from '../time'
 import './AboutPage.css'
@@ -34,8 +33,6 @@ export default function AboutPage() {
         </dl>
       </section>
 
-      <TlsSettings />
-
       <section className="about-card">
         <div className="about-card-title">项目链接</div>
         <div className="about-links">
@@ -44,6 +41,12 @@ export default function AboutPage() {
           <a href="https://github.com/ATLCNND/ATL-MCPanel-V1" target="_blank" rel="noreferrer noopener">GitHub 仓库 ↗</a>
           <a href="https://github.com/ATLCNND/ATL-MCPanel-V1/tree/main/docs" target="_blank" rel="noreferrer noopener">项目文档 ↗</a>
         </div>
+        {/* 证书卡片原来就嵌在这一页里，而 /api/tls/* 是管理员接口 ——
+            非管理员打开「关于」会撞出一条 403，看着像面板坏了。
+            现在它搬进「面板设置 → 域名与证书」（那一页本来就只有管理员能进）。 */}
+        <p className="about-tip">
+          HTTPS 证书设置已移到<strong>「面板设置 → 域名与证书」</strong>（仅管理员可见）。
+        </p>
       </section>
     </div>
   )

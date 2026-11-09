@@ -367,6 +367,15 @@ type Spec struct {
 	InstanceID string
 	// Dir 宿主上的实例目录（挂到 /data，唯一可写之处）。
 	Dir string
+	// Mounts 额外挂载（实例目录以外）。仅通用 Docker 类型用得上；
+	// 源路径必须由调用方做过越界检查（见 instancekind.Mount）。
+	Mounts []MountSpec
+	// Ports 额外端口映射（多端口）。Instance 的 Port 字段仍表示"游戏端口"，
+	// 单独保留是为了不改变 Minecraft 实例的历史行为。
+	Ports []PortSpec
+	// Entrypoint 覆盖镜像 entrypoint（空 = 用镜像自带的）。
+	// docker CLI 的 --entrypoint 只接受**一个**可执行文件，多段会被调用方拒绝。
+	Entrypoint []string
 	// UID/GID 容器内进程的身份（= 该实例的专用用户）。
 	UID uint32
 	GID uint32
@@ -387,10 +396,41 @@ type Spec struct {
 	ResourcesDir string
 	// Command 容器内要执行的命令，路径必须用**容器内路径**（如 /data/start.sh）。
 	Command []string
+	// WorkDir 容器内工作目录（空 = MountPoint）。
+	WorkDir string
 	// ExtraEnv 额外环境变量（KEY=VALUE）。
 	ExtraEnv []string
 	// Image 覆盖默认镜像（一般不用）。
 	Image string
+	// ReadOnlyRoot 根文件系统只读。nil 按 true 处理（Minecraft 的既有行为）：
+	// 只读根是隔离的一部分，通用镜像若需要写根目录，调用方必须**显式**关掉。
+	ReadOnlyRoot *bool
+	// NoNewPrivileges / CapDropAll / PidsLimit 允许通用 Docker 放宽部分限制。
+	// nil 表示按默认（true / true / 256）处理。
+	NoNewPrivileges *bool
+	CapDropAll      *bool
+	PidsLimit       int
+}
+
+// MountSpec 一条额外挂载。
+type MountSpec struct {
+	Host      string // 宿主绝对路径（调用方负责越界校验）
+	Container string // 容器内绝对路径
+	ReadOnly  bool
+}
+
+// PortSpec 一条端口映射。
+type PortSpec struct {
+	Host      int
+	Container int
+	UDP       bool
+}
+
+func boolOr(p *bool, def bool) bool {
+	if p == nil {
+		return def
+	}
+	return *p
 }
 
 // Argv 生成完整的 docker 命令行（第一个元素是 docker 可执行文件）。
@@ -398,7 +438,9 @@ func (r *Runtime) Argv(spec Spec) ([]string, error) {
 	if spec.InstanceID == "" || spec.Dir == "" {
 		return nil, errors.New("容器启动参数缺少实例 ID 或实例目录")
 	}
-	if len(spec.Command) == 0 {
+	if len(spec.Command) == 0 && spec.Image == "" {
+		// 通用 Docker 允许不给命令（用镜像自带的 entrypoint/cmd）；
+		// 基础镜像（Minecraft 运行时）没有 entrypoint，不给命令等于什么都没跑。
 		return nil, errors.New("容器启动参数缺少要执行的命令")
 	}
 	// 挂载路径必须是绝对路径。相对路径 docker 会当成"命名卷"，
@@ -436,15 +478,44 @@ func (r *Runtime) Argv(spec Spec) ([]string, error) {
 	if spec.CPUPercent > 0 {
 		argv = append(argv, "--cpus", strconv.FormatFloat(float64(spec.CPUPercent)/100, 'f', -1, 64))
 	}
+	pids := spec.PidsLimit
+	if pids <= 0 {
+		pids = 256 // 防 fork 炸弹：一个实例把节点拖垮是很容易的
+	}
+	argv = append(argv, "--pids-limit", strconv.Itoa(pids))
+	if boolOr(spec.CapDropAll, true) {
+		argv = append(argv, "--cap-drop", "ALL")
+	}
+	if boolOr(spec.NoNewPrivileges, true) {
+		argv = append(argv, "--security-opt", "no-new-privileges")
+	}
+	// 只读根：Minecraft 一直如此（默认 true）。通用镜像若需要写根目录，
+	// 必须由调用方显式关掉 —— 不能因为"某个镜像起不来"就把默认改成可写。
+	if boolOr(spec.ReadOnlyRoot, true) {
+		argv = append(argv, "--read-only")
+	}
 	argv = append(argv,
-		"--pids-limit", "256", // 防 fork 炸弹：一个实例把节点拖垮是很容易的
-		"--cap-drop", "ALL",
-		"--security-opt", "no-new-privileges",
-		"--read-only",
 		"--tmpfs", "/tmp:size=64m",
 		"-v", spec.Dir+":"+MountPoint,
-		"-w", MountPoint,
 	)
+
+	// 额外挂载：源路径由调用方做过越界校验（只允许实例目录下的子路径）。
+	for _, m := range spec.Mounts {
+		if m.Host == "" || m.Container == "" {
+			continue
+		}
+		v := m.Host + ":" + m.Container
+		if m.ReadOnly {
+			v += ":ro"
+		}
+		argv = append(argv, "-v", v)
+	}
+
+	workDir := spec.WorkDir
+	if workDir == "" {
+		workDir = MountPoint
+	}
+	argv = append(argv, "-w", workDir)
 
 	// JDK：只读挂入宿主目录（面板支持按实例选 Java 版本，镜像里不装 JDK）。
 	if spec.JavaHome != "" {
@@ -489,6 +560,30 @@ func (r *Runtime) Argv(spec Spec) ([]string, error) {
 			host = "127.0.0.1"
 		}
 		argv = append(argv, "--publish", fmt.Sprintf("%s:%d:%d", host, spec.Port, spec.Port))
+	}
+	// 通用 Docker 的多端口映射：宿主端口由面板分配，发布地址同上。
+	// proto 形如 "127.0.0.1:8080:80/tcp"。
+	for _, p := range spec.Ports {
+		if p.Host <= 0 || p.Container <= 0 {
+			continue
+		}
+		host := spec.PublishHost
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		proto := "tcp"
+		if p.UDP {
+			proto = "udp"
+		}
+		argv = append(argv, "--publish", fmt.Sprintf("%s:%d:%d/%s", host, p.Host, p.Container, proto))
+	}
+	if len(spec.Entrypoint) > 0 {
+		// docker CLI 只接受一个可执行文件；多段必须由调用方拼成命令行。
+		if len(spec.Entrypoint) > 1 {
+			return nil, fmt.Errorf("entrypoint 只能是单个可执行文件（收到 %d 段）："+
+				"需要参数请改用启动命令", len(spec.Entrypoint))
+		}
+		argv = append(argv, "--entrypoint", spec.Entrypoint[0])
 	}
 	argv = append(argv, "--network", NetworkOf(spec.InstanceID))
 	argv = append(argv, image)

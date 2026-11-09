@@ -59,6 +59,12 @@ server:
 daemon:
   node_id: "node-001"
   panel_address: "127.0.0.1:9090"
+  # 面板的 **HTTP** 地址（注意与上面的 gRPC 地址不是一回事）。
+  # 只有「③ 节点发起」接入的节点需要它：那种方式下证书是面板签给**浏览器**的，
+  # 节点第一次启动要自己去 /api/enroll/renew 领回来，而那是一次 HTTP 请求。
+  # 面板启用安全入口时要把入口带上，例如 https://panel.example.com/abc123
+  # 用「② 面板发起」（enroll --panel --token）或 SSH 一键部署装的节点留空即可。
+  panel_url: ""
   # Daemon 自身 gRPC 监听（Panel 反向调用）。
   # 默认只绑回环：这是面板与节点之间的内部通道，监听所有网卡（":9091"）
   # 就等于把它摆到公网上（虽然有 mTLS 兜底，但没有理由多开这个面）。

@@ -75,10 +75,18 @@ func TestStartContainerBranchGatedByWantContainer(t *testing.T) {
 	}
 	code := string(src)
 
-	if !strings.Contains(code, "if i.wantContainer && i.Container != nil {") {
-		t.Error("Start() 里容器分支的判据不再是 `i.wantContainer && i.Container != nil`。" +
+	// 判据可以带"类型"这一项（Docker 类型实例必须进容器分支，镜像就是它的隔离前提），
+	// 但**必须**仍然受 wantContainer 约束 —— 只判 `i.Container != nil` 就会回到上面那个坑。
+	if !strings.Contains(code, "if kindDocker || (i.wantContainer && i.Container != nil) {") &&
+		!strings.Contains(code, "if i.wantContainer && i.Container != nil {") {
+		t.Error("Start() 里容器分支的判据既不是 `kindDocker || (i.wantContainer && i.Container != nil)`" +
+			" 也不是 `i.wantContainer && i.Container != nil`。" +
 			"只判 `i.Container != nil` 会把「节点有 docker」当成「实例要容器化」，" +
 			"接管来的 native 实例启动时就会走进容器分支（2026-10-17 真机自死锁的触发条件）。")
+	}
+	// 反向：不许出现无条件只看 i.Container 的判据
+	if strings.Contains(code, "if i.Container != nil {\n\t\ti.startMode = \"docker\"") {
+		t.Error("Start() 里出现了只看 `i.Container != nil` 的容器判据 —— 这正是 2026-10-17 自死锁的触发条件。")
 	}
 	// 反向：containerJava 必须用持锁变体，不能再调回会自己加锁的那个
 	if strings.Contains(code, "bin := i.resolveJavaBin()") {

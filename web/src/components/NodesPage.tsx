@@ -1,14 +1,13 @@
 import { useEffect, useState } from 'react'
 import {
   NodeInfo, NodeProbe, PKIInfo, NodeResource,
-  listNodes, createNode, deleteNode, probeNode, deployNode,
+  listNodes, deleteNode, probeNode, deployNode,
   restartDaemon, daemonLogs, getPKI, getNodeCert,
-  listNodeResources, uploadNodeResource, deleteNodeResource, updateNode, testNodeAuth,
-  clearNodeCredential, getLocalNode, importJoinRequest, adoptLocalNode, installLocalNode, issueJoinToken,
+  listNodeResources, uploadNodeResource, deleteNodeResource, updateNode,
+  clearNodeCredential, getLocalNode, adoptLocalNode, installLocalNode,
 } from '../api'
 import { parseServerTime } from '../time'
-import { basePath } from '../api'
-import { copyText } from '../clipboard'
+import NodeRegisterDialog, { RegisterPrefill } from './NodeRegisterDialog'
 import './NodesPage.css'
 
 function fmtTime(s: string): string {
@@ -31,12 +30,14 @@ export default function NodesPage() {
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
 
-  // 新增节点表单
-  const [showAdd, setShowAdd] = useState(false)
-  // auth_type：'password' | 'key' —— 显式声明凭据类型，不再靠"猜"
-  const [form, setForm] = useState({ name: '', ip: '', public_ip: '', ssh_user: 'root', ssh_auth: '', auth_type: 'password', ssh_port: '22', panel_grpc_port: '', daemon_grpc_port: '' })
-  /** 「测试连接」的结果（登记前先验证地址 + 凭证是否可用） */
-  const [authTest, setAuthTest] = useState<{ ok: boolean; text: string } | null>(null)
+  /**
+   * 登记节点弹窗（null = 没开）。
+   *
+   * 三种接入口子（面板 SSH 连过去装 / 凭证交换 / 粘贴导入）原来各是一块内联横幅，
+   * 互斥关系与先后顺序只能靠读文案猜；现在收进一个弹窗用页签并列（§13 第 7 步 B4）。
+   * prefill 用于「本机节点未接入」横幅点「手动填写」时带上 127.0.0.1。
+   */
+  const [register, setRegister] = useState<{ prefill?: RegisterPrefill } | null>(null)
 
   /**
    * 编辑中的节点（null = 没有在编辑）。
@@ -171,67 +172,9 @@ export default function NodesPage() {
   }
 
   /**
-   * 用表单里的地址与凭证当场试连一次。
-   *
-   * 登记节点是唯一"填错要等点部署才发现"的地方，而那时的报错往往只有一句
-   * 认证失败。先在这里点一下，通了再保存。
+   * 登记弹窗里的「测试连接」已随表单一起搬进 NodeRegisterDialog —— 那里才知道
+   * 用户正在填什么，父组件只看结果。
    */
-  const testAuth = async () => {
-    setAuthTest(null)
-    setBusy(true)
-    try {
-      const r = await testNodeAuth({
-        ip: form.ip.trim(),
-        ssh_port: Number(form.ssh_port) || 22,
-        ssh_user: form.ssh_user.trim() || 'root',
-        ssh_auth: form.ssh_auth,
-        auth_type: form.auth_type as 'password' | 'key',
-      })
-      const p = r.probe || {}
-      setAuthTest({
-        ok: true,
-        text: `连接成功：${p.os || '?'} / ${p.arch || '?'}，systemd ${p.has_systemd ? '可用' : '不可用'}，剩余磁盘 ${p.free_disk_mb || 0} MB`,
-      })
-    } catch (e: any) {
-      setAuthTest({ ok: false, text: e.message })
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  /** 凭证交换：面板签一次性 token，并给出节点上要执行的那条命令 */
-  const [joinCmd, setJoinCmd] = useState<{ cmd: string; expires: string } | null>(null)
-  const startCredExchange = async () => {
-    setBusy(true); setError(''); setMsg(''); setJoinCmd(null)
-    try {
-      const r = await issueJoinToken('panel', '')
-      const panelURL = window.location.origin + basePath()
-      setJoinCmd({
-        cmd: `atl-daemon enroll --panel ${panelURL} --token ${r.token}`,
-        expires: r.expires_at,
-      })
-    } catch (e: any) {
-      setError(e.message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  /** ③ 节点发起：把节点上 enroll --init 打印的那一行贴进来 */
-  const [importText, setImportText] = useState<string>('')
-  const [showImport, setShowImport] = useState(false)
-  const doImport = async () => {
-    if (!importText.trim()) return
-    setBusy(true); setError(''); setMsg('')
-    try {
-      const r = await importJoinRequest(importText.trim())
-      setMsg('已导入 ' + (r.node_name || r.node_uid) + '，证书已签发')
-      setImportText('')
-      await load()
-    } catch (e: any) {
-      setError(e.message)
-    } finally { setBusy(false) }
-  }
 
   /** 本机已装好 daemon → 直接登记（不需要 SSH 凭据） */
   const adoptLocal = async () => {
@@ -263,24 +206,6 @@ export default function NodesPage() {
   const clearCred = async (n: NodeInfo) => {
     if (!confirm(`移除节点「${n.name}」保存的 SSH 凭据？\n\n节点会继续用 mTLS/心跳工作，但「探测 / 部署 / 重启 Daemon / 看日志」这些需要 SSH 的功能将不可用。`)) return
     await wrap(() => clearNodeCredential(n.id), 'SSH 凭据已移除')
-  }
-
-  const submitAdd = async (e: React.FormEvent) => {
-    e.preventDefault()
-    await wrap(() => createNode({
-      name: form.name,
-      ip: form.ip,
-      public_ip: form.public_ip.trim(),
-      ssh_user: form.ssh_user,
-      ssh_auth: form.ssh_auth,
-      auth_type: form.auth_type as 'password' | 'key',
-      ssh_port: Number(form.ssh_port) || 22,
-      panel_grpc_port: Number(form.panel_grpc_port) || 0,
-      daemon_grpc_port: Number(form.daemon_grpc_port) || 0,
-    }), '节点已登记')
-    setForm({ name: '', ip: '', public_ip: '', ssh_user: 'root', ssh_auth: '', auth_type: 'password', ssh_port: '22', panel_grpc_port: '', daemon_grpc_port: '' })
-    setAuthTest(null)
-    setShowAdd(false)
   }
 
   /**
@@ -315,13 +240,11 @@ export default function NodesPage() {
     <div className="nodes-page">
       <div className="page-toolbar">
         <button onClick={load} disabled={busy}>刷新</button>
-        <button className="primary" onClick={() => setShowAdd(!showAdd)}>+ 登记节点</button>
-        {/* 凭证交换：面板签 token，节点上跑一条命令换证书（面板不存任何凭据） */}
-        <button onClick={startCredExchange} disabled={busy}
-          title="生成一次性 token，在节点上执行一条命令即可接入（面板不保存 SSH 凭据）">
-          凭证交换接入
+        {/* 三种接入方式都在这个弹窗里（页签切换），不再各占一条工具栏按钮 */}
+        <button className="primary" onClick={() => setRegister({})}
+          title="SSH 部署 / 凭证交换 / 粘贴导入，三种接入方式">
+          + 登记节点
         </button>
-        <button onClick={() => setShowImport(true)} title="③ 节点发起：把节点上 enroll --init 打印的那一行贴进来">粘贴导入</button>
       </div>
 
       <div className="nodes-body">
@@ -336,32 +259,6 @@ export default function NodesPage() {
             <span className="muted">CA：{pki.subject}</span>
             <span className="muted">到期：{parseServerTime(pki.not_after).toLocaleDateString('zh-CN')}</span>
             {!pki.grpc_mtls && <span className="err-text">建议在 config.yaml 中设置 server.grpc_mtls: true</span>}
-          </div>
-        )}
-
-        {showImport && (
-          <div className="pki-banner">
-            <span className="status status-running">③ 节点发起</span>
-            <span className="muted">
-              在节点上执行 atl-daemon enroll --init，把打印出的那一行贴到这里。
-              请求自带节点签名（用其中 CSR 的公钥验签），30 分钟内有效。
-            </span>
-            <textarea rows={3} style={{ width: '100%' }} value={importText}
-              onChange={(e) => setImportText(e.target.value)} placeholder="atl-join-v1.…" />
-            <button className="small primary" onClick={doImport} disabled={busy || !importText.trim()}>导入并签发证书</button>
-            <button className="small" onClick={() => { setShowImport(false); setImportText('') }}>取消</button>
-          </div>
-        )}
-
-        {joinCmd && (
-          <div className="pki-banner">
-            <span className="status status-running">一次性 token 已生成</span>
-            <span className="muted">请在<b>目标节点</b>上以 root 执行下面这条命令（token {joinCmd.expires} 过期，用后即焚）：</span>
-            <div style={{ width: '100%' }}>
-              <code className="mono" style={{ wordBreak: 'break-all' }}>{joinCmd.cmd}</code>
-            </div>
-            <button className="small" onClick={() => { copyText(joinCmd.cmd); setMsg('命令已复制') }}>复制命令</button>
-            <button className="small" onClick={() => setJoinCmd(null)}>关闭</button>
           </div>
         )}
 
@@ -384,118 +281,11 @@ export default function NodesPage() {
                 一键部署本机节点
               </button>
             )}
-            <button className="small" onClick={() => {
-              setShowAdd(true)
-              setForm({ ...form, name: localNode.hostname || 'local', ip: '127.0.0.1', ssh_auth: '' })
-            }}>手动填写</button>
+            <button className="small" onClick={() => setRegister({
+              prefill: { name: localNode.hostname || 'local', ip: '127.0.0.1' },
+            })}>手动填写</button>
             {localNode.message && <span className="err-text">{localNode.message}</span>}
           </div>
-        )}
-
-        {showAdd && (
-          <form className="node-form" onSubmit={submitAdd}>
-            <h3>一键部署远端节点（SSH）</h3>
-            <div className="grid">
-              <input placeholder="节点名称（唯一，如 node-002）" value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })} required />
-              <input placeholder="管理地址（面板连它用的 IP 或域名）" value={form.ip}
-                onChange={(e) => setForm({ ...form, ip: e.target.value })} required />
-              <input placeholder="公网地址（玩家连它用的，公网直出需要；可留空）" value={form.public_ip}
-                onChange={(e) => setForm({ ...form, public_ip: e.target.value })} />
-              <input placeholder="SSH 用户（默认 root）" value={form.ssh_user}
-                onChange={(e) => setForm({ ...form, ssh_user: e.target.value })} />
-              <input placeholder="SSH 端口（默认 22）" value={form.ssh_port}
-                onChange={(e) => setForm({ ...form, ssh_port: e.target.value })} />
-              {/* 端口可覆盖：面板的 9090 被端口映射改过、或多面板共存时需要 */}
-              <input placeholder="面板连接端口（留空=默认，节点连面板用）" value={form.panel_grpc_port}
-                onChange={(e) => setForm({ ...form, panel_grpc_port: e.target.value })} />
-              <input placeholder="Daemon 端口（留空=默认 9091）" value={form.daemon_grpc_port}
-                onChange={(e) => setForm({ ...form, daemon_grpc_port: e.target.value })} />
-
-              {/* 凭证类型必须显式选：以前靠内容猜，私钥少一行就被当成密码，
-                  最后只报一句认证失败，用户根本不知道哪里错。 */}
-              <label className="node-auth-type" style={{ gridColumn: 'span 4' }}>
-                <span className="muted">凭证类型</span>
-                <label><input type="radio" name="auth_type" checked={form.auth_type === 'password'}
-                  onChange={() => setForm({ ...form, auth_type: 'password' })} /> 密码</label>
-                <label><input type="radio" name="auth_type" checked={form.auth_type === 'key'}
-                  onChange={() => setForm({ ...form, auth_type: 'key' })} /> 私钥</label>
-              </label>
-
-              {form.auth_type === 'key' ? (
-                <textarea placeholder="贴私钥全文（-----BEGIN OPENSSH PRIVATE KEY----- 到 END 那一行，别漏末尾）"
-                  value={form.ssh_auth}
-                  onChange={(e) => setForm({ ...form, ssh_auth: e.target.value })}
-                  rows={5} style={{ gridColumn: 'span 4', fontFamily: 'var(--mono, monospace)', fontSize: 12 }} />
-              ) : (
-                <input type="password" placeholder="SSH 密码" value={form.ssh_auth}
-                  onChange={(e) => setForm({ ...form, ssh_auth: e.target.value })}
-                  style={{ gridColumn: 'span 4' }} />
-              )}
-            </div>
-            <div className="form-actions">
-              <button className="primary" type="submit" disabled={busy}>登记</button>
-              <button type="button" onClick={testAuth} disabled={busy || !form.ip.trim() || !form.ssh_auth}>
-                测试连接
-              </button>
-              <button type="button" onClick={() => { setShowAdd(false); setAuthTest(null) }}>取消</button>
-            </div>
-            {authTest && (
-              <p className={authTest.ok ? 'form-note' : 'err-text'} style={{ marginTop: 6 }}>
-                {authTest.ok ? '✓ ' : '✗ '}{authTest.text}
-              </p>
-            )}
-            <p className="form-note">
-              这是「面板用 SSH 连过去把 Daemon 推上去」的方式，面板会保存该节点的 SSH 凭据
-              （明文入库，请确保数据库访问安全）。<br />
-              不想交出 SSH 凭据？同机可以用上面的<b>本机探测接入 / 一键部署本机节点</b>；
-              远端节点等 preview 的<b>凭证交换</b>（token 换证书，面板不存凭据）。
-            </p>
-          </form>
-        )}
-
-        {editing && (
-          <form className="node-form" onSubmit={submitEdit}>
-            <h3>编辑节点 #{editing.id}</h3>
-            <div className="grid">
-              <input placeholder="节点名称" value={editing.name}
-                onChange={(e) => setEditing({ ...editing, name: e.target.value })} required />
-              <input placeholder="节点 IP（面板连它的地址）" value={editing.ip}
-                onChange={(e) => setEditing({ ...editing, ip: e.target.value })} required />
-              <input placeholder="公网 IP（玩家连它的地址，公网直出用）" value={editing.public_ip}
-                onChange={(e) => setEditing({ ...editing, public_ip: e.target.value })} />
-              <input placeholder="SSH 用户" value={editing.ssh_user}
-                onChange={(e) => setEditing({ ...editing, ssh_user: e.target.value })} />
-              <input placeholder="SSH 端口" value={editing.ssh_port}
-                onChange={(e) => setEditing({ ...editing, ssh_port: e.target.value })} />
-              <input placeholder="面板连接端口（0=默认）" value={editing.panel_grpc_port}
-                onChange={(e) => setEditing({ ...editing, panel_grpc_port: e.target.value })} />
-              <input placeholder="Daemon 端口（0=默认 9091）" value={editing.daemon_grpc_port}
-                onChange={(e) => setEditing({ ...editing, daemon_grpc_port: e.target.value })} />
-              {/* 备份根目录：留空 = 用实例目录下的 backups/。落冷存储时填绝对路径 */}
-              <input placeholder="备份根目录（留空=实例目录内，如 /mnt/cold-backup）"
-                value={editing.backup_root}
-                onChange={(e) => setEditing({ ...editing, backup_root: e.target.value })} />
-              <label className="node-auth-type" style={{ gridColumn: 'span 4' }}>
-                <span className="muted">新凭据类型（留空则不修改凭据）</span>
-                <label><input type="radio" name="edit_auth_type" checked={editing.auth_type === 'password'}
-                  onChange={() => setEditing({ ...editing, auth_type: 'password' })} /> 密码</label>
-                <label><input type="radio" name="edit_auth_type" checked={editing.auth_type === 'key'}
-                  onChange={() => setEditing({ ...editing, auth_type: 'key' })} /> 私钥</label>
-              </label>
-              <input placeholder="新的密码/私钥（留空则不修改）" value={editing.ssh_auth}
-                onChange={(e) => setEditing({ ...editing, ssh_auth: e.target.value })}
-                style={{ gridColumn: 'span 4' }} />
-            </div>
-            <div className="form-actions">
-              <button className="primary" type="submit" disabled={busy}>保存</button>
-              <button type="button" onClick={() => setEditing(null)}>取消</button>
-            </div>
-            <p className="form-note">
-              改了 IP / SSH 参数后面板会重建到该节点的连接。公网 IP 只影响「公网直出」线路的判定与展示，
-              不会改变面板与 Daemon 之间的连接方式。
-            </p>
-          </form>
         )}
 
         <div className="node-list">
@@ -513,17 +303,118 @@ export default function NodesPage() {
                     <button className="small danger" title="清掉保存的 SSH 凭据（节点本身保留）"
                       onClick={() => clearCred(n)}>移除凭据</button>
                   )}
-                  <button className="small" onClick={() => setEditing({
+                  <button className="small" onClick={() => setEditing(editing?.id === n.id ? null : {
                     id: n.id, name: n.name, ip: n.ip, public_ip: n.public_ip || '',
                     ssh_user: n.ssh_user || '', ssh_port: String(n.ssh_port || 22), ssh_auth: '',
                     auth_type: (n.auth_type === 'key' ? 'key' : 'password') as 'password' | 'key',
                     panel_grpc_port: String(n.panel_grpc_port || 0),
                     daemon_grpc_port: String(n.daemon_grpc_port || 0),
                     backup_root: n.backup_root || '',
-                  })}>编辑</button>
+                  })}>{editing?.id === n.id ? '收起' : '编辑'}</button>
                   <span className="muted">实例 {n.instances} 个</span>
                   <span className="muted">最后心跳 {fmtTime(n.last_seen)}</span>
                 </div>
+
+                {/* 编辑就地展开在**这张卡片里**（以前是页面顶部一个弹窗：
+                    改的是列表里的某个节点，眼睛却要跳到页面顶上，也对不上是哪一台）。
+                    表单结构与「共享资源」展开块一致，同一个视觉层级。 */}
+                {editing?.id === n.id && (
+                  <form className="node-edit" onSubmit={submitEdit}>
+                    <div className="ne-sec">
+                      <div className="ne-sec-title">基本信息</div>
+                      <div className="ne-grid">
+                        <label className="ne-field">
+                          <span>节点名称 <i className="ne-req">*</i></span>
+                          <input value={editing.name} required
+                            onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
+                        </label>
+                        <label className="ne-field">
+                          <span>节点 IP <i className="ne-req">*</i></span>
+                          <input value={editing.ip} required
+                            onChange={(e) => setEditing({ ...editing, ip: e.target.value })} />
+                          <em>面板连它的地址</em>
+                        </label>
+                        <label className="ne-field">
+                          <span>公网 IP</span>
+                          <input value={editing.public_ip}
+                            onChange={(e) => setEditing({ ...editing, public_ip: e.target.value })} />
+                          <em>玩家连它的地址，公网直出用</em>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="ne-sec">
+                      <div className="ne-sec-title">连接</div>
+                      <div className="ne-grid">
+                        <label className="ne-field">
+                          <span>SSH 用户</span>
+                          <input value={editing.ssh_user}
+                            onChange={(e) => setEditing({ ...editing, ssh_user: e.target.value })} />
+                        </label>
+                        <label className="ne-field">
+                          <span>SSH 端口</span>
+                          <input value={editing.ssh_port}
+                            onChange={(e) => setEditing({ ...editing, ssh_port: e.target.value })} />
+                        </label>
+                        <label className="ne-field">
+                          <span>面板连接端口</span>
+                          <input value={editing.panel_grpc_port}
+                            onChange={(e) => setEditing({ ...editing, panel_grpc_port: e.target.value })} />
+                          <em>0 = 默认</em>
+                        </label>
+                        <label className="ne-field">
+                          <span>Daemon 端口</span>
+                          <input value={editing.daemon_grpc_port}
+                            onChange={(e) => setEditing({ ...editing, daemon_grpc_port: e.target.value })} />
+                          <em>0 = 默认 9091</em>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="ne-sec">
+                      <div className="ne-sec-title">存储</div>
+                      <div className="ne-grid">
+                        <label className="ne-field ne-span-all">
+                          <span>备份根目录</span>
+                          <input value={editing.backup_root}
+                            onChange={(e) => setEditing({ ...editing, backup_root: e.target.value })} />
+                          <em>留空 = 各实例目录下的 backups/；填绝对路径则落冷存储（如 /mnt/cold-backup）。换目录会让老备份链与新链脱钩</em>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="ne-sec">
+                      <div className="ne-sec-title">SSH 凭据</div>
+                      <div className="ne-radios">
+                        <span className="muted">凭据类型</span>
+                        <label>
+                          <input type="radio" name="edit_auth_type" checked={editing.auth_type === 'password'}
+                            onChange={() => setEditing({ ...editing, auth_type: 'password' })} /> 密码
+                        </label>
+                        <label>
+                          <input type="radio" name="edit_auth_type" checked={editing.auth_type === 'key'}
+                            onChange={() => setEditing({ ...editing, auth_type: 'key' })} /> 私钥
+                        </label>
+                        <span className="muted ne-radio-hint">留空下面的输入框则不修改已存凭据</span>
+                      </div>
+                      <div className="ne-grid">
+                        <label className="ne-field ne-span-all">
+                          <span>新的密码 / 私钥</span>
+                          <input value={editing.ssh_auth}
+                            onChange={(e) => setEditing({ ...editing, ssh_auth: e.target.value })} />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="ne-foot">
+                      <button className="primary" type="submit" disabled={busy}>保存</button>
+                      <button type="button" onClick={() => setEditing(null)} disabled={busy}>取消</button>
+                      <span className="ne-foot-note">
+                        改了 IP / SSH 参数后面板会重建到该节点的连接；公网 IP 只影响「公网直出」线路的判定与展示。
+                      </span>
+                    </div>
+                  </form>
+                )}
 
                 <div className="node-meta">
                   <span>CPU 核心 {n.cpu}</span>
@@ -643,6 +534,14 @@ export default function NodesPage() {
           {nodes.length === 0 && <div className="empty">暂无节点</div>}
         </div>
       </div>
+
+      {register && (
+        <NodeRegisterDialog
+          prefill={register.prefill}
+          onClose={() => setRegister(null)}
+          onDone={(m) => { setRegister(null); setMsg(m); load() }}
+        />
+      )}
 
       {logs && (
         <div className="modal-mask" onClick={() => setLogs(null)}>
